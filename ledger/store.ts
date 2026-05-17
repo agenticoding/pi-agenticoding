@@ -28,16 +28,21 @@ export function getEntryNames(state: AgenticodingState): string[] {
 	return Array.from(state.ledger.keys()).sort();
 }
 
+const PREVIEW_MAX_CHARS = 80;
+const ELLIPSIS_LENGTH = 3;
+
 export function formatEntryList(state: AgenticodingState): string {
 	const names = getEntryNames(state);
-	if (names.length === 0) return "(empty)";
+	if (names.length === 0) return "";
 
 	return names
 		.map((name) => {
 			const content = state.ledger.get(name)!;
 			const firstLine = content.split("\n")[0] ?? "";
 			const preview =
-				firstLine.length > 80 ? firstLine.slice(0, 77) + "..." : firstLine;
+				firstLine.length > PREVIEW_MAX_CHARS
+					? firstLine.slice(0, PREVIEW_MAX_CHARS - ELLIPSIS_LENGTH) + "..."
+					: firstLine;
 			return `  ${name}: ${preview}`;
 		})
 		.join("\n");
@@ -48,9 +53,11 @@ export async function saveLedgerEntry(
 	state: AgenticodingState,
 	name: string,
 	content: string,
+	assertWritable?: () => void,
 ): Promise<string[]> {
 	const release = await acquireWriteLock();
 	try {
+		assertWritable?.();
 		const truncated = truncateHead(content, {
 			maxLines: DEFAULT_MAX_LINES,
 			maxBytes: DEFAULT_MAX_BYTES,
