@@ -42,20 +42,10 @@ That's what this does.
 **1. Install**
 
 ```bash
-npm install pi-agenticoding
+pi install npm:pi-agenticoding
 ```
 
-**2. Enable in your pi configuration**
-
-Add the extension to your `pi` config and restart:
-
-```json
-{
-  "extensions": ["pi-agenticoding"]
-}
-```
-
-**3. You're done.**
+**2. You're done.**
 
 Your agent now has access to `spawn`, `ledger_add`, `ledger_get`, `ledger_list`, and `handoff` tools. The status bar will show context usage and ledger entry count.
 
