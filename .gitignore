@@ -142,6 +142,9 @@ vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
 
+# Lockfiles (library package — consumers manage their own)
+package-lock.json
+
 # Agenticoding local config (credentials, API keys)
 .chunkhound.json
 .chunkhound/
