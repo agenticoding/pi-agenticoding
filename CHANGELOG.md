@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- No changes yet.
+
+## [0.2.0] - 2026-05-21
+
+### Added
+
 - **Microtask event batching** — rapid child session events are coalesced into a single parent invalidate per microtask boundary, preventing UI jank during bursty tool execution.
 - **Epoch-based invalidation** — the spawn renderer uses epoch counters rather than pointer comparison to detect stale sessions, making ownership checks reliable across session resets.
 
