@@ -34,6 +34,12 @@ const theme = {
 	bold: (text: string) => text,
 } as unknown as Theme;
 
+const ansiTheme = {
+	fg: (_name: string, text: string) => `\u001b[38;5;245m${text}\u001b[39m`,
+	bg: (_name: string, text: string) => `\u001b[48;5;236m${text}\u001b[49m`,
+	bold: (text: string) => text,
+} as unknown as Theme;
+
 function createRenderContext(overrides: Record<string, unknown> = {}): Record<string, unknown> {
 	return {
 		expanded: false,
@@ -57,6 +63,23 @@ function createSession(messages: any[]) {
 
 function stripAnsi(text: string): string {
 	return text.replace(/\u001b\[[0-9;]*m/g, "").replace(/\u001b\][^\u0007]*\u0007/g, "");
+}
+
+function getRenderedLine(lines: string[], match: (plain: string) => boolean): string {
+	const line = lines.find(candidate => match(stripAnsi(candidate)));
+	assert.ok(line);
+	return line;
+}
+
+function getLineContaining(lines: string[], text: string): string {
+	const line = lines.find(candidate => candidate.includes(text));
+	assert.ok(line);
+	return line;
+}
+
+function assertShellBackgroundPreserved(line: string): void {
+	assert.equal(line.includes("\u001b[0m"), false);
+	assert.match(line, /\u001b\[48;/);
 }
 
 function createDeferred() {
@@ -578,6 +601,71 @@ test("collapsed nested spawn render keeps all text blocks from the last assistan
 	const lines = component.render(120);
 	assert.ok(lines.some((l: string) => l.includes("first")));
 	assert.ok(lines.some((l: string) => l.includes("second")));
+});
+
+test("collapsed nested spawn truncation preserves shell background across preview and stats lines", () => {
+	const state = createState();
+	const childSpawnTool = createChildSpawnTool(state);
+	const session = createSession([
+		{ role: "assistant", content: [{ type: "text", text: "Research the nudge on toggle off TODO from the readonly mode plan." }] },
+	]);
+	state.childSessions.set("tool-call-1", session);
+
+	const component = childSpawnTool.renderResult(
+		{
+			content: [{ type: "text", text: "ignored" }],
+			details: {
+				model: "mock-model",
+				thinking: "medium",
+				truncated: true,
+				stats: { inputTokens: 12, outputTokens: 34, turns: 2, cost: 0.125 },
+			},
+		},
+		{ expanded: false },
+		ansiTheme,
+		createRenderContext(),
+	) as any;
+
+	const lines = component.render(24);
+	const previewLine = getRenderedLine(lines, plain => plain.includes("Research"));
+	const statsLine = getRenderedLine(lines, plain => plain.includes("tok 12/34"));
+	assertShellBackgroundPreserved(previewLine);
+	assertShellBackgroundPreserved(statsLine);
+	assert.match(stripAnsi(statsLine), /tok 12\/34/);
+});
+
+test("collapsed nested spawn keeps truncated stats line calm", () => {
+	const markerTheme = {
+		fg: (name: string, text: string) => `<${name}>${text}</${name}>`,
+		bg: (_name: string, text: string) => text,
+		bold: (text: string) => text,
+	} as unknown as Theme;
+	const state = createState();
+	const childSpawnTool = createChildSpawnTool(state);
+	const session = createSession([
+		{ role: "assistant", content: [{ type: "text", text: "short preview" }] },
+	]);
+	state.childSessions.set("tool-call-1", session);
+
+	const component = childSpawnTool.renderResult(
+		{
+			content: [{ type: "text", text: "ignored" }],
+			details: {
+				model: "mock-model",
+				thinking: "medium",
+				truncated: true,
+				stats: { inputTokens: 12, outputTokens: 34, turns: 2, cost: 0.125 },
+			},
+		},
+		{ expanded: false },
+		markerTheme,
+		createRenderContext(),
+	) as any;
+
+	const lines = component.render(120);
+	const statsLine = getLineContaining(lines, "tok 12/34");
+	assert.match(statsLine, /<dim>.*tok 12\/34.*trunc.*<\/dim>/);
+	assert.equal(statsLine.includes("<warning>"), false);
 });
 
 test("nested spawn render is safe without details", () => {
