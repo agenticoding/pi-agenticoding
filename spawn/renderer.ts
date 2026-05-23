@@ -198,16 +198,19 @@ function wrapSpawnShell(lines: string[], width: number, theme: Theme | undefined
 	];
 }
 
-function formatCollapsedStats(details: SpawnResultDetails, color: (name: ThemeColor, text: string) => string): string | undefined {
+function formatCollapsedStats(details: SpawnResultDetails): { text: string; color: ThemeColor } | undefined {
 	if (details.stats) {
 		const s = details.stats;
 		const cost = s.cost ?? 0;
 		const costStr = cost >= COST_THRESHOLD_COMPACT ? cost.toFixed(0) : cost >= COST_THRESHOLD_DECIMAL ? cost.toFixed(2) : cost.toFixed(4);
-		const truncated = details.truncated ? color("warning", " · trunc") : "";
-		return color("dim", `tok ${s.inputTokens ?? "?"}/${s.outputTokens ?? "?"} · ${s.turns ?? "?"}t · $${costStr}${truncated}`);
+		return {
+			// Intentionally dim — truncated spawns are routine, not alarming
+			text: `tok ${s.inputTokens ?? "?"}/${s.outputTokens ?? "?"} · ${s.turns ?? "?"}t · $${costStr}${details.truncated ? " · trunc" : ""}`,
+			color: "dim",
+		};
 	}
 	if (details.statsUnavailable) {
-		return color("muted", "stats unavailable");
+		return { text: "stats unavailable", color: "muted" };
 	}
 	return undefined;
 }
@@ -840,9 +843,9 @@ class NestedAgentSessionComponent extends Container implements SpawnFrameTarget 
 			}
 		}
 
-		const statsLine = details ? formatCollapsedStats(details, color) : undefined;
+		const statsLine = details ? formatCollapsedStats(details) : undefined;
 		if (statsLine) {
-			lines.push(truncateToWidth(statsLine, width));
+			lines.push(truncateToWidth(color(statsLine.color, statsLine.text), width));
 		}
 
 		return lines;
