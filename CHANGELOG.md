@@ -13,10 +13,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added `handoff.resumeBehavior` settings support with supported values `"wait"` (default) and `"proceed"`; unsupported values and invalid settings JSON fail safe to `wait` with a warning diagnostic.
 - Added the extension-owned `/agenticoding-settings` TUI panel for handoff resume behavior. TUI saves are global-only to `~/.pi/agent/settings.json`, preserve unrelated settings keys, and visibly warn when a project override masks the global value.
 
-### Fixed
-
-- Hardened raw settings JSON handling so prototype/meta keys such as `__proto__` cannot masquerade as an own `handoff.resumeBehavior` setting.
-
 ## [0.3.0] - 2026-05-23
 
 ### Added
