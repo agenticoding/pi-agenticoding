@@ -106,7 +106,7 @@ export function registerHandoffTool(
 		promptSnippet: "Pivot to a new job via deliberate handoff compaction",
 		promptGuidelines: [
 			"Call handoff when the job changes, or when context is past ~30% and noisy. " +
-				"Capture reusable state in the ledger if needed, then draft a concise but " +
+				"Capture reusable state in the ledger that the next context will need, then draft a concise but " +
 				"sufficiently detailed brief that completes the picture for the next clean context.",
 		],
 
