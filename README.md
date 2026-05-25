@@ -1,7 +1,7 @@
 # pi-agenticoding
 
 [![pi.dev package](https://img.shields.io/badge/pi.dev-package-purple)](https://pi.dev/packages/pi-agenticoding)
-[![npm version](https://img.shields.io/badge/npm-0.1.0-blue)](https://www.npmjs.com/package/pi-agenticoding)
+[![npm version](https://img.shields.io/badge/npm-0.3.0-blue)](https://www.npmjs.com/package/pi-agenticoding)
 [![MIT License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 ![Status](https://img.shields.io/badge/status-active-brightgreen)
 
@@ -108,7 +108,7 @@ Delegate messy work to an isolated child agent with clean context. The child inh
 
 ### Notebook — Continuity Across Cuts
 
-A sparse pocket notebook the agent curates while working. After discovering something reusable — a fact, constraint, decision, or expensive finding — it writes a named page. Later contexts read pages on demand instead of re-deriving the work. The notebook persists across handoffs, context resets, and session restarts.
+A sparse pocket notebook the agent curates while working. After discovering something reusable — a fact, constraint, decision, or expensive finding — it writes a named page. Later contexts read pages on demand instead of re-deriving the work. The notebook persists across handoffs, context resets, and session restarts. Starting a new session with `/new` resets all notebook pages.
 
 ### Handoff — Deliberate Compaction
 
@@ -196,12 +196,11 @@ interface AgenticodingState {
 See [ARCHITECTURE.md](ARCHITECTURE.md) for full module breakdown, tool schemas, lifecycle wiring, spawn child-session lifecycle, and notebook rehydration algorithm.
 
 </details>
-
 ---
 
 ## Contributing
 
-Contributions welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).
+Contributions welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the project workflow and quality expectations.
 
 ## License
 
