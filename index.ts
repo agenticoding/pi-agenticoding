@@ -3,12 +3,12 @@
  *
  * Wires together the three primitives:
  *   spawn     — delegate isolated work to child contexts
- *   ledger    — sparse continuity cache
+ *   notebook   — durable cross-context grounding
  *   handoff   — deliberate task pivot via compaction
  *
  * Also registers:
  *   - watchdog (advisory primacy-zone reminder after each turn)
- *   - system prompt injection (CONTEXT_PRIMER, nudge, ledger listing)
+ *   - system prompt injection (CONTEXT_PRIMER, nudge, notebook listing)
  *   - state reset on /new
  */
 
@@ -23,8 +23,8 @@ import {
 import { createState, resetState, type AgenticodingState } from "./state.js";
 import { CONTEXT_PRIMER } from "./system-prompt.js";
 import { buildNudge, registerWatchdog } from "./watchdog.js";
-import { registerLedgerTools } from "./ledger/tools.js";
-import { registerLedgerRehydration } from "./ledger/rehydration.js";
+import { registerNotebookTools } from "./notebook/tools.js";
+import { registerNotebookRehydration } from "./notebook/rehydration.js";
 import { registerHandoffTool } from "./handoff/tool.js";
 import { registerHandoffCommand } from "./handoff/command.js";
 import { registerHandoffCompaction } from "./handoff/compact.js";
@@ -34,27 +34,27 @@ import {
 	WIDGET_KEY_WARNING,
 	updateIndicators,
 } from "./tui.js";
-import { formatEntryPreview } from "./ledger/store.js";
+import { formatPagePreview } from "./notebook/store.js";
 
 export default function (pi: ExtensionAPI): void {
 	const state: AgenticodingState = createState();
 
 	// ── Register all tools ──────────────────────────────────────────
-	registerLedgerTools(pi, state);
+	registerNotebookTools(pi, state);
 	registerHandoffTool(pi, state);
 	registerSpawnTool(pi, state);
 
 	// ── Register event handlers ─────────────────────────────────────
 	registerWatchdog(pi, state);
-	registerLedgerRehydration(pi, state);
+	registerNotebookRehydration(pi, state);
 	registerHandoffCompaction(pi, state);
 
 	// ── Register commands ───────────────────────────────────────────
 	registerHandoffCommand(pi, state);
 
-	// ── /ledger command — interactive entry selector ────────────────
-	pi.registerCommand("ledger", {
-		description: "Select a ledger entry to preview",
+	// ── /notebook command — interactive page selector ────────────────
+	pi.registerCommand("notebook", {
+		description: "Select a notebook page to preview",
 		handler: async (_args, ctx) => {
 			if (!ctx.hasUI) {
 				return;
@@ -67,22 +67,22 @@ export default function (pi: ExtensionAPI): void {
 					new DynamicBorder((s: string) => theme.fg("accent", s)),
 				);
 				container.addChild(
-					new Text(theme.fg("accent", theme.bold(` Ledger (${state.ledger.size} entries) `)), 1, 0),
+					new Text(theme.fg("accent", theme.bold(` Notebook (${state.notebookPages.size} pages) `)), 1, 0),
 				);
 
-				const entries = Array.from(state.ledger.entries()).sort(([a], [b]) => a.localeCompare(b));
+				const entries = Array.from(state.notebookPages.entries()).sort(([a], [b]) => a.localeCompare(b));
 				let selectList: SelectList | undefined;
 				let finished = false;
 
 				if (entries.length === 0) {
 					container.addChild(
-						new Text(theme.fg("dim", " (empty) — use ledger_add to create entries"), 1, 0),
+						new Text(theme.fg("dim", " (empty) — use notebook_write to create pages"), 1, 0),
 					);
 				} else {
 					const items: SelectItem[] = entries.map(([name, content]) => ({
 						value: name,
 						label: name,
-						description: formatEntryPreview(content),
+						description: formatPagePreview(content),
 					}));
 
 					selectList = new SelectList(items, Math.min(items.length, 10), {
@@ -95,7 +95,7 @@ export default function (pi: ExtensionAPI): void {
 					selectList.onSelect = ({ value }) => {
 						// Guard: selectList is set to undefined below, so this handler
 						// cannot fire twice — no re-entrancy guard needed here.
-						const body = state.ledger.get(value);
+						const body = state.notebookPages.get(value);
 						if (!body) { done(); return; }
 						// Switch to body view: show the selected entry body inline
 						container.clear();
@@ -142,7 +142,7 @@ export default function (pi: ExtensionAPI): void {
 		},
 	});
 
-	// ── before_agent_start: inject context primer + ledger ─────────
+	// ── before_agent_start: inject context primer + notebook ───────
 	pi.on("before_agent_start", async (event, ctx: ExtensionContext) => {
 		// Update TUI indicators before each user-prompt agent run
 		updateIndicators(ctx, state);
@@ -163,9 +163,9 @@ export default function (pi: ExtensionAPI): void {
 				})
 				.join("\n");
 			parts.push(
-				`\n## Active Ledger Entries\n` +
-					`The following entries are available via ledger_get by name:\n${listing}\n` +
-					`Reference entries by name — never paste bodies into prompts.`,
+				`\n## Active Notebook Pages\n` +
+					`The following pages are available via notebook_read by name:\n${listing}\n` +
+					`Reference pages by name — never paste bodies into prompts.`,
 			);
 		}
 

@@ -1,9 +1,10 @@
 /**
- * Ledger rehydration for the agenticoding extension.
+ * Notebook rehydration for the agenticoding extension.
  *
  * A session_start handler that scans the current branch newest-to-oldest for
- * persisted ledger-entry custom entries, rebuilds the in-memory state.ledger
- * Map (newest wins per name), and ensures ledger_get / ledger_list are active.
+ * persisted notebook-entry (and legacy ledger-entry) custom entries, rebuilds
+ * the in-memory state.notebookPages Map (newest wins per name), and ensures
+ * notebook_read / notebook_index are active.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -11,21 +12,25 @@ import type { AgenticodingState } from "../state.js";
 
 // ── Types ─────────────────────────────────────────────────────────────
 
-interface LedgerEntryData {
+interface NotebookEntryData {
 	version: number;
 	epoch: number;
 	name: string;
 	content: string;
 }
 
-interface LedgerCandidate {
+interface NotebookCandidate {
 	epoch: number;
 	content: string;
 }
 
+// ── Rehydration entry types ───────────────────────────────────────────
+
+const ENTRY_TYPES = new Set(["notebook-entry", "ledger-entry"]);
+
 // ── Registration ──────────────────────────────────────────────────────
 
-export function registerLedgerRehydration(
+export function registerNotebookRehydration(
 	pi: ExtensionAPI,
 	state: AgenticodingState,
 ): void {
@@ -33,60 +38,58 @@ export function registerLedgerRehydration(
 		const branch = ctx.sessionManager.getBranch();
 
 		// Scan newest-to-oldest; first occurrence of each name wins (newest).
-		const candidates = new Map<string, LedgerCandidate>();
+		const candidates = new Map<string, NotebookCandidate>();
 
 		for (let i = branch.length - 1; i >= 0; i--) {
 			const entry = branch[i];
 
 			if (
 				entry.type !== "custom" ||
-				(entry as Record<string, unknown>).customType !== "ledger-entry"
+				!ENTRY_TYPES.has((entry as Record<string, unknown>).customType as string)
 			) {
 				continue;
 			}
 
-			const data = (entry as Record<string, unknown>).data as LedgerEntryData | undefined;
+			const data = (entry as Record<string, unknown>).data as NotebookEntryData | undefined;
 			if (!data?.name || typeof data.content !== "string") continue;
 
 			// Skip if we already have a newer version of this name
 			if (candidates.has(data.name)) continue;
 
 			candidates.set(data.name, {
-				epoch: data.epoch,
+				epoch: data.epoch ?? 0,
 				content: data.content,
 			});
 		}
 
-		if (candidates.size === 0) return;
-
-		// Determine the current epoch from candidates.
-		// If state.epoch is already set (e.g., from first add before rehydration),
-		// filter to entries matching that epoch. Otherwise adopt the max epoch found.
+		// Pick the epoch from the newest candidate across all names
 		let currentEpoch = state.epoch;
-		if (currentEpoch === 0) {
-			for (const [, c] of candidates) {
-				if (c.epoch > currentEpoch) currentEpoch = c.epoch;
+		for (const candidate of candidates.values()) {
+			if (candidate.epoch > currentEpoch) {
+				currentEpoch = candidate.epoch;
 			}
+		}
+		if (currentEpoch > state.epoch) {
 			state.epoch = currentEpoch;
 		}
 
-		// Rebuild state.ledger, filtering by epoch
-		state.ledger.clear();
+		// Rebuild state.notebookPages, filtering by epoch
+		state.notebookPages.clear();
 		for (const [name, candidate] of candidates) {
 			if (candidate.epoch === currentEpoch) {
-				state.ledger.set(name, candidate.content);
+				state.notebookPages.set(name, candidate.content);
 			}
 		}
 
-		// Ensure ledger_get and ledger_list are active so the LLM can fetch entries
+		// Ensure notebook_read and notebook_index are active so the LLM can fetch pages
 		const active = pi.getActiveTools();
 		let changed = false;
-		if (!active.includes("ledger_get")) {
-			active.push("ledger_get");
+		if (!active.includes("notebook_read")) {
+			active.push("notebook_read");
 			changed = true;
 		}
-		if (!active.includes("ledger_list")) {
-			active.push("ledger_list");
+		if (!active.includes("notebook_index")) {
+			active.push("notebook_index");
 			changed = true;
 		}
 		if (changed) pi.setActiveTools(active);

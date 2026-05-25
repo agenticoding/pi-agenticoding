@@ -19,10 +19,10 @@ export const WIDGET_KEY_WARNING = "agenticoding-warning";
 /** Status bar key for context usage percentage. */
 export const STATUS_KEY_CTX = "agenticoding-ctx";
 
-/** Status bar key for ledger entry count. */
-export const STATUS_KEY_LEDGER = "agenticoding-ledger";
+/** Status bar key for notebook page count. */
+export const STATUS_KEY_NOTEBOOK = "agenticoding-notebook";
 
-/** Update TUI indicators: context usage, ledger count, warning widget. */
+/** Update TUI indicators: context usage, notebook count, warning widget. */
 export function updateIndicators(ctx: ExtensionContext, state: AgenticodingState): void {
 	if (!ctx.hasUI) return;
 
@@ -38,9 +38,9 @@ export function updateIndicators(ctx: ExtensionContext, state: AgenticodingState
 		ctx.ui.setStatus(STATUS_KEY_CTX, theme.fg("dim", "ctx --%"));
 	}
 
-	// Ledger count — show 📒 0 in dim tone when empty so the feature is discoverable
-	const count = state.ledger.size;
-	ctx.ui.setStatus(STATUS_KEY_LEDGER, count > 0
+	// Notebook page count — show 📒 0 in dim tone when empty so the feature is discoverable
+	const count = state.notebookPages.size;
+	ctx.ui.setStatus(STATUS_KEY_NOTEBOOK, count > 0
 		? `\u{1F4D2} ${count}`
 		: theme.fg("dim", "\u{1F4D2} 0"),
 	);
