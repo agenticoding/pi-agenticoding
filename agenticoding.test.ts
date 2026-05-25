@@ -25,6 +25,7 @@ import { STATUS_KEY_HANDOFF, WIDGET_KEY_WARNING, updateIndicators } from "./tui.
 import {
 	MANUAL_AGENTICODING_SETTINGS_INSTRUCTIONS,
 	buildAgenticodingSettingsModel,
+	createAgenticodingSettingsComponent,
 	getAgenticodingSettingsDisplayLines,
 	readHandoffSettingsState,
 	resolveHandoffResumeBehavior,
@@ -625,6 +626,40 @@ test("agenticoding settings TUI warns when project override masks global setting
 	});
 });
 
+test("agenticoding settings TUI editable control anchors and refreshes to global value when project override masks it", async () => {
+	await withIsolatedSettings(async ({ home, cwd }) => {
+		await writeSettingsFile(join(home, ".pi", "agent", "settings.json"), { handoff: { resumeBehavior: "proceed" } });
+		await writeSettingsFile(join(cwd, ".pi", "settings.json"), { handoff: { resumeBehavior: "wait" } });
+		const ctx = { cwd, hasUI: true, ui: { notify: () => {} } } as any;
+		const model = await buildAgenticodingSettingsModel(ctx);
+		const component = createAgenticodingSettingsComponent(model, ctx, { requestRender: () => {} }, theme, () => {});
+
+		const rendered = stripAnsi(component.render(120).join("\n"));
+		assert.match(rendered, /Resolved handoff\.resumeBehavior: wait \(project\)/);
+		assert.match(rendered, /Global settings: .*"proceed"/);
+		assert.match(rendered, /Handoff resume behavior \(global save\)\s+proceed/);
+	});
+
+	await withIsolatedSettings(async ({ home, cwd }) => {
+		const globalPath = join(home, ".pi", "agent", "settings.json");
+		await writeSettingsFile(globalPath, { handoff: { resumeBehavior: "wait" } });
+		await writeSettingsFile(join(cwd, ".pi", "settings.json"), { handoff: { resumeBehavior: "wait" } });
+		const ctx = { cwd, hasUI: true, ui: { notify: () => {} } } as any;
+		const model = await buildAgenticodingSettingsModel(ctx);
+		const component = createAgenticodingSettingsComponent(model, ctx, { requestRender: () => {} }, theme, () => {});
+
+		component.handleInput("\r");
+		await new Promise(resolve => setTimeout(resolve, 50));
+
+		const saved = JSON.parse(await readFile(globalPath, "utf8"));
+		assert.equal(saved.handoff.resumeBehavior, "proceed");
+		const rendered = stripAnsi(component.render(120).join("\n"));
+		assert.match(rendered, /Resolved handoff\.resumeBehavior: wait \(project\)/);
+		assert.match(rendered, /Global settings: .*"proceed"/);
+		assert.match(rendered, /Handoff resume behavior \(global save\)\s+proceed/);
+	});
+});
+
 test("agenticoding settings TUI handles invalid JSON policies", async () => {
 	await withIsolatedSettings(async ({ home, cwd }) => {
 		const globalPath = join(home, ".pi", "agent", "settings.json");
@@ -643,6 +678,28 @@ test("agenticoding settings TUI handles invalid JSON policies", async () => {
 		assert.equal(notifications.at(-1)?.level, "error");
 		assert.match(notifications.at(-1)?.message ?? "", /Invalid global settings JSON/);
 	});
+
+	for (const nonObjectRoot of ["[]", "\"x\"", "42"]) {
+		await withIsolatedSettings(async ({ home, cwd }) => {
+			const globalPath = join(home, ".pi", "agent", "settings.json");
+			await writeSettingsFile(globalPath, nonObjectRoot);
+			const notifications: Array<{ message: string; level: string }> = [];
+			const ctx = {
+				cwd,
+				hasUI: true,
+				ui: { notify: (message: string, level: string) => notifications.push({ message, level }) },
+			} as any;
+
+			const state = await readHandoffSettingsState(cwd);
+			assert.equal(state.global.invalid, true);
+			const invalidGlobal = await buildAgenticodingSettingsModel(ctx);
+			assert.equal(invalidGlobal.globalWriteBlocked, true);
+			assert.equal(await invalidGlobal.save("proceed", ctx), false);
+			assert.equal(await readFile(globalPath, "utf8"), nonObjectRoot);
+			assert.equal(notifications.at(-1)?.level, "error");
+			assert.match(notifications.at(-1)?.message ?? "", /root must be an object/);
+		});
+	}
 
 	await withIsolatedSettings(async ({ home, cwd }) => {
 		const globalPath = join(home, ".pi", "agent", "settings.json");

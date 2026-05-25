@@ -141,7 +141,10 @@ async function readSettingsSource(label: SettingsSourceLabel, path: string): Pro
 
 	try {
 		const parsed = JSON.parse(raw);
-		const settings = isPlainObject(parsed) ? cloneSettingsObject(parsed) : createSettingsObject();
+		if (!isPlainObject(parsed)) {
+			return { label, path, exists: true, invalid: true, settings: createSettingsObject(), resumeBehavior: undefined };
+		}
+		const settings = cloneSettingsObject(parsed);
 		return { label, path, exists: true, invalid: false, settings, resumeBehavior: extractResumeBehavior(settings) };
 	} catch {
 		return { label, path, exists: true, invalid: true, settings: createSettingsObject(), resumeBehavior: undefined };
@@ -208,7 +211,11 @@ export async function writeGlobalHandoffResumeBehavior(
 	if (raw !== undefined) {
 		try {
 			const parsed = JSON.parse(raw);
-			settings = isPlainObject(parsed) ? cloneSettingsObject(parsed) : createSettingsObject();
+			if (!isPlainObject(parsed)) {
+				notify(ctx, `Invalid global settings JSON at ${path}; root must be an object, not writing handoff.resumeBehavior to avoid clobbering it.`, "error");
+				return false;
+			}
+			settings = cloneSettingsObject(parsed);
 		} catch {
 			notify(ctx, `Invalid global settings JSON at ${path}; not writing handoff.resumeBehavior to avoid clobbering it.`, "error");
 			return false;
@@ -273,6 +280,10 @@ function describeValue(value: unknown): string {
 	return value === undefined ? "unset" : formatSettingValue(value);
 }
 
+function getGlobalEditableHandoffResumeBehavior(model: AgenticodingSettingsModel): HandoffResumeBehavior {
+	return isHandoffResumeBehavior(model.state.global.resumeBehavior) ? model.state.global.resumeBehavior : "wait";
+}
+
 export function getAgenticodingSettingsDisplayLines(model: AgenticodingSettingsModel): string[] {
 	const lines = [
 		`Resolved handoff.resumeBehavior: ${model.effectiveBehavior} (${model.effectiveSource})`,
@@ -315,7 +326,7 @@ export function createAgenticodingSettingsComponent(
 	const items: SettingItem[] = [{
 		id: "handoff.resumeBehavior",
 		label: "Handoff resume behavior (global save)",
-		currentValue: model.effectiveBehavior,
+		currentValue: getGlobalEditableHandoffResumeBehavior(model),
 		values: SUPPORTED_HANDOFF_RESUME_BEHAVIORS,
 	}];
 
@@ -343,7 +354,7 @@ export function createAgenticodingSettingsComponent(
 				try {
 					const saved = await model.save(newValue, ctx);
 					model = await buildAgenticodingSettingsModel(ctx);
-					settingsList.updateValue("handoff.resumeBehavior", model.effectiveBehavior);
+					settingsList.updateValue("handoff.resumeBehavior", getGlobalEditableHandoffResumeBehavior(model));
 					if (saved && model.projectOverrideWarning) {
 						notify(ctx, model.projectOverrideWarning, "warning");
 					}
