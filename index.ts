@@ -204,18 +204,23 @@ export default function (pi: ExtensionAPI): void {
 	// ── context: inject primacy-zone nudge before each LLM call ────
 	pi.on("context", async (event, ctx: ExtensionContext) => {
 		const usage = ctx.getContextUsage();
-		if (!usage || usage.percent === null || usage.percent < 30) {
+		const percent = usage?.percent ?? null;
+		if (usage && usage.percent !== null) {
+			state.lastContextPercent = usage.percent;
+		}
+		if (!state.pendingTopicBoundaryHint && (percent === null || percent < 30)) {
 			return;
 		}
 
-		state.lastContextPercent = usage.percent;
+		const nudge = buildNudge(state, percent);
+		state.pendingTopicBoundaryHint = null;
 		return {
 			messages: [
 				...event.messages,
 				{
 					role: "custom",
 					customType: "agenticoding-watchdog",
-					content: buildNudge(usage.percent),
+					content: nudge,
 					display: false,
 					timestamp: Date.now(),
 				},

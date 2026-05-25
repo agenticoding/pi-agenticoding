@@ -12,28 +12,42 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import type { AgenticodingState } from "./state.js";
 import { STATUS_KEY_HANDOFF } from "./tui.js";
 
-/** Build a nudge string with the exact percent interpolated. */
-export function buildNudge(percent: number): string {
-	const pct = Math.round(percent);
+export function buildNudge(state: Pick<AgenticodingState, "activeNotebookTopic" | "pendingTopicBoundaryHint">, percent: number | null): string {
+	const pct = percent === null ? null : Math.round(percent);
+	const topic = state.activeNotebookTopic;
+	const boundary = state.pendingTopicBoundaryHint;
 
-	if (pct >= 70) {
-		return `Context at ${pct}% — deep in the degraded zone. Compaction may trigger soon
-(emergency summarization at ~90%). Prefer a deliberate handoff now: save
-reusable state to the ledger, draft a clear next-task brief, and call handoff.`;
+	if (boundary) {
+		return `Notebook topic changed from ${boundary.from ?? "(unset)"} to ${boundary.to}.
+Treat this as a strong task-boundary signal. Prefer a deliberate handoff before
+continuing under the new topic: save durable findings to the notebook, draft a
+concise situational brief, and call handoff. Only continue inline if this was
+merely a rename rather than a real pivot.`;
 	}
 
-	if (pct >= 50) {
-		return `Context at ${pct}% — well past the primacy-zone heuristic. If the current job is
-done or the context is noisy, consider a handoff soon. Save reusable state to
-the ledger and draft a concise but sufficiently detailed brief for what comes
-next.`;
+	const contextLead = pct === null
+		? "Topic-aware context reminder."
+		: pct >= 70
+			? `Context at ${pct}% — topic discipline is urgent.`
+			: pct >= 50
+				? `Context at ${pct}% — topic discipline matters now.`
+				: `Context at ${pct}% — choose your next step by topic fit.`;
+
+	if (topic) {
+		const urgency = pct !== null && pct >= 70
+			? "If the work no longer fits this topic, prefer a deliberate handoff now. If it still fits and only a focused noisy branch is needed, spawn it instead of polluting the parent context."
+			: "If the current work still fits this topic, prefer spawn for isolated noisy subtasks. If it no longer fits, prefer handoff instead of dragging stale context forward.";
+		return `${contextLead}
+Active notebook topic: ${topic}.
+Use the topic as the current semantic frame. ${urgency}
+Save durable findings to the notebook before handoff.`;
 	}
 
-	// 30-50%
-	return `Context at ${pct}% — past the primacy-zone heuristic. One context, one job.
-If you're mid-job and still clear, continue. If the current phase is complete
-or the context is noisy, consider a handoff and draft a clear brief for what
-comes next.`;
+	const noTopicUrgency = pct !== null && pct >= 70
+		? "Assign a fresh topic in the next clean context after handoff."
+		: "Assign a short stable topic soon. If the work stays within that topic, prefer spawn for noisy subtasks. If the work shifts beyond it, prefer handoff.";
+	return `${contextLead}
+No active notebook topic is set. ${noTopicUrgency}`;
 }
 
 /**
