@@ -664,13 +664,41 @@ test("agenticoding settings TUI handles invalid JSON policies", async () => {
 	});
 });
 
+test("agenticoding settings write path refuses non-ENOENT read failures without clobbering global settings", async () => {
+	await withIsolatedSettings(async ({ home, cwd }) => {
+		const globalPath = join(home, ".pi", "agent", "settings.json");
+		const original = JSON.stringify({ packages: ["keep"], handoff: { other: true } });
+		await writeSettingsFile(globalPath, original);
+		await chmod(globalPath, 0o200);
+
+		const notifications: Array<{ message: string; level: string }> = [];
+		const ctx = {
+			cwd,
+			hasUI: true,
+			ui: { notify: (message: string, level: string) => notifications.push({ message, level }) },
+		} as any;
+
+		try {
+			assert.equal(await writeGlobalHandoffResumeBehavior("proceed", ctx), false);
+		} finally {
+			await chmod(globalPath, 0o600);
+		}
+
+		assert.equal(await readFile(globalPath, "utf8"), original);
+		assert.equal(notifications.length, 1);
+		assert.equal(notifications[0].level, "error");
+		assert.match(notifications[0].message, /Unable to read global settings JSON/);
+		assert.match(notifications[0].message, /not writing handoff\.resumeBehavior/);
+	});
+});
+
 test("agenticoding settings write path handles save failure with error notification", async () => {
 	await withIsolatedSettings(async ({ home }) => {
-		// Block the settings directory by creating a file where a directory is expected.
-		// writeGlobalHandoffResumeBehavior calls mkdir(dirname(path), { recursive: true }),
-		// so making .pi/agent a file (instead of a directory) will cause mkdir to throw ENOTDIR.
-		await mkdir(join(home, ".pi"), { recursive: true });
-		await writeFile(join(home, ".pi", "agent"), "block", "utf8");
+		// Keep the read path in the ENOENT/create-new-file branch, then make the
+		// existing settings directory non-writable so writeFile rejects.
+		const settingsDir = join(home, ".pi", "agent");
+		await mkdir(settingsDir, { recursive: true });
+		await chmod(settingsDir, 0o500);
 
 		const notifications: Array<{ message: string; level: string }> = [];
 		const ctx = {
@@ -679,10 +707,14 @@ test("agenticoding settings write path handles save failure with error notificat
 			ui: { notify: (message: string, level: string) => notifications.push({ message, level }) },
 		} as any;
 
-		await assert.rejects(
-			() => writeGlobalHandoffResumeBehavior("proceed", ctx),
-			/EEXIST|ENOTDIR|ENOSPC/,
-		);
+		try {
+			await assert.rejects(
+				() => writeGlobalHandoffResumeBehavior("proceed", ctx),
+				/EACCES|EPERM|ENOSPC/,
+			);
+		} finally {
+			await chmod(settingsDir, 0o700);
+		}
 	});
 
 	// The async IIFE in createAgenticodingSettingsComponent's callback wraps model.save

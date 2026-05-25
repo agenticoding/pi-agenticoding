@@ -200,8 +200,8 @@ export async function writeGlobalHandoffResumeBehavior(
 	} catch (error) {
 		const code = typeof error === "object" && error !== null && "code" in error ? (error as { code?: unknown }).code : undefined;
 		if (code !== "ENOENT") {
-			// Unreadable files are treated like missing by the resolver. Let the write
-			// path report any real filesystem failure from writeFile below.
+			notify(ctx, `Unable to read global settings JSON at ${path}; not writing handoff.resumeBehavior to avoid clobbering it.`, "error");
+			return false;
 		}
 	}
 
