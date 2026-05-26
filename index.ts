@@ -3,12 +3,12 @@
  *
  * Wires together the three primitives:
  *   spawn     — delegate isolated work to child contexts
- *   ledger    — sparse continuity cache
+ *   notebook   — durable cross-context grounding
  *   handoff   — deliberate task pivot via compaction
  *
  * Also registers:
  *   - watchdog (advisory primacy-zone reminder after each turn)
- *   - system prompt injection (CONTEXT_PRIMER, nudge, ledger listing)
+ *   - system prompt injection (CONTEXT_PRIMER, nudge, notebook listing)
  *   - state reset on /new
  */
 
@@ -23,8 +23,10 @@ import {
 import { createState, resetState, type AgenticodingState } from "./state.js";
 import { CONTEXT_PRIMER } from "./system-prompt.js";
 import { buildNudge, registerWatchdog } from "./watchdog.js";
-import { registerLedgerTools } from "./ledger/tools.js";
-import { registerLedgerRehydration } from "./ledger/rehydration.js";
+import { registerNotebookTools } from "./notebook/tools.js";
+import { registerNotebookRehydration } from "./notebook/rehydration.js";
+import { registerNotebookTopicTool } from "./notebook/topic-tool.js";
+import { setActiveNotebookTopic } from "./notebook/topic.js";
 import { registerHandoffTool } from "./handoff/tool.js";
 import { registerHandoffCommand } from "./handoff/command.js";
 import { registerHandoffCompaction } from "./handoff/compact.js";
@@ -32,32 +34,46 @@ import { registerAgenticodingSettingsCommand } from "./settings.js";
 import { registerSpawnTool } from "./spawn/index.js";
 import {
 	STATUS_KEY_HANDOFF,
+	STATUS_KEY_TOPIC,
 	WIDGET_KEY_WARNING,
 	updateIndicators,
 } from "./tui.js";
-import { formatEntryPreview } from "./ledger/store.js";
+import { formatPagePreview } from "./notebook/store.js";
 
 export default function (pi: ExtensionAPI): void {
 	const state: AgenticodingState = createState();
 
 	// ── Register all tools ──────────────────────────────────────────
-	registerLedgerTools(pi, state);
+	registerNotebookTools(pi, state);
+	registerNotebookTopicTool(pi, state);
 	registerHandoffTool(pi, state);
 	registerSpawnTool(pi, state);
 
 	// ── Register event handlers ─────────────────────────────────────
 	registerWatchdog(pi, state);
-	registerLedgerRehydration(pi, state);
+	registerNotebookRehydration(pi, state);
 	registerHandoffCompaction(pi, state);
 
 	// ── Register commands ───────────────────────────────────────────
 	registerHandoffCommand(pi, state);
 	registerAgenticodingSettingsCommand(pi);
 
-	// ── /ledger command — interactive entry selector ────────────────
-	pi.registerCommand("ledger", {
-		description: "Select a ledger entry to preview",
-		handler: async (_args, ctx) => {
+	// ── /notebook command — interactive page selector ────────────────
+	pi.registerCommand("notebook", {
+		description: "Select a notebook page to preview, or set the active notebook topic with /notebook <topic>",
+		handler: async (args, ctx) => {
+			const topicArg = args.trim();
+			if (topicArg) {
+				const result = setActiveNotebookTopic(state, topicArg, "human");
+				if (ctx.hasUI) {
+					const message = result.boundaryHint
+						? `Active notebook topic changed: ${result.boundaryHint.from} → ${result.boundaryHint.to}. This is a likely task boundary; handoff is recommended before continuing.`
+						: `Active notebook topic: ${result.current}`;
+					ctx.ui.notify(message, result.boundaryHint ? "warning" : "info");
+				}
+				updateIndicators(ctx, state);
+				return;
+			}
 			if (!ctx.hasUI) {
 				return;
 			}
@@ -69,22 +85,22 @@ export default function (pi: ExtensionAPI): void {
 					new DynamicBorder((s: string) => theme.fg("accent", s)),
 				);
 				container.addChild(
-					new Text(theme.fg("accent", theme.bold(` Ledger (${state.ledger.size} entries) `)), 1, 0),
+					new Text(theme.fg("accent", theme.bold(` Notebook (${state.notebookPages.size} pages) `)), 1, 0),
 				);
 
-				const entries = Array.from(state.ledger.entries()).sort(([a], [b]) => a.localeCompare(b));
+				const entries = Array.from(state.notebookPages.entries()).sort(([a], [b]) => a.localeCompare(b));
 				let selectList: SelectList | undefined;
 				let finished = false;
 
 				if (entries.length === 0) {
 					container.addChild(
-						new Text(theme.fg("dim", " (empty) — use ledger_add to create entries"), 1, 0),
+						new Text(theme.fg("dim", " (empty) — use notebook_write to create pages"), 1, 0),
 					);
 				} else {
 					const items: SelectItem[] = entries.map(([name, content]) => ({
 						value: name,
 						label: name,
-						description: formatEntryPreview(content),
+						description: formatPagePreview(content),
 					}));
 
 					selectList = new SelectList(items, Math.min(items.length, 10), {
@@ -97,7 +113,7 @@ export default function (pi: ExtensionAPI): void {
 					selectList.onSelect = ({ value }) => {
 						// Guard: selectList is set to undefined below, so this handler
 						// cannot fire twice — no re-entrancy guard needed here.
-						const body = state.ledger.get(value);
+						const body = state.notebookPages.get(value);
 						if (!body) { done(); return; }
 						// Switch to body view: show the selected entry body inline
 						container.clear();
@@ -144,7 +160,7 @@ export default function (pi: ExtensionAPI): void {
 		},
 	});
 
-	// ── before_agent_start: inject context primer + ledger ─────────
+	// ── before_agent_start: inject context primer + notebook ───────
 	pi.on("before_agent_start", async (event, ctx: ExtensionContext) => {
 		// Update TUI indicators before each user-prompt agent run
 		updateIndicators(ctx, state);
@@ -154,20 +170,33 @@ export default function (pi: ExtensionAPI): void {
 		// Inject context management primer at the end of the system prompt
 		parts.push("\n" + CONTEXT_PRIMER);
 
-		// Inject ledger listing so the LLM always knows what's available
-		const entryNames = Array.from(state.ledger.keys()).sort();
+		if (state.activeNotebookTopic) {
+			parts.push(
+				`\n## Active Notebook Topic\n` +
+				`Current topic: \`${state.activeNotebookTopic}\` (${state.activeNotebookTopicSource ?? "unknown"}-set).\n` +
+				`Treat this as the current semantic frame. If new work fits it, prefer spawn for isolated noisy subtasks. If it does not fit it, prefer handoff over dragging stale context forward.`,
+			);
+		} else {
+			parts.push(
+				`\n## Active Notebook Topic\n` +
+				`No active notebook topic is set. Early in the next substantive task, assign a short stable topic with \`notebook_topic_set\`. Human-set topics are authoritative.`,
+			);
+		}
+
+		// Inject notebook listing so the LLM always knows what's available
+		const entryNames = Array.from(state.notebookPages.keys()).sort();
 		if (entryNames.length > 0) {
 			const listing = entryNames
 				.map((name) => {
-					const content = state.ledger.get(name)!;
+					const content = state.notebookPages.get(name)!;
 					const firstLine = (content.split("\n")[0] ?? "").slice(0, 80);
 					return `  ${name}: ${firstLine}`;
 				})
 				.join("\n");
 			parts.push(
-				`\n## Active Ledger Entries\n` +
-					`The following entries are available via ledger_get by name:\n${listing}\n` +
-					`Reference entries by name — never paste bodies into prompts.`,
+				`\n## Active Notebook Pages\n` +
+					`The following pages are available via notebook_read by name:\n${listing}\n` +
+					`Reference pages by name — never paste bodies into prompts.`,
 			);
 		}
 
@@ -177,18 +206,23 @@ export default function (pi: ExtensionAPI): void {
 	// ── context: inject primacy-zone nudge before each LLM call ────
 	pi.on("context", async (event, ctx: ExtensionContext) => {
 		const usage = ctx.getContextUsage();
-		if (!usage || usage.percent === null || usage.percent < 30) {
+		const percent = usage?.percent ?? null;
+		if (usage && usage.percent !== null) {
+			state.lastContextPercent = usage.percent;
+		}
+		if (!state.pendingTopicBoundaryHint && (percent === null || percent < 30)) {
 			return;
 		}
 
-		state.lastContextPercent = usage.percent;
+		const nudge = buildNudge(state, percent);
+		state.pendingTopicBoundaryHint = null;
 		return {
 			messages: [
 				...event.messages,
 				{
 					role: "custom",
 					customType: "agenticoding-watchdog",
-					content: buildNudge(usage.percent),
+					content: nudge,
 					display: false,
 					timestamp: Date.now(),
 				},
@@ -203,6 +237,7 @@ export default function (pi: ExtensionAPI): void {
 			// Clear any stale TUI indicators from the previous session
 			if (ctx.hasUI) {
 				ctx.ui.setStatus(STATUS_KEY_HANDOFF, undefined);
+				ctx.ui.setStatus(STATUS_KEY_TOPIC, undefined);
 				ctx.ui.setWidget(WIDGET_KEY_WARNING, undefined);
 			}
 		}

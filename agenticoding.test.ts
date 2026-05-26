@@ -8,7 +8,7 @@ import { Text } from "@earendil-works/pi-tui";
 import { registerHandoffCommand } from "./handoff/command.js";
 import { registerHandoffTool } from "./handoff/tool.js";
 import { registerHandoffCompaction } from "./handoff/compact.js";
-import { registerWatchdog } from "./watchdog.js";
+import { buildNudge, registerWatchdog } from "./watchdog.js";
 import { createState, resetState } from "./state.js";
 import {
 	buildChildToolNames,
@@ -17,11 +17,12 @@ import {
 	registerSpawnTool,
 } from "./spawn/index.js";
 import { renderSpawnResult, flushSpawnFrameScheduler, resetSpawnFrameScheduler } from "./spawn/renderer.js";
-import { registerLedgerRehydration } from "./ledger/rehydration.js";
-import { saveLedgerEntry, resetLedgerWriteLock } from "./ledger/store.js";
-import { createLedgerToolDefinitions } from "./ledger/tools.js";
+import { registerNotebookRehydration } from "./notebook/rehydration.js";
+import { clearActiveNotebookTopic, setActiveNotebookTopic } from "./notebook/topic.js";
+import { registerNotebookTopicTool } from "./notebook/topic-tool.js";
+import { saveNotebookPage, resetNotebookWriteLock } from "./notebook/store.js";
+import { createNotebookToolDefinitions } from "./notebook/tools.js";
 import registerAgenticoding from "./index.js";
-import { STATUS_KEY_HANDOFF, WIDGET_KEY_WARNING, updateIndicators } from "./tui.js";
 import {
 	MANUAL_AGENTICODING_SETTINGS_INSTRUCTIONS,
 	buildAgenticodingSettingsModel,
@@ -31,11 +32,13 @@ import {
 	resolveHandoffResumeBehavior,
 	writeGlobalHandoffResumeBehavior,
 } from "./settings.js";
+import { CONTEXT_PRIMER } from "./system-prompt.js";
+import { STATUS_KEY_HANDOFF, STATUS_KEY_TOPIC, WIDGET_KEY_WARNING, updateIndicators } from "./tui.js";
 
 // Safety net: reset module-level mutable state after all tests.
 // Individual tests should also call reset*() at the start for explicit isolation.
 after(() => {
-	resetLedgerWriteLock();
+	resetNotebookWriteLock();
 	resetSpawnFrameScheduler();
 });
 
@@ -329,16 +332,26 @@ test("updateIndicators no-ops when ctx.hasUI is false", () => {
 	assert.equal(record.widgets.size, 0, "no-op should not call any setWidget");
 });
 
-test("updateIndicators shows ledger count in status", () => {
+test("updateIndicators shows notebook page count in status", () => {
 	const state = createState();
-	state.ledger.set("entry-1", "first entry");
-	state.ledger.set("entry-2", "second entry");
+	state.notebookPages.set("entry-1", "first entry");
+	state.notebookPages.set("entry-2", "second entry");
 	const record = { statuses: new Map<string, string | undefined>(), widgets: new Map<string, string[] | undefined>() };
 	const ctx = makeTUICtx({ percent: null, record });
 
 	updateIndicators(ctx, state);
-	const s = record.statuses.get("agenticoding-ledger");
-	assert.ok(s?.includes("2"), "ledger count should be 2");
+	const s = record.statuses.get("agenticoding-notebook");
+	assert.ok(s?.includes("2"), "notebook page count should be 2");
+});
+
+test("updateIndicators shows active notebook topic when set", () => {
+	const state = createState();
+	state.activeNotebookTopic = "oauth";
+	const record = { statuses: new Map<string, string | undefined>(), widgets: new Map<string, string[] | undefined>() };
+	const ctx = makeTUICtx({ percent: 30, record });
+
+	updateIndicators(ctx, state);
+	assert.equal(record.statuses.get(STATUS_KEY_TOPIC), "🧭 oauth");
 });
 
 test("updateIndicators hides widget below 70% context", () => {
@@ -373,7 +386,7 @@ test("/handoff sends the direction back through the LLM without opening the edit
 	assert.deepEqual(pi.sentUserMessages, [
 		{
 			content:
-				"Handoff direction: implement auth\n\nPrepare a real handoff in the current session and current context. Before calling the handoff tool, capture any reusable state in the ledger if needed. Then complete the picture in a concise but sufficiently detailed handoff brief and call the handoff tool in this turn. Preserve the important knowledge that is still only present in the current context so the next clean context can start well without re-deriving it. Use any structure that makes the next work unambiguous. Include findings, current state, unresolved questions, failed paths worth avoiding, next steps, refs, constraints, and spawn ideas when useful. Reference ledger entries by name when relevant.",
+				"Handoff direction: implement auth\n\nPrepare a handoff in the current session. First, save any durable reusable knowledge to the notebook: findings worth keeping, constraints discovered, decisions made, or other grounding future contexts will need. Then draft a concise but sufficiently detailed handoff brief capturing only the remaining situational context: current state, blockers, unresolved questions, failed paths worth avoiding, and next steps. The next context will read the notebook on demand, so do not duplicate notebook content in the brief. Use any structure that makes the next work unambiguous. Reference notebook pages by name when relevant.",
 			options: undefined,
 		},
 	]);
@@ -398,13 +411,14 @@ test("/handoff requires a direction", async () => {
 test("handoff resume setting defaults to wait when absent", async () => {
 	const pi = new MockPi();
 	const state = createState();
+	state.notebookPages.set("auth-refresh", "sensitive notebook body");
 	state.pendingRequestedHandoff = { direction: "implement auth", enforcementAttempts: 0, toolCalled: false };
 	registerHandoffTool(pi as any, state);
 
 	let compactOptions: any;
 	const result = await withIsolatedSettings(async ({ cwd }) => pi.tools.get("handoff").execute(
 		"1",
-		{ task: "Goal: continue" },
+		{ task: "Goal: continue auth-refresh" },
 		undefined,
 		undefined,
 		{
@@ -417,7 +431,10 @@ test("handoff resume setting defaults to wait when absent", async () => {
 
 	assert.equal(state.pendingHandoff?.source, "tool");
 	assert.match(state.pendingHandoff?.task ?? "", /## Handoff — Continue Previous Work/);
-	assert.match(state.pendingHandoff?.task ?? "", /Goal: continue/);
+	assert.match(state.pendingHandoff?.task ?? "", /Notebook pages hold durable grounding knowledge/);
+	assert.match(state.pendingHandoff?.task ?? "", /distilled next task and immediate situational context/);
+	assert.match(state.pendingHandoff?.task ?? "", /Goal: continue auth-refresh/);
+	assert.doesNotMatch(state.pendingHandoff?.task ?? "", /sensitive notebook body/);
 	assert.equal(state.pendingRequestedHandoff?.toolCalled, true);
 	assert.equal(typeof compactOptions?.onComplete, "function");
 	assert.equal(result.content[0].text, "Handoff started.");
@@ -825,6 +842,8 @@ test("handoff compaction replaces old context with the queued task", async () =>
 	const state = createState();
 	state.pendingHandoff = { task: "Goal: continue", source: "tool" };
 	state.pendingRequestedHandoff = { direction: "implement auth", enforcementAttempts: 1, toolCalled: true };
+	state.activeNotebookTopic = "oauth";
+	state.activeNotebookTopicSource = "human";
 	registerHandoffCompaction(pi as any, state);
 
 	const [handler] = pi.handlers.get("session_before_compact")!;
@@ -838,6 +857,8 @@ test("handoff compaction replaces old context with the queued task", async () =>
 
 	assert.equal(state.pendingHandoff, null);
 	assert.equal(state.pendingRequestedHandoff, null);
+	assert.equal(state.activeNotebookTopic, null);
+	assert.equal(state.activeNotebookTopicSource, null);
 	assert.equal(result.compaction.summary, "Goal: continue");
 	assert.equal(result.compaction.tokensBefore, 123);
 	assert.equal(result.compaction.firstKeptEntryId, "leaf-1-handoff-cut");
@@ -981,6 +1002,7 @@ test("context injects watchdog reminder before each LLM call", async () => {
 	const pi = new MockPi();
 	registerAgenticoding(pi as any);
 	const [handler] = pi.handlers.get("context")!;
+	await pi.commands.get("notebook")!.handler("oauth", { hasUI: false, getContextUsage: () => null });
 
 	const result = await handler(
 		{ messages: [{ role: "user", content: "hi", timestamp: 1 }] },
@@ -995,6 +1017,82 @@ test("context injects watchdog reminder before each LLM call", async () => {
 	assert.equal(result.messages[1].customType, "agenticoding-watchdog");
 	assert.equal(result.messages[1].display, false);
 	assert.match(result.messages[1].content, /Context at 70%/);
+	assert.match(result.messages[1].content, /Active notebook topic: oauth/);
+	assert.match(result.messages[1].content, /spawn it instead of polluting the parent context/i);
+	assert.doesNotMatch(result.messages[1].content, /If you're mid-job and still clear|consider a handoff and draft a clear brief for what comes next/i);
+});
+
+test("context injects a boundary nudge below 30% after an explicit topic change", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+	const [handler] = pi.handlers.get("context")!;
+	await pi.commands.get("notebook")!.handler("oauth", { hasUI: false, getContextUsage: () => null });
+	await pi.commands.get("notebook")!.handler("billing", { hasUI: false, getContextUsage: () => null });
+
+	const result = await handler(
+		{ messages: [{ role: "user", content: "hi", timestamp: 1 }] },
+		{ getContextUsage: () => ({ percent: 20 }) },
+	);
+
+	assert.equal(result.messages[1].display, false);
+	assert.match(result.messages[1].content, /Notebook topic changed from oauth to billing/);
+});
+
+
+test("context injects a no-topic nudge when context is high", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+	const [handler] = pi.handlers.get("context")!;
+
+	const result = await handler(
+		{ messages: [{ role: "user", content: "hi", timestamp: 1 }] },
+		{ getContextUsage: () => ({ percent: 70 }) },
+	);
+
+	assert.equal(result.messages.length, 2);
+	assert.equal(result.messages[1].role, "custom");
+	assert.equal(result.messages[1].customType, "agenticoding-watchdog");
+	assert.equal(result.messages[1].display, false);
+	assert.match(result.messages[1].content, /No active notebook topic is set/);
+	assert.match(result.messages[1].content, /Assign a fresh topic in the next clean context after handoff/i);
+});
+
+
+test("context consumes a boundary hint after the first injected nudge", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+	const [handler] = pi.handlers.get("context")!;
+	await pi.commands.get("notebook")!.handler("oauth", { hasUI: false, getContextUsage: () => null });
+	await pi.commands.get("notebook")!.handler("billing", { hasUI: false, getContextUsage: () => null });
+
+	const first = await handler(
+		{ messages: [{ role: "user", content: "hi", timestamp: 1 }] },
+		{ getContextUsage: () => ({ percent: 20 }) },
+	);
+	assert.match(first.messages[1].content, /Notebook topic changed from oauth to billing/);
+
+	const second = await handler(
+		{ messages: [{ role: "user", content: "hi", timestamp: 2 }] },
+		{ getContextUsage: () => ({ percent: 20 }) },
+	);
+	assert.equal(second, undefined);
+});
+
+
+test("buildNudge handles null percent and boundary hints before topic guidance", () => {
+	const boundary = buildNudge(
+		{
+			activeNotebookTopic: "oauth",
+			pendingTopicBoundaryHint: { from: "oauth", to: "billing", source: "human" },
+		},
+		null,
+	);
+	assert.match(boundary, /Notebook topic changed from oauth to billing/);
+	assert.doesNotMatch(boundary, /Active notebook topic: oauth/);
+
+	const noTopic = buildNudge({ activeNotebookTopic: null, pendingTopicBoundaryHint: null }, null);
+	assert.match(noTopic, /Topic-aware context reminder/);
+	assert.match(noTopic, /No active notebook topic is set/);
 });
 
 test("watchdog stays advisory when a requested handoff is not completed", async () => {
@@ -1299,11 +1397,11 @@ test("spawn execute propagates only executable parent tools to child session", a
 	assert.equal(seenConfig.tools.includes("spawn"), false);
 });
 
-test("spawn execute builds prompt with ledger and task", async () => {
+test("spawn execute builds prompt with notebook pages and task", async () => {
 	const pi = new MockPi();
 	pi.setActiveTools(["read", "bash", "spawn"]);
 	const state = createState();
-	state.ledger.set("entry-a", "preview line\nfull body");
+	state.notebookPages.set("entry-a", "preview line\nfull body");
 
 	let seenPrompt = "";
 	const mockFactory = async (config: any) => {
@@ -1329,7 +1427,7 @@ test("spawn execute builds prompt with ledger and task", async () => {
 		{ model: { id: "mock-model" }, cwd: "/tmp" },
 	);
 
-	// Verify user-facing invariants: task text is included, ledger entries are referenced
+	// Verify user-facing invariants: task text is included, notebook pages are referenced
 	assert.match(seenPrompt, /Do the task/);
 	assert.match(seenPrompt, /entry-a: preview line/);
 });
@@ -1753,9 +1851,9 @@ test("child tool names inherit builtin parent tools, exclude handoff and spawn",
 	assert.ok(toolNames.includes("read"));
 	assert.ok(toolNames.includes("bash"));
 	assert.equal(toolNames.includes("future_tool"), false);
-	assert.ok(toolNames.includes("ledger_add"));
-	assert.ok(toolNames.includes("ledger_get"));
-	assert.ok(toolNames.includes("ledger_list"));
+	assert.ok(toolNames.includes("notebook_write"));
+	assert.ok(toolNames.includes("notebook_read"));
+	assert.ok(toolNames.includes("notebook_index"));
 	assert.equal(toolNames.includes("handoff"), false);
 	assert.equal(toolNames.includes("spawn"), false);
 });
@@ -2041,7 +2139,7 @@ test("spawn execute truncates child output by byte limit", async () => {
 	assert.equal(result.content[0].text.includes("\n"), true);
 });
 
-test("spawn execute tells children when no ledger entries exist", async () => {
+test("spawn execute tells children when no notebook pages exist", async () => {
 	const pi = new MockPi();
 	pi.setActiveTools(["read", "bash", "spawn"]);
 	const state = createState();
@@ -2069,8 +2167,10 @@ test("spawn execute tells children when no ledger entries exist", async () => {
 		{ model: { id: "mock-model" }, cwd: "/tmp" },
 	);
 
-	assert.match(promptText, /No ledger entries\./);
-	assert.doesNotMatch(promptText, /Available ledger entries:/);
+	assert.match(promptText, /No notebook pages\./);
+	assert.doesNotMatch(promptText, /Available notebook pages:/);
+	assert.match(promptText, /store only durable grounding knowledge for future contexts/i);
+	assert.match(promptText, /Keep transient task state in your final reply to the parent\./);
 });
 
 test("executeSpawn → onUpdate → renderResult chains session ownership", async () => {
@@ -2238,10 +2338,10 @@ test("spawn renderCall shows prompt preview and thinking level", () => {
 
 
 
-test("ledger rehydration rebuilds the latest epoch and enables ledger tools", async () => {
+test("notebook rehydration rebuilds the latest epoch and enables notebook tools", async () => {
 	const pi = new MockPi();
 	const state = createState();
-	registerLedgerRehydration(pi as any, state);
+	registerNotebookRehydration(pi as any, state);
 	const [handler] = pi.handlers.get("session_start")!;
 
 	await handler(
@@ -2250,112 +2350,210 @@ test("ledger rehydration rebuilds the latest epoch and enables ledger tools", as
 			sessionManager: {
 				getBranch: () => [
 					{ type: "custom", customType: "ledger-entry", data: { epoch: 1, name: "old", content: "old" } },
-					{ type: "custom", customType: "ledger-entry", data: { epoch: 2, name: "keep", content: "new" } },
-					{ type: "custom", customType: "ledger-entry", data: { epoch: 2, name: "keep", content: "newer" } },
+					{ type: "custom", customType: "notebook-entry", data: { epoch: 2, name: "keep", content: "new" } },
+					{ type: "custom", customType: "notebook-entry", data: { epoch: 2, name: "keep", content: "newer" } },
 				],
 			},
 		},
 	);
 
 	assert.equal(state.epoch, 2);
-	assert.deepEqual(Array.from(state.ledger.entries()), [["keep", "newer"]]);
-	assert.deepEqual(pi.activeTools, ["ledger_get", "ledger_list"]);
+	assert.deepEqual(Array.from(state.notebookPages.entries()), [["keep", "newer"]]);
+	assert.deepEqual(pi.activeTools, ["notebook_read", "notebook_index"]);
 });
 
-test("ledger tools add/get/list return stable contract details", async () => {
+
+test("notebook rehydration rebuilds from the latest persisted epoch and avoids duplicate active tools", async () => {
+	const pi = new MockPi();
+	pi.activeTools = ["read", "notebook_read", "notebook_index"];
+	const state = createState();
+	state.epoch = 7;
+	registerNotebookRehydration(pi as any, state);
+	const [handler] = pi.handlers.get("session_start")!;
+
+	await handler(
+		{},
+		{
+			sessionManager: {
+				getBranch: () => [
+					{ type: "custom", customType: "notebook-entry", data: { epoch: 6, name: "stale", content: "old" } },
+					{ type: "custom", customType: "notebook-entry", data: { epoch: 7, name: "keep", content: "fresh" } },
+					{ type: "custom", customType: "notebook-entry", data: { epoch: 8, name: "future", content: "latest" } },
+				],
+			},
+		},
+	);
+
+	assert.equal(state.epoch, 8);
+	assert.deepEqual(Array.from(state.notebookPages.entries()), [["future", "latest"]]);
+	assert.deepEqual(pi.activeTools, ["read", "notebook_read", "notebook_index"]);
+});
+
+
+test("notebook rehydration clears stale in-memory notebook state when persisted history is empty", async () => {
 	const pi = new MockPi();
 	const state = createState();
-	const [ledgerAdd, ledgerGet, ledgerList] = createLedgerToolDefinitions(pi as any, state);
+	state.epoch = 7;
+	state.notebookPages.set("stale", "stale body");
+	registerNotebookRehydration(pi as any, state);
+	const [handler] = pi.handlers.get("session_start")!;
 
-	const addResult = await ledgerAdd.execute("1", { name: "entry-a", content: "first line\nsecond line" }, undefined, undefined, {} as any);
+	await handler(
+		{},
+		{
+			sessionManager: {
+				getBranch: () => [],
+			},
+		},
+	);
+
+	assert.equal(state.epoch, 0);
+	assert.deepEqual(Array.from(state.notebookPages.entries()), []);
+	assert.deepEqual(pi.activeTools, ["notebook_read", "notebook_index"]);
+});
+
+
+test("session_start rehydrates the latest persisted notebook state through the full hook chain", async () => {
+	resetNotebookWriteLock();
+	const pi = new MockPi();
+	pi.activeTools = ["read", "notebook_read"];
+	registerAgenticoding(pi as any);
+
+	try {
+		const notebookWrite = pi.tools.get("notebook_write");
+		await notebookWrite.execute(
+			"seed",
+			{ name: "stale-page", content: "stale body" },
+			undefined,
+			undefined,
+			makeTUICtx({ hasUI: false }),
+		);
+
+		const sessionStartHandlers = pi.handlers.get("session_start")!;
+		const ctx = {
+			hasUI: false,
+			getContextUsage: () => null,
+			sessionManager: {
+				getBranch: () => [
+					{ type: "custom", customType: "notebook-entry", data: { epoch: 6, name: "stale", content: "old" } },
+					{ type: "custom", customType: "notebook-entry", data: { epoch: 8, name: "keep", content: "fresh" } },
+					{ type: "custom", customType: "notebook-entry", data: { epoch: 8, name: "keep", content: "newer" } },
+				],
+			},
+		};
+		for (const sessionStart of sessionStartHandlers) {
+			await sessionStart({ reason: "resume" }, ctx as any);
+		}
+
+		const notebookIndex = pi.tools.get("notebook_index");
+		const notebookRead = pi.tools.get("notebook_read");
+		const indexResult = await notebookIndex.execute("1", {}, undefined, undefined, {} as any);
+		assert.deepEqual(indexResult.details.entries, ["keep"]);
+
+		const readResult = await notebookRead.execute("2", { name: "keep" }, undefined, undefined, {} as any);
+		assert.equal(readResult.details.found, true);
+		assert.equal(readResult.details.body, "newer");
+		assert.deepEqual(pi.activeTools, ["read", "notebook_read", "notebook_index"]);
+	} finally {
+		resetNotebookWriteLock();
+	}
+});
+
+test("notebook tools add/get/list return stable contract details", async () => {
+	const pi = new MockPi();
+	const state = createState();
+	const [notebookWrite, notebookRead, notebookIndex] = createNotebookToolDefinitions(pi as any, state);
+
+	const addResult = await notebookWrite.execute("1", { name: "entry-a", content: "first line\nsecond line" }, undefined, undefined, {} as any);
 	assert.deepEqual(addResult.details, { entries: ["entry-a"], preview: "first line" });
-	assert.equal(state.ledger.get("entry-a"), "first line\nsecond line");
+	assert.equal(state.notebookPages.get("entry-a"), "first line\nsecond line");
 	assert.equal(pi.appendedEntries.length, 1);
-	assert.equal(pi.appendedEntries[0].customType, "ledger-entry");
+	assert.equal(pi.appendedEntries[0].customType, "notebook-entry");
 	assert.equal(pi.appendedEntries[0].data.name, "entry-a");
 
-	const getResult = await ledgerGet.execute("2", { name: "entry-a" }, undefined, undefined, {} as any);
+	const getResult = await notebookRead.execute("2", { name: "entry-a" }, undefined, undefined, {} as any);
 	assert.equal(getResult.details.found, true);
 	assert.deepEqual(getResult.details.entries, ["entry-a"]);
 	assert.match(getResult.content[0].text, /--- entry-a ---/);
 	assert.match(getResult.content[0].text, /second line/);
 
-	const listResult = await ledgerList.execute("3", {}, undefined, undefined, {} as any);
+	const listResult = await notebookIndex.execute("3", {}, undefined, undefined, {} as any);
 	assert.deepEqual(listResult.details, { entries: ["entry-a"] });
 	assert.match(listResult.content[0].text, /entry-a: first line/);
 });
 
-test("child ledger tools reject stale access after reset", async () => {
+test("child notebook tools reject stale access after reset", async () => {
 	const pi = new MockPi();
 	const state = createState();
-	state.ledger.set("entry-a", "alpha");
+	state.notebookPages.set("entry-a", "alpha");
 	let stale = false;
-	const [ledgerAdd, ledgerGet, ledgerList] = createLedgerToolDefinitions(pi as any, state, { isStale: () => stale });
+	const [notebookWrite, notebookRead, notebookIndex] = createNotebookToolDefinitions(pi as any, state, { isStale: () => stale });
 
 	stale = true;
 	await assert.rejects(
-		() => ledgerAdd.execute("1", { name: "entry-a", content: "alpha" }, undefined, undefined, {} as any),
+		() => notebookWrite.execute("1", { name: "entry-a", content: "alpha" }, undefined, undefined, {} as any),
 		/invalidated by reset/i,
 	);
 	await assert.rejects(
-		() => ledgerGet.execute("2", { name: "entry-a" }, undefined, undefined, {} as any),
+		() => notebookRead.execute("2", { name: "entry-a" }, undefined, undefined, {} as any),
 		/invalidated by reset/i,
 	);
 	await assert.rejects(
-		() => ledgerList.execute("3", {}, undefined, undefined, {} as any),
+		() => notebookIndex.execute("3", {}, undefined, undefined, {} as any),
 		/invalidated by reset/i,
 	);
-	assert.equal(state.ledger.get("entry-a"), "alpha");
+	assert.equal(state.notebookPages.get("entry-a"), "alpha");
 	assert.equal(pi.appendedEntries.length, 0);
 });
 
-test("child ledger_add succeeds while child session is fresh", async () => {
+test("child notebook_write succeeds while child session is fresh", async () => {
 	const pi = new MockPi();
 	const state = createState();
-	const [ledgerAdd] = createLedgerToolDefinitions(pi as any, state, { isStale: () => false });
+	const [notebookWrite] = createNotebookToolDefinitions(pi as any, state, { isStale: () => false });
 
-	const result = await ledgerAdd.execute("1", { name: "entry-a", content: "alpha" }, undefined, undefined, {} as any);
+	const result = await notebookWrite.execute("1", { name: "entry-a", content: "alpha" }, undefined, undefined, {} as any);
 	assert.deepEqual(result.details, { entries: ["entry-a"], preview: "alpha" });
-	assert.equal(state.ledger.get("entry-a"), "alpha");
+	assert.equal(state.notebookPages.get("entry-a"), "alpha");
 	assert.equal(pi.appendedEntries.length, 1);
 });
 
-test("ledger_get reports not found with current entry names", async () => {
+test("notebook_read reports not found with current page names", async () => {
 	const pi = new MockPi();
 	const state = createState();
-	state.ledger.set("entry-a", "alpha");
-	state.ledger.set("entry-b", "beta");
-	const [, ledgerGet] = createLedgerToolDefinitions(pi as any, state);
+	state.notebookPages.set("entry-a", "alpha");
+	state.notebookPages.set("entry-b", "beta");
+	const [, notebookRead] = createNotebookToolDefinitions(pi as any, state);
 
-	const result = await ledgerGet.execute("1", { name: "missing" }, undefined, undefined, {} as any);
+	const result = await notebookRead.execute("1", { name: "missing" }, undefined, undefined, {} as any);
 	assert.deepEqual(result.details, { entries: ["entry-a", "entry-b"], found: false });
-	assert.match(result.content[0].text, /Entry "missing" not found\./);
+	assert.match(result.content[0].text, /Notebook page "missing" not found\./);
+	assert.match(result.content[0].text, /Notebook Pages:\n/);
 	assert.match(result.content[0].text, /entry-a: alpha/);
 	assert.match(result.content[0].text, /entry-b: beta/);
 });
 
-test("ledger tools show empty-state placeholders", async () => {
+test("notebook tools show empty-state placeholders", async () => {
 	const pi = new MockPi();
 	const state = createState();
-	const [, ledgerGet, ledgerList] = createLedgerToolDefinitions(pi as any, state);
+	const [, notebookRead, notebookIndex] = createNotebookToolDefinitions(pi as any, state);
 
-	const missing = await ledgerGet.execute("1", { name: "missing" }, undefined, undefined, {} as any);
+	const missing = await notebookRead.execute("1", { name: "missing" }, undefined, undefined, {} as any);
 	assert.deepEqual(missing.details, { entries: [], found: false });
-	assert.match(missing.content[0].text, /Entries:\n\(empty\)/);
+	assert.match(missing.content[0].text, /Notebook Pages:\n\(empty\)/);
 
-	const list = await ledgerList.execute("2", {}, undefined, undefined, {} as any);
+	const list = await notebookIndex.execute("2", {}, undefined, undefined, {} as any);
 	assert.deepEqual(list.details, { entries: [] });
-	assert.match(list.content[0].text, /Entries:\n\(empty\)/);
+	assert.match(list.content[0].text, /Notebook Pages:\n\(empty\)/);
 });
 
-test("ledger_add pushes onUpdate and refreshes UI indicators", async () => {
+test("notebook_write pushes onUpdate and refreshes UI indicators", async () => {
 	const pi = new MockPi();
 	const state = createState();
-	const [ledgerAdd] = createLedgerToolDefinitions(pi as any, state);
+	const [notebookWrite] = createNotebookToolDefinitions(pi as any, state);
 	const record = { statuses: new Map<string, string | undefined>(), widgets: new Map<string, string[] | undefined>() };
 	let update: any;
 
-	const result = await ledgerAdd.execute(
+	const result = await notebookWrite.execute(
 		"1",
 		{ name: "entry-a", content: "first line\nsecond line" },
 		undefined,
@@ -2365,19 +2563,19 @@ test("ledger_add pushes onUpdate and refreshes UI indicators", async () => {
 
 	assert.equal(update.content[0].text, 'Saved "entry-a": first line');
 	assert.deepEqual(update.details, { entries: ["entry-a"], preview: "first line" });
-	assert.equal(record.statuses.get("agenticoding-ledger"), "📒 1");
+	assert.equal(record.statuses.get("agenticoding-notebook"), "📒 1");
 	assert.deepEqual(result.details, { entries: ["entry-a"], preview: "first line" });
 });
 
-test("ledger tool renderers expose stable call/result summaries", async () => {
+test("notebook tool renderers expose stable call/result summaries", async () => {
 	const pi = new MockPi();
 	const state = createState();
-	const [ledgerAdd, ledgerGet, ledgerList] = createLedgerToolDefinitions(pi as any, state);
+	const [notebookWrite, notebookRead, notebookIndex] = createNotebookToolDefinitions(pi as any, state);
 
-	const addCall = ledgerAdd.renderCall!({ name: "entry-a", content: "first line\nsecond line" }, theme, {} as any) as Text;
-	assert.match(stripAnsi(addCall.render(120).join("\n")), /ledger_add "entry-a": first line/);
+	const addCall = notebookWrite.renderCall!({ name: "entry-a", content: "first line\nsecond line" }, theme, {} as any) as Text;
+	assert.match(stripAnsi(addCall.render(120).join("\n")), /notebook_write "entry-a": first line/);
 
-	const addResult = ledgerAdd.renderResult!(
+	const addResult = notebookWrite.renderResult!(
 		{ content: [{ type: "text", text: "" }], details: { entries: ["entry-a"], preview: "first line" } },
 		{ expanded: true },
 		theme,
@@ -2386,7 +2584,7 @@ test("ledger tool renderers expose stable call/result summaries", async () => {
 	assert.match(stripAnsi(addResult.render(120).join("\n")), /Saved "entry-a": first line/);
 	assert.match(stripAnsi(addResult.render(120).join("\n")), /entry-a/);
 
-	const getResult = ledgerGet.renderResult!(
+	const getResult = notebookRead.renderResult!(
 		{ content: [{ type: "text", text: "ignored" }], details: { entries: ["entry-a"], found: true, body: "body" } },
 		{ expanded: true },
 		theme,
@@ -2395,7 +2593,7 @@ test("ledger tool renderers expose stable call/result summaries", async () => {
 	assert.match(stripAnsi(getResult.render(120).join("\n")), /"entry-a"/);
 	assert.match(stripAnsi(getResult.render(120).join("\n")), /body/);
 
-	const getResultWithDelimiters = ledgerGet.renderResult!(
+	const getResultWithDelimiters = notebookRead.renderResult!(
 		{ content: [{ type: "text", text: "ignored" }], details: { entries: ["entry-a"], found: true, body: "line 1\n---\nline 2" } },
 		{ expanded: true },
 		theme,
@@ -2404,31 +2602,59 @@ test("ledger tool renderers expose stable call/result summaries", async () => {
 	assert.match(stripAnsi(getResultWithDelimiters.render(120).join("\n")), /line 1/);
 	assert.match(stripAnsi(getResultWithDelimiters.render(120).join("\n")), /line 2/);
 
-	const listResult = ledgerList.renderResult!(
+	const listResult = notebookIndex.renderResult!(
 		{ content: [{ type: "text", text: "" }], details: { entries: ["entry-a", "entry-b"] } },
 		{ expanded: true },
 		theme,
 		{} as any,
 	) as Text;
-	assert.match(stripAnsi(listResult.render(120).join("\n")), /2 entries/);
+	assert.match(stripAnsi(listResult.render(120).join("\n")), /2 pages/);
 	assert.match(stripAnsi(listResult.render(120).join("\n")), /entry-a/);
 	assert.match(stripAnsi(listResult.render(120).join("\n")), /entry-b/);
 });
 
-test("/ledger exits cleanly when headless", async () => {
+test("/notebook exits cleanly when headless", async () => {
 	const pi = new MockPi();
 	registerAgenticoding(pi as any);
 
-	await assert.doesNotReject(() => pi.commands.get("ledger")!.handler("", { hasUI: false }));
+	await assert.doesNotReject(() => pi.commands.get("notebook")!.handler("", { hasUI: false }));
 });
 
-test("/ledger empty overlay renders empty state and closes on input", async () => {
+
+test("/notebook <topic> notifies with info on first set and warning on boundary change", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+	const notifications: Array<{ message: string; level: string }> = [];
+	const statuses = new Map<string, string | undefined>();
+	const widgets = new Map<string, string[] | undefined>();
+	const ctx = {
+		hasUI: true,
+		getContextUsage: () => ({ percent: 20 }),
+		ui: {
+			theme: { fg: (_name: string, text: string) => text },
+			notify: (message: string, level: string) => { notifications.push({ message, level }); },
+			setStatus: (key: string, status: string | undefined) => { statuses.set(key, status); },
+			setWidget: (key: string, content: string[] | undefined) => { widgets.set(key, content); },
+		},
+	};
+
+	await pi.commands.get("notebook")!.handler("oauth", ctx as any);
+	await pi.commands.get("notebook")!.handler("billing", ctx as any);
+
+	assert.deepEqual(notifications[0], { message: "Active notebook topic: oauth", level: "info" });
+	assert.match(notifications[1].message, /Active notebook topic changed: oauth → billing/);
+	assert.equal(notifications[1].level, "warning");
+	assert.equal(statuses.get(STATUS_KEY_TOPIC), "🧭 billing");
+	assert.equal(widgets.get(WIDGET_KEY_WARNING), undefined);
+});
+
+test("/notebook empty overlay renders empty state and closes on input", async () => {
 	const pi = new MockPi();
 	registerAgenticoding(pi as any);
 	let overlay: any;
 	let doneCalls = 0;
 
-	await pi.commands.get("ledger")!.handler("", {
+	await pi.commands.get("notebook")!.handler("", {
 		hasUI: true,
 		ui: {
 			theme,
@@ -2439,22 +2665,22 @@ test("/ledger empty overlay renders empty state and closes on input", async () =
 	});
 
 	const lines = stripAnsi(overlay.render(120).join("\n"));
-	assert.match(lines, /Ledger \(0 entries\)/);
-	assert.match(lines, /\(empty\) — use ledger_add to create entries/);
+	assert.match(lines, /Notebook \(0 pages\)/);
+	assert.match(lines, /\(empty\) — use notebook_write to create pages/);
 	overlay.handleInput("x");
 	assert.equal(doneCalls, 1);
 });
 
-test("/ledger selection previews the chosen entry", async () => {
+test("/notebook selection previews the chosen entry", async () => {
 	const pi = new MockPi();
 	registerAgenticoding(pi as any);
 	const notifications: string[] = [];
-	const ledgerAdd = pi.tools.get("ledger_add");
-	await ledgerAdd.execute("1", { name: "alpha", content: "body line\nsecond line" }, undefined, undefined, makeTUICtx());
+	const notebookWrite = pi.tools.get("notebook_write");
+	await notebookWrite.execute("1", { name: "alpha", content: "body line\nsecond line" }, undefined, undefined, makeTUICtx());
 	let overlay: any;
 	let doneCalls = 0;
 
-	await pi.commands.get("ledger")!.handler("", {
+	await pi.commands.get("notebook")!.handler("", {
 		hasUI: true,
 		ui: {
 			theme,
@@ -2477,15 +2703,15 @@ test("/ledger selection previews the chosen entry", async () => {
 	assert.equal(doneCalls, 1);
 });
 
-test("/ledger overlay sorts entries consistently", async () => {
+test("/notebook overlay sorts entries consistently", async () => {
 	const pi = new MockPi();
 	registerAgenticoding(pi as any);
-	const ledgerAdd = pi.tools.get("ledger_add");
-	await ledgerAdd.execute("1", { name: "zeta", content: "last" }, undefined, undefined, makeTUICtx());
-	await ledgerAdd.execute("2", { name: "alpha", content: "first" }, undefined, undefined, makeTUICtx());
+	const notebookWrite = pi.tools.get("notebook_write");
+	await notebookWrite.execute("1", { name: "zeta", content: "last" }, undefined, undefined, makeTUICtx());
+	await notebookWrite.execute("2", { name: "alpha", content: "first" }, undefined, undefined, makeTUICtx());
 	let overlay: any;
 
-	await pi.commands.get("ledger")!.handler("", {
+	await pi.commands.get("notebook")!.handler("", {
 		hasUI: true,
 		ui: {
 			theme,
@@ -2500,19 +2726,19 @@ test("/ledger overlay sorts entries consistently", async () => {
 	assert.ok(lines.indexOf("alpha") < lines.indexOf("zeta"), lines);
 });
 
-test("saveLedgerEntry serializes concurrent writes and preserves completion order", async () => {
-	resetLedgerWriteLock();
+test("saveNotebookPage serializes concurrent writes and preserves completion order", async () => {
+	resetNotebookWriteLock();
 	const pi = new MockPi();
 	const state = createState();
 	const firstGate = createDeferred();
 	const order: string[] = [];
 
-	const first = saveLedgerEntry(pi as any, state, "entry-a", "first", async () => {
+	const first = saveNotebookPage(pi as any, state, "entry-a", "first", async () => {
 		order.push("first:start");
 		await firstGate.promise;
 		order.push("first:end");
 	});
-	const second = saveLedgerEntry(pi as any, state, "entry-a", "second", async () => {
+	const second = saveNotebookPage(pi as any, state, "entry-a", "second", async () => {
 		order.push("second:start");
 	});
 
@@ -2522,57 +2748,102 @@ test("saveLedgerEntry serializes concurrent writes and preserves completion orde
 	await Promise.all([first, second]);
 
 	assert.deepEqual(order, ["first:start", "first:end", "second:start"]);
-	assert.equal(state.ledger.get("entry-a"), "second");
+	assert.equal(state.notebookPages.get("entry-a"), "second");
 	assert.deepEqual(pi.appendedEntries.map((entry) => entry.data.content), ["first", "second"]);
-	resetLedgerWriteLock();
+	resetNotebookWriteLock();
 });
 
-test("saveLedgerEntry rejects true reentrancy explicitly", async () => {
-	resetLedgerWriteLock();
+test("saveNotebookPage rejects true reentrancy explicitly", async () => {
+	resetNotebookWriteLock();
 	const pi = new MockPi();
 	const state = createState();
 
 	await assert.rejects(
-		() => saveLedgerEntry(pi as any, state, "outer", "outer", async () => {
-			await saveLedgerEntry(pi as any, state, "inner", "inner");
+		() => saveNotebookPage(pi as any, state, "outer", "outer", async () => {
+			await saveNotebookPage(pi as any, state, "inner", "inner");
 		}),
 		/not reentrant/i,
 	);
-	assert.equal(state.ledger.size, 0);
-	resetLedgerWriteLock();
+	assert.equal(state.notebookPages.size, 0);
+	resetNotebookWriteLock();
 });
 
-test("saveLedgerEntry releases the lock when assertWritable throws", async () => {
-	resetLedgerWriteLock();
+test("saveNotebookPage releases the lock when assertWritable throws", async () => {
+	resetNotebookWriteLock();
 	const pi = new MockPi();
 	const state = createState();
 
 	await assert.rejects(
-		() => saveLedgerEntry(pi as any, state, "broken", "value", async () => {
+		() => saveNotebookPage(pi as any, state, "broken", "value", async () => {
 			throw new Error("blocked");
 		}),
 		/blocked/,
 	);
-	await assert.doesNotReject(() => saveLedgerEntry(pi as any, state, "fresh", "value"));
-	assert.equal(state.ledger.get("fresh"), "value");
-	resetLedgerWriteLock();
+	await assert.doesNotReject(() => saveNotebookPage(pi as any, state, "fresh", "value"));
+	assert.equal(state.notebookPages.get("fresh"), "value");
+	resetNotebookWriteLock();
 });
 
-test("resetLedgerWriteLock clears abandoned lock state for later writes", async () => {
-	resetLedgerWriteLock();
+test("resetNotebookWriteLock clears abandoned lock state for later writes", async () => {
+	resetNotebookWriteLock();
 	const pi = new MockPi();
 	const state = createState();
 	const gate = createDeferred();
-	void saveLedgerEntry(pi as any, state, "stuck", "value", async () => {
+	void saveNotebookPage(pi as any, state, "stuck", "value", async () => {
 		await gate.promise;
 	});
 	await Promise.resolve();
-	resetLedgerWriteLock();
+	resetNotebookWriteLock();
 
-	await assert.doesNotReject(() => saveLedgerEntry(pi as any, state, "fresh", "value"));
-	assert.equal(state.ledger.get("fresh"), "value");
+	await assert.doesNotReject(() => saveNotebookPage(pi as any, state, "fresh", "value"));
+	assert.equal(state.notebookPages.get("fresh"), "value");
 	gate.resolve();
-	resetLedgerWriteLock();
+	resetNotebookWriteLock();
+});
+
+
+test("saveNotebookPage truncates oversized content before persisting", async () => {
+	resetNotebookWriteLock();
+	const pi = new MockPi();
+	const state = createState();
+	const content = "first line\n" + "detail\n".repeat(3000);
+
+	const result = await saveNotebookPage(pi as any, state, "large-page", content);
+	const persisted = pi.appendedEntries[0].data.content;
+
+	assert.ok(persisted.length < content.length, "oversized notebook content should be truncated");
+	assert.equal(state.notebookPages.get("large-page"), persisted);
+	assert.equal(result.preview, "first line");
+	assert.match(persisted, /^first line/m);
+	resetNotebookWriteLock();
+});
+
+
+test("resetState clears epoch and the next notebook write starts a fresh generation", async () => {
+	resetNotebookWriteLock();
+	const pi = new MockPi();
+	const state = createState();
+	const originalNow = Date.now;
+
+	try {
+		Date.now = () => 1000;
+		await saveNotebookPage(pi as any, state, "entry-a", "first");
+		await saveNotebookPage(pi as any, state, "entry-b", "second");
+		assert.equal(state.epoch, 1000);
+		assert.equal(pi.appendedEntries[0].data.epoch, 1000);
+		assert.equal(pi.appendedEntries[1].data.epoch, 1000);
+
+		resetState(state);
+		assert.equal(state.epoch, 0);
+
+		Date.now = () => 2000;
+		await saveNotebookPage(pi as any, state, "entry-c", "third");
+		assert.equal(state.epoch, 2000);
+		assert.equal(pi.appendedEntries[2].data.epoch, 2000);
+	} finally {
+		Date.now = originalNow;
+		resetNotebookWriteLock();
+	}
 });
 
 test("nested spawn invalidate rebuilds from the attached session transcript", () => {
@@ -3385,29 +3656,195 @@ test("nested spawn render cache preserves stable output for identical params", (
 	assert.ok(wide.some((l: string) => l.includes("hello") || l.includes("m • low")));
 });
 
-test("ledger tool definitions include prompt hints when withPromptHints is true", () => {
+test("notebook tool definitions include prompt hints when withPromptHints is true", () => {
 	const pi = new MockPi();
 	const state = createState();
-	const tools = createLedgerToolDefinitions(pi as any, state, { withPromptHints: true });
+	const tools = createNotebookToolDefinitions(pi as any, state, { withPromptHints: true });
 
 	for (const tool of tools) {
 		assert.ok(typeof tool.promptSnippet === "string", `${tool.name} should have promptSnippet when withPromptHints=true`);
+		assert.ok(Array.isArray(tool.promptGuidelines), `${tool.name} should have promptGuidelines when withPromptHints=true`);
 	}
-	const ledgerAdd = tools.find(t => t.name === "ledger_add")!;
-	assert.ok(Array.isArray(ledgerAdd.promptGuidelines), "ledger_add should have promptGuidelines array");
-	assert.ok(ledgerAdd.promptGuidelines!.length > 0, "ledger_add promptGuidelines should not be empty");
+	const notebookWrite = tools.find(t => t.name === "notebook_write")!;
+	const notebookRead = tools.find(t => t.name === "notebook_read")!;
+	const notebookIndex = tools.find(t => t.name === "notebook_index")!;
+
+	// Structural invariants: all guidelines exist and are non-trivial
+	for (const tool of tools) {
+		assert.ok(tool.promptGuidelines!.length >= 2, `${tool.name} should have at least 2 promptGuidelines`);
+		assert.ok(tool.promptGuidelines!.every((g: string) => g.length > 10), `${tool.name} each guideline should be non-trivial`);
+	}
+
+	// Conceptual: notebook_write is future-context oriented
+	const writeGuidelines = notebookWrite.promptGuidelines!.join(" ");
+	assert.match(writeGuidelines, /subject-oriented pages/i);
+	assert.match(writeGuidelines, /fresh context/i);
+	assert.match(writeGuidelines, /belongs in handoff/i);
+
+	// Conceptual: descriptions mention the notebook-page metaphor
+	assert.match(notebookWrite.description, /page|future contexts/i);
+	assert.match(notebookRead.description, /notebook page|page/i);
+	assert.match(notebookIndex.description, /notebook index|index/i);
 });
 
-test("ledger tool definitions omit prompt hints by default", () => {
+test("topic helpers manage the active notebook topic lifecycle", () => {
+	const state = createState();
+	const first = setActiveNotebookTopic(state, "OAuth", "agent");
+	assert.deepEqual(first, {
+		changed: true,
+		previous: null,
+		current: "oauth",
+		boundaryHint: null,
+	});
+	const second = setActiveNotebookTopic(state, "Billing", "human");
+	assert.equal(second.boundaryHint?.from, "oauth");
+	assert.equal(second.boundaryHint?.to, "billing");
+	clearActiveNotebookTopic(state);
+	assert.equal(state.activeNotebookTopic, null);
+	assert.equal(state.activeNotebookTopicSource, null);
+	assert.equal(state.pendingTopicBoundaryHint, null);
+});
+
+test("notebook_topic_set establishes a fresh topic, is idempotent, and refuses overrides", async () => {
 	const pi = new MockPi();
 	const state = createState();
-	const tools = createLedgerToolDefinitions(pi as any, state);
+	registerNotebookTopicTool(pi as any, state);
+
+	const tool = pi.tools.get("notebook_topic_set");
+	const first = await tool.execute("1", { topic: "OAuth" });
+	assert.equal(first.details.topic, "oauth");
+	assert.equal(state.activeNotebookTopic, "oauth");
+	assert.equal(state.activeNotebookTopicSource, "agent");
+
+	const second = await tool.execute("2", { topic: "oauth" });
+	assert.equal(second.details.changed, false);
+	assert.equal(second.details.source, "agent");
+	assert.match(second.content[0].text, /already set to "oauth"/i);
+
+	await assert.rejects(() => tool.execute("3", { topic: "billing" }), /already exists/);
+});
+
+
+test("notebook_topic_set preserves human authority, stays idempotent for equal topics, and rejects empty normalized topics", async () => {
+	const pi = new MockPi();
+	const state = createState();
+	registerNotebookTopicTool(pi as any, state);
+	const tool = pi.tools.get("notebook_topic_set");
+
+	setActiveNotebookTopic(state, "oauth", "human");
+	const same = await tool.execute("1", { topic: "OAuth" });
+	assert.equal(same.details.changed, false);
+	assert.equal(same.details.source, "human");
+	assert.match(same.content[0].text, /already set to "oauth"/i);
+	await assert.rejects(
+		() => tool.execute("2", { topic: "billing" }),
+		/human-set notebook topic is authoritative/i,
+	);
+
+	const freshPi = new MockPi();
+	const freshState = createState();
+	registerNotebookTopicTool(freshPi as any, freshState);
+	const freshTool = freshPi.tools.get("notebook_topic_set");
+	await assert.rejects(
+		() => freshTool.execute("3", { topic: "@@@" }),
+		/notebook topic cannot be empty/i,
+	);
+});
+
+test("buildNudge no longer emits the old percent-only handoff text", () => {
+	const old = buildNudge({ activeNotebookTopic: "oauth", pendingTopicBoundaryHint: null }, 46);
+	assert.doesNotMatch(old, /One context, one job\.|If you're mid-job and still clear|consider a handoff and draft a clear brief/i);
+	assert.match(old, /Active notebook topic: oauth/);
+	assert.match(old, /prefer spawn/i);
+});
+
+
+test("CONTEXT_PRIMER states the notebook, topic, and handoff contracts", () => {
+	assert.doesNotMatch(CONTEXT_PRIMER, /ledger/i,
+		"CONTEXT_PRIMER should contain zero stale ledger references after the rename");
+
+	const notebookParts = CONTEXT_PRIMER.split("### Notebook");
+	const topicParts = CONTEXT_PRIMER.split("### Active notebook topic");
+	const handoffParts = CONTEXT_PRIMER.split("### Handoff");
+	const rulesParts = CONTEXT_PRIMER.split("### Rules");
+	assert.equal(notebookParts.length, 2);
+	assert.equal(topicParts.length, 2);
+	assert.equal(handoffParts.length, 2);
+	assert.equal(rulesParts.length, 2);
+
+	const notebookSection = notebookParts[1].split("### Active notebook topic")[0];
+	const topicSection = topicParts[1].split("### Handoff")[0];
+	const handoffSection = handoffParts[1].split("### Rules")[0];
+	const rulesSection = rulesParts[1];
+
+	assert.match(notebookSection, /notebook_index/);
+	assert.match(notebookSection, /notebook_read/);
+	assert.match(notebookSection, /future contexts/i);
+	assert.match(topicSection, /semantic frame/i);
+	assert.match(topicSection, /prefer spawn/i);
+	assert.match(topicSection, /prefer handoff/i);
+	assert.match(handoffSection, /handoff/i);
+	assert.match(handoffSection, /notebook/i);
+	assert.match(rulesSection, /one subject, thread, or subsystem/i);
+});
+
+
+test("before_agent_start injects notebook contracts plus live topic and page data", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+	await pi.commands.get("notebook")!.handler("oauth", { hasUI: false, getContextUsage: () => null });
+	const notebookWrite = pi.tools.get("notebook_write");
+	await notebookWrite.execute("1", { name: "alpha", content: "first line\nsecond line" }, undefined, undefined, makeTUICtx());
+
+	const [handler] = pi.handlers.get("before_agent_start")!;
+	const result = await handler({ systemPrompt: "Base system prompt." }, makeTUICtx({ hasUI: false }));
+
+	assert.match(result.systemPrompt, /Base system prompt\./);
+	assert.match(result.systemPrompt, /## Context management/);
+	assert.match(result.systemPrompt, /## Active Notebook Topic/);
+	assert.match(result.systemPrompt, /Current topic: `oauth`/);
+	assert.match(result.systemPrompt, /## Active Notebook Pages/);
+	assert.match(result.systemPrompt, /notebook_read/);
+	assert.match(result.systemPrompt, /Reference pages by name/i);
+	assert.match(result.systemPrompt, /alpha: first line/);
+});
+
+
+test("before_agent_start injects no-topic guidance when the topic is unset", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+	const [handler] = pi.handlers.get("before_agent_start")!;
+	const result = await handler({ systemPrompt: "Base system prompt." }, makeTUICtx({ hasUI: false }));
+
+	assert.match(result.systemPrompt, /## Active Notebook Topic/);
+	assert.match(result.systemPrompt, /No active notebook topic is set\./);
+	assert.match(result.systemPrompt, /notebook_topic_set/);
+});
+
+test("notebook tool definitions omit prompt hints by default", () => {
+	const pi = new MockPi();
+	const state = createState();
+	const tools = createNotebookToolDefinitions(pi as any, state);
 
 	for (const tool of tools) {
 		assert.equal(tool.promptSnippet, undefined, `${tool.name} should not have promptSnippet by default`);
+		assert.equal(tool.promptGuidelines, undefined, `${tool.name} should not have promptGuidelines by default`);
 	}
-	const ledgerAdd = tools.find(t => t.name === "ledger_add")!;
-	assert.equal(ledgerAdd.promptGuidelines, undefined, "ledger_add should not have promptGuidelines by default");
+});
+
+test("spawn tool definitions include prompt hints when registered", () => {
+	const pi = new MockPi();
+	const state = createState();
+	registerSpawnTool(pi as any, state);
+
+	const spawnTool = pi.tools.get("spawn")!;
+	assert.ok(typeof spawnTool.promptSnippet === "string", "spawn should have promptSnippet");
+	assert.ok(spawnTool.promptSnippet!.length > 10, "spawn promptSnippet should be non-trivial");
+	assert.ok(Array.isArray(spawnTool.promptGuidelines), "spawn should have promptGuidelines");
+	assert.ok(spawnTool.promptGuidelines!.length > 0, "spawn promptGuidelines should be non-empty");
+	for (const g of spawnTool.promptGuidelines!) {
+		assert.ok(g.length > 10, "each spawn guideline should be non-trivial");
+	}
 });
 
 test("executeSpawn detects stale session before session creation", async () => {

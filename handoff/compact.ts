@@ -7,6 +7,7 @@
 
 import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
 import type { AgenticodingState } from "../state.js";
+import { clearActiveNotebookTopic } from "../notebook/topic.js";
 import { STATUS_KEY_HANDOFF } from "../tui.js";
 
 function getImpossibleKeptId(branchEntries: SessionEntry[]): string {
@@ -23,6 +24,7 @@ export function registerHandoffCompaction(pi: ExtensionAPI, state: AgenticodingS
 
 		state.pendingHandoff = null;
 		state.pendingRequestedHandoff = null;
+		clearActiveNotebookTopic(state);
 
 		// Clear the handoff progress indicator now that compaction is consuming it
 		if (ctx.hasUI) {

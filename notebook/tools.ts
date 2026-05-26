@@ -1,9 +1,9 @@
 /**
- * Ledger tool definitions for the agenticoding extension.
+ * Notebook tool definitions for the agenticoding extension.
  *
- * Three tools: ledger_add (sequential, serialized write), ledger_get, ledger_list.
- * All read from the in-memory state.ledger Map and always return the current
- * list of entry names in both result text and details.
+ * Three tools: notebook_write (sequential, serialized write), notebook_read, notebook_index.
+ * All read from the in-memory state.notebookPages Map and always return the current
+ * list of page names in both result text and details.
  */
 
 import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
@@ -11,18 +11,18 @@ import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import type { AgenticodingState } from "../state.js";
 import { updateIndicators } from "../tui.js";
-import { formatEntryList, formatEntryPreview, getEntryNames, saveLedgerEntry } from "./store.js";
+import { formatPageList, formatPagePreview, getPageNames, saveNotebookPage } from "./store.js";
 
 // ── Factory ───────────────────────────────────────────────────────────
 
 /**
- * Creates ledger tool definitions (ledger_add, ledger_get, ledger_list).
+ * Creates notebook tool definitions (notebook_write, notebook_read, notebook_index).
  *
  * Shared by parent registration (withPromptHints=true) and child spawn
  * sessions (withPromptHints=false). The prompt hints (snippet, guidelines)
  * are only included for the parent — child agents don't need them.
  */
-export function createLedgerToolDefinitions(
+export function createNotebookToolDefinitions(
 	pi: ExtensionAPI,
 	state: AgenticodingState,
 	options?: { withPromptHints?: boolean; isStale?: () => boolean },
@@ -34,20 +34,23 @@ export function createLedgerToolDefinitions(
 		}
 	};
 
-	const ledgerAdd: ToolDefinition = {
-		name: "ledger_add",
-		label: "Ledger Add",
+	const notebookWrite: ToolDefinition = {
+		name: "notebook_write",
+		label: "Notebook Write",
 		description:
-			"Save or refine a compact continuity entry. " +
-			"Same name overwrites the previous entry (refinement). " +
+			"Write or refine a compact notebook page that grounds future contexts. " +
+			"One page covers one subject, thread, or subsystem. " +
+			"Same name overwrites the previous page (refinement). " +
 			"Writes are serialized via a process-local lock; same-name writes overwrite in completion order. " +
-			"Always returns the current list of up to date entries.",
+			"Always returns the current list of up to date pages.",
 		...(withHints
 			? {
-					promptSnippet: "Save or refine a compact continuity entry",
+					promptSnippet: "Write or refine a compact durable notebook page",
 					promptGuidelines: [
-						"Continuously maintain the ledger while you work. After meaningful reads, research, analysis, decisions, or milestones, either refine an existing entry, create a compact reusable entry, or consciously skip because nothing reusable was learned.",
-						"Prefer refining existing entries over creating many tiny ones. Do not try to make the ledger complete.",
+						"Reuse or refine an existing page when possible.",
+						"Prefer stable subject-oriented pages over workflow-phase pages.",
+						"Write for a fresh context: keep reusable facts, architecture, decisions, constraints, expensive discoveries, and durable open questions.",
+						"Avoid transient task state, scratch reasoning, transcripts, logs, or large tool output; the immediate next task belongs in handoff.",
 					],
 				}
 			: {}),
@@ -55,19 +58,19 @@ export function createLedgerToolDefinitions(
 		parameters: Type.Object({
 			name: Type.String({
 				description:
-					"Kebab-case entry identifier. Using an existing name overwrites that entry (refinement).",
+					"Kebab-case notebook page identifier. Prefer stable subject-oriented names; using an existing name overwrites that page (refinement).",
 			}),
 			content: Type.String({
 				description:
-					"Compact markdown. Capture only reusable facts, decisions, " +
-					"constraints, progress, and expensive discoveries. " +
-					"Truncated at 50KB / 2000 lines.",
+					"Compact markdown for one notebook page. Capture only durable, high-value " +
+					"grounding for one subject or thread, such as facts, architecture, decisions, constraints, " +
+					"open questions, or expensive discoveries. Compact sections like Facts / Architecture / Decisions / Constraints / Open questions work well. Truncated at 50KB / 2000 lines.",
 			}),
 		}),
 		renderCall(args, theme, _context) {
-			const preview = formatEntryPreview(args.content).trim();
+			const preview = formatPagePreview(args.content).trim();
 
-			let text = theme.fg("toolTitle", theme.bold("ledger_add ")) +
+			let text = theme.fg("toolTitle", theme.bold("notebook_write ")) +
 				theme.fg("accent", `"${args.name}"`);
 			if (preview) {
 				text += ": " + theme.fg("dim", preview);
@@ -90,7 +93,7 @@ export function createLedgerToolDefinitions(
 
 		async execute(_toolCallId, params, _signal, onUpdate, ctx) {
 			assertFresh();
-			const saved = await saveLedgerEntry(pi, state, params.name, params.content, assertFresh);
+			const saved = await saveNotebookPage(pi, state, params.name, params.content, assertFresh);
 			updateIndicators(ctx, state);
 
 			onUpdate?.({
@@ -104,9 +107,9 @@ export function createLedgerToolDefinitions(
 				content: [
 					{
 						type: "text",
-						text: `Saved ledger entry "${params.name}".` +
+						text: `Saved notebook page "${params.name}".` +
 							(saved.preview ? `\n${saved.preview}` : "") +
-							`\n\nEntries:\n${formatEntryList(state) || "(empty)"}`,
+							`\n\nNotebook Pages:\n${formatPageList(state) || "(empty)"}`,
 					},
 				],
 				details: { entries: saved.entries, preview: saved.preview },
@@ -114,18 +117,25 @@ export function createLedgerToolDefinitions(
 		},
 	};
 
-	const ledgerGet: ToolDefinition = {
-		name: "ledger_get",
-		label: "Ledger Get",
+	const notebookRead: ToolDefinition = {
+		name: "notebook_read",
+		label: "Notebook Read",
 		description:
-			"Retrieve a ledger entry's full body by name. " +
-			"Always returns the current list of entry names.",
+			"Read a notebook page's full body by name. " +
+			"Open one notebook page to recover state for that topic or thread. " +
+			"Always returns the current notebook page names.",
 		...(withHints
-			? { promptSnippet: "Fetch a ledger entry by name" }
+			? {
+					promptSnippet: "Read a notebook page by name",
+					promptGuidelines: [
+						"Use notebook_read to ground a fresh context, resume a subject, or check prior findings.",
+						"Open only relevant pages on demand; verify stale notes before relying on them.",
+					],
+				}
 			: {}),
 		parameters: Type.Object({
 			name: Type.String({
-				description: "Entry name to retrieve.",
+				description: "Notebook page name to retrieve.",
 			}),
 		}),
 		renderResult(result, { expanded }, theme, context) {
@@ -146,8 +156,8 @@ export function createLedgerToolDefinitions(
 
 		async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
 			assertFresh();
-			const content = state.ledger.get(params.name);
-			const names = getEntryNames(state);
+			const content = state.notebookPages.get(params.name);
+			const names = getPageNames(state);
 
 			if (content === undefined) {
 				return {
@@ -155,8 +165,8 @@ export function createLedgerToolDefinitions(
 						{
 							type: "text",
 							text:
-								`Entry "${params.name}" not found.` +
-								`\n\nEntries:\n${formatEntryList(state) || "(empty)"}`,
+								`Notebook page "${params.name}" not found.` +
+								`\n\nNotebook Pages:\n${formatPageList(state) || "(empty)"}`,
 						},
 					],
 					details: { entries: names, found: false },
@@ -169,7 +179,7 @@ export function createLedgerToolDefinitions(
 						type: "text",
 						text:
 							`--- ${params.name} ---\n${content}\n` +
-							`---\nEntries:\n${formatEntryList(state) || "(empty)"}`,
+							`---\nNotebook Pages:\n${formatPageList(state) || "(empty)"}`,
 					},
 				],
 				details: { entries: names, found: true, body: content },
@@ -177,14 +187,21 @@ export function createLedgerToolDefinitions(
 		},
 	};
 
-	const ledgerList: ToolDefinition = {
-		name: "ledger_list",
-		label: "Ledger List",
+	const notebookIndex: ToolDefinition = {
+		name: "notebook_index",
+		label: "Notebook Index",
 		description:
-			"List all ledger entries as name + first-line preview. " +
-			"Always returns the current list of entry names.",
+			"Scan the notebook index as name + first-line preview. " +
+			"Use this like a pocket notebook index. " +
+			"Always returns the current notebook page names.",
 		...(withHints
-			? { promptSnippet: "List all ledger entries" }
+			? {
+					promptSnippet: "List pages via notebook index",
+					promptGuidelines: [
+						"Scan the index before new work, after handoff, before replanning, or when stuck.",
+						"Use the index to find relevant grounding pages, then open only those pages with notebook_read.",
+					],
+				}
 			: {}),
 		parameters: Type.Object({}),
 		renderResult(result, { expanded }, theme, _context) {
@@ -192,7 +209,7 @@ export function createLedgerToolDefinitions(
 			if (entries.length === 0) {
 				return new Text(theme.fg("dim", "\u{1F4D2} (empty)"), 0, 0);
 			}
-			let text = theme.fg("muted", `\u{1F4D2} ${entries.length} entr${entries.length === 1 ? "y" : "ies"}`);
+			let text = theme.fg("muted", `\u{1F4D2} ${entries.length} page${entries.length === 1 ? "" : "s"}`);
 			if (expanded) {
 				text += "\n" + theme.fg("dim", entries.join("\n"));
 			}
@@ -201,12 +218,12 @@ export function createLedgerToolDefinitions(
 
 		async execute() {
 			assertFresh();
-			const names = getEntryNames(state);
+			const names = getPageNames(state);
 			return {
 				content: [
 					{
 						type: "text",
-						text: `Entries:\n${formatEntryList(state) || "(empty)"}`,
+						text: `Notebook Pages:\n${formatPageList(state) || "(empty)"}`,
 					},
 				],
 				details: { entries: names },
@@ -214,16 +231,16 @@ export function createLedgerToolDefinitions(
 		},
 	};
 
-	return [ledgerAdd, ledgerGet, ledgerList];
+	return [notebookWrite, notebookRead, notebookIndex];
 }
 
 // ── Registration ──────────────────────────────────────────────────────
 
-export function registerLedgerTools(
+export function registerNotebookTools(
 	pi: ExtensionAPI,
 	state: AgenticodingState,
 ): void {
-	const tools = createLedgerToolDefinitions(pi, state, { withPromptHints: true });
+	const tools = createNotebookToolDefinitions(pi, state, { withPromptHints: true });
 	for (const tool of tools) {
 		pi.registerTool(tool);
 	}

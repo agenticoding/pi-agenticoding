@@ -8,11 +8,24 @@
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
 
 export interface AgenticodingState {
-	/** Compact ledger entries keyed by kebab-case name */
-	ledger: Map<string, string>;
+	/** Compact notebook pages keyed by kebab-case name */
+	notebookPages: Map<string, string>;
 
-	/** Monotonically increasing epoch, set on first ledger_add */
+	/** Monotonically increasing epoch, set on first notebook_write */
 	epoch: number;
+
+	/** Current semantic frame for topic-aware spawn vs handoff decisions. */
+	activeNotebookTopic: string | null;
+
+	/** Whether the current topic came from the human or the agent. */
+	activeNotebookTopicSource: "human" | "agent" | null;
+
+	/** One-shot boundary cue consumed by the next LLM call after a topic change. */
+	pendingTopicBoundaryHint: {
+		from: string | null;
+		to: string;
+		source: "human" | "agent";
+	} | null;
 
 	/** Last context usage percent from getContextUsage() */
 	lastContextPercent: number | null;
@@ -57,8 +70,11 @@ export function createState(): AgenticodingState {
 	const childSessions = new Map<string, AgentSession>();
 	const liveChildSessions = new Map<string, AgentSession>();
 	const state: AgenticodingState = {
-		ledger: new Map(),
+		notebookPages: new Map(),
 		epoch: 0,
+		activeNotebookTopic: null,
+		activeNotebookTopicSource: null,
+		pendingTopicBoundaryHint: null,
 		lastContextPercent: null,
 		pendingHandoff: null,
 		pendingRequestedHandoff: null,
@@ -87,8 +103,11 @@ export function createState(): AgenticodingState {
 /** Reset all state. Used on /new or session reset. */
 export function resetState(state: AgenticodingState): void {
 	state.childSessionEpoch++;
-	state.ledger.clear();
-	state.epoch = 0;
+	state.notebookPages.clear();
+	state.epoch = 0; // sentinel: 0 = not yet initialized; set to Date.now() on first write
+	state.activeNotebookTopic = null;
+	state.activeNotebookTopicSource = null;
+	state.pendingTopicBoundaryHint = null;
 	state.lastContextPercent = null;
 	state.pendingHandoff = null;
 	state.pendingRequestedHandoff = null;
@@ -104,6 +123,6 @@ export function abortAndClearChildSessions(state: AgenticodingState): void {
 	state.childSessions.clear();
 	state.liveChildSessions.clear();
 	for (const [session, id] of seen) {
-		session.abort().catch(e => console.warn("[spawn] abort failed:", id, e));
+		session.abort().catch((e: unknown) => console.warn("[spawn] abort failed:", id, e));
 	}
 }

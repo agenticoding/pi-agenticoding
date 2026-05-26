@@ -5,7 +5,7 @@
 [![MIT License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 ![Status](https://img.shields.io/badge/status-active-brightgreen)
 
-**A Pi extension that gives the LLM tools to manage its own context.** `spawn`, `ledger`, and `handoff` let the agent actively isolate work, persist reusable knowledge, and restart clean — without platform compaction or manual copy-paste.
+**A Pi extension that gives the LLM tools to manage its own context.** `spawn`, `notebook`, and `handoff` let the agent actively isolate work, persist reusable knowledge, and restart clean — without platform compaction or manual copy-paste.
 
 ---
 
@@ -42,7 +42,7 @@ Then disable pi's built-in compaction so handoff stays in control:
 
 Optional handoff resume preferences can be changed later with `/agenticoding-settings`.
 
-That's it. Your agent now has `spawn`, `ledger_add`, `ledger_get`, `ledger_list`, `handoff`, and `/agenticoding-settings`. The status bar shows context usage and ledger count.
+That's it. Your agent now has `spawn`, `notebook_write`, `notebook_read`, `notebook_index`, `handoff`, and `/agenticoding-settings`. The status bar shows context usage and notebook count.
 
 ---
 
@@ -51,11 +51,11 @@ That's it. Your agent now has `spawn`, `ledger_add`, `ledger_get`, `ledger_list`
 | Feature | What it looks like |
 |---------|-------------------|
 | **Context usage %** | `ctx 65%` in status bar — green < 30%, yellow < 50%, orange < 70%, red ≥ 70% |
-| **Ledger count** | 📒 `3` when entries exist, hidden when empty |
+| **Notebook count** | 📒 `3` when pages exist, dim `📒 0` when empty |
 | **`/handoff` command** | Instant pivot — agent drafts brief, compacts context, waits for next input (configurable auto-resume) |
 | **`/agenticoding-settings` command** | TUI panel for global handoff resume behavior, with project override warnings |
-| **`/ledger` command** | Overlay showing all entries with previews |
-| **Auto-rehydration** | Ledger entries survive session restarts |
+| **`/notebook` command** | Overlay showing all notebook pages with previews |
+| **Auto-rehydration** | Notebook pages survive session restarts |
 | **Spawn transparency** | Watch child agents work in real time in the TUI |
 | **Token cost visibility** | Each spawn reports input/output tokens, cache hits, and cost |
 | **No polling** | Writes serialized via a process-local lock — no race conditions |
@@ -89,17 +89,17 @@ You: "Add OAuth to the backend"
   spawn("audit current auth code")
          │
          ▼
-  ledger_add("oauth-decisions", "Flow: PKCE. Scope: read+write.")
+  notebook_write("oauth-decisions", "Flow: PKCE. Scope: read+write.")
          │
          ├── spawn("implement token endpoint")
          └── spawn("write tests")
          │
          ▼
   handoff("Wire OAuth routes into the middleware stack.
-           Ledger 'oauth-decisions' holds the constraints.")
+           Notebook page 'oauth-decisions' holds the constraints.")
 ```
 
-The agent decided to spawn research children, save reusable findings to the ledger, delegate implementation subtasks, and handoff when context got noisy. **You said one sentence.**
+The agent decided to spawn research children, save reusable findings to the notebook, delegate implementation subtasks, and handoff when context got noisy. **You said one sentence.**
 
 ---
 
@@ -109,13 +109,13 @@ The agent decided to spawn research children, save reusable findings to the ledg
 
 Delegate messy work to an isolated child agent with clean context. The child inherits the parent's model and tools, works independently, and returns only the condensed result. Siblings run in parallel; the parent stays focused on orchestration. Children cannot spawn grandchildren (explosive branch prevention).
 
-### Ledger — Continuity Across Cuts
+### Notebook — Continuity Across Cuts
 
-A sparse continuity cache the agent curates while working. After discovering something reusable — a fact, constraint, decision, or expensive finding — it saves a named entry. Later contexts fetch entries on demand instead of re-deriving the work. **The ledger persists across handoffs and existing-session restarts; starting a new session with `/new` resets it.**
+A sparse pocket notebook the agent curates while working. After discovering something reusable — a fact, constraint, decision, or expensive finding — it writes a named page. Later contexts read pages on demand instead of re-deriving the work. The notebook persists across handoffs, context resets, and session restarts. Starting a new session with `/new` resets all notebook pages.
 
 ### Handoff — Deliberate Compaction
 
-When context degrades or the job changes, the agent saves reusable state to the ledger, writes a focused brief preserving what's still missing, and restarts clean. The new context starts with the brief front-and-center, all ledger entries accessible, and zero noise.
+When context degrades or the job changes, the agent saves reusable state to the notebook, writes a focused brief preserving what's still missing, and restarts clean. The new context starts with the brief front-and-center, all notebook pages accessible, and zero noise.
 
 By default, handoff waits after compaction for your next input. To auto-resume, set `handoff.resumeBehavior` to `"proceed"`; valid values are `"wait"` and `"proceed"`.
 
@@ -127,7 +127,7 @@ By default, handoff waits after compaction for your next input. To auto-resume, 
 
 Run `/agenticoding-settings` to change this from the TUI. It saves global-only to `~/.pi/agent/settings.json`; project `.pi/settings.json` values still override global settings, and the panel warns when an override is active.
 
-**Rule of thumb:** The ledger holds reusable learned knowledge. Handoff carries the remaining situational context.
+**Rule of thumb:** The notebook holds reusable learned knowledge. Handoff carries the remaining situational context.
 
 ---
 
@@ -152,7 +152,7 @@ A single summary blob mixes durable knowledge with transient situational context
 | Operation | Primitive | What It Prevents |
 |-----------|-----------|-----------------|
 | **Isolate** | Spawn | Context pollution from noisy subtasks |
-| **Persist** | Ledger | Knowledge loss across resets and pivots |
+| **Persist** | Notebook | Knowledge loss across resets and pivots |
 | **Compact** | Handoff | Degradation from overstuffed context |
 
 ---
@@ -163,10 +163,10 @@ A single summary blob mixes durable knowledge with transient situational context
 |---|---|---|---|---|
 | **Compaction** | Runtime decides | User decides | Manual wipe + copy-paste | **Agent decides** |
 | **Subagents** | Pre-defined or manual trigger | None | None | **Agent spawns dynamically** |
-| **Persistent memory** | Background-generated (if at all) | None | None — gone on reset | **Ledger — agent-curated reusable continuity** |
+| **Persistent memory** | Background-generated (if at all) | None | None — gone on reset | **Notebook — agent-curated reusable continuity** |
 | **Context awareness** | Token count only | Token count only | None | **Primacy-zone heuristic (~30%)** |
-| **Cross-session continuity** | Rare (opt-in, background) | Manual copy-paste | Manual copy-paste | **Ledger persists across restarts** |
-| **Structured handoff** | No | No | No | **Yes — resets context while carrying forward non-ledger state explicitly** |
+| **Cross-session continuity** | Rare (opt-in, background) | Manual copy-paste | Manual copy-paste | **Notebook persists across restarts** |
+| **Structured handoff** | No | No | No | **Yes — resets context while carrying forward non-notebook state explicitly** |
 
 ---
 
@@ -179,10 +179,10 @@ The extension hooks into pi's lifecycle:
 
 | Hook | What it does |
 |------|-------------|
-| `before_agent_start` | Injects context management primer + live ledger listing into system prompt |
+| `before_agent_start` | Injects context management primer + live notebook index into system prompt |
 | `context` | Injects advisory watchdog reminders when context > 30% |
-| `session_start` | Rehydrates ledger from persisted entries; resets on `/new` |
-| `turn_end` | Updates TUI indicators (context %, ledger count) |
+| `session_start` | Rehydrates notebook pages from persisted entries; resets on `/new` |
+| `turn_end` | Updates TUI indicators (context %, notebook count) |
 | `agent_end` | Records last context usage percent |
 | `session_before_compact` | Consumes pending handoff task and sets it as compaction summary |
 
@@ -190,7 +190,7 @@ All state lives in a single `AgenticodingState` instance:
 
 ```typescript
 interface AgenticodingState {
-  ledger: Map<string, string>
+  notebookPages: Map<string, string>
   epoch: number
   lastContextPercent: number | null
   pendingHandoff: { task, source } | null
@@ -203,6 +203,12 @@ interface AgenticodingState {
 
 </details>
 
+<details>
+<summary><strong>Deep dive → ARCHITECTURE.md</strong></summary>
+
+See [ARCHITECTURE.md](ARCHITECTURE.md) for full module breakdown, tool schemas, lifecycle wiring, spawn child-session lifecycle, and notebook rehydration algorithm.
+
+</details>
 ---
 
 ## Contributing

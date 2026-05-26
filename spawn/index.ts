@@ -2,7 +2,7 @@
  * Spawn tool for the agenticoding extension.
  *
  * Creates an isolated in-memory child AgentSession for focused subtask execution.
- * Children inherit the parent's model, thinking level, cwd, and ledger access.
+ * Children inherit the parent's model, thinking level, cwd, and notebook access.
  * Children do not inherit the spawn tool (recursion prevention).
  *
  * Spawn is context isolation, not a security boundary. Child agents are trusted
@@ -24,8 +24,8 @@ import {
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import type { AgenticodingState } from "../state.js";
-import { formatEntryList } from "../ledger/store.js";
-import { createLedgerToolDefinitions } from "../ledger/tools.js";
+import { formatPageList } from "../notebook/store.js";
+import { createNotebookToolDefinitions } from "../notebook/tools.js";
 import {
 	renderSpawnCall,
 	renderSpawnResult,
@@ -137,8 +137,8 @@ export function buildChildToolNames(
 
 const SPAWN_DESCRIPTION =
 	"Spawn an isolated child agent for a focused subtask. " +
-	"Child inherits parent model, thinking level, cwd, supported built-in tools, and shared ledger tools; children cannot spawn further children. " +
-	"Reference ledger entries by name — child will ledger_get them on demand.";
+	"Child inherits parent model, thinking level, cwd, supported built-in tools, and shared notebook tools; children cannot spawn further children. " +
+	"Reference notebook pages by name — child will notebook_read them on demand.";
 
 const SPAWN_PROMPT_SNIPPET = "Spawn a focused subtask agent";
 
@@ -149,8 +149,8 @@ const SPAWN_PROMPT_GUIDELINES = [
 const SPAWN_PARAMETERS = Type.Object({
 	prompt: Type.String({
 		description:
-			"Self-contained task description. Reference ledger entries by name — " +
-			"child will ledger_get them on demand.",
+			"Self-contained task description. Reference notebook pages by name — " +
+			"child will notebook_read them on demand.",
 	}),
 	thinking: StringEnum(
 		["off", "minimal", "low", "medium", "high", "xhigh"] as const,
@@ -166,10 +166,10 @@ const SPAWN_PARAMETERS = Type.Object({
 /**
  * Build the custom tool set for child agent sessions.
  *
- * Produces ledger tools (add/get/list). Children do not receive the spawn
+ * Produces notebook tools (write/read/index). Children do not receive the spawn
  * tool to prevent the LLM from attempting recursion.
  *
- * All tools read/write the shared parent state so ledger entries are visible
+ * All tools read/write the shared parent state so notebook pages are visible
  * across parent and child contexts.
  */
 export function createChildTools(
@@ -177,7 +177,7 @@ export function createChildTools(
 	state: AgenticodingState,
 	options?: { isStale?: () => boolean },
 ): ToolDefinition[] {
-	return createLedgerToolDefinitions(pi, state, { isStale: options?.isStale });
+	return createNotebookToolDefinitions(pi, state, { isStale: options?.isStale });
 }
 
 
@@ -221,16 +221,18 @@ export async function executeSpawn(
 
 	const childThinking: ThinkingValue = params.thinking ?? defaultThinking;
 
-	const listing = formatEntryList(state);
-	const ledgerListing = listing
-		? "Available ledger entries:\n" + listing
-		: "No ledger entries.";
+	const listing = formatPageList(state);
+	const notebookListing = listing
+		? "Available notebook pages:\n" + listing
+		: "No notebook pages.";
 	const fullPrompt =
 		`You are a focused child agent spawned by a parent agent. ` +
 		`You have the same authority as the parent. ` +
 		`Children cannot spawn further children. ` +
 		`Your result will be read by the parent, so be concise and complete.\n\n` +
-		`${ledgerListing}\n\n` +
+		`${notebookListing}\n\n` +
+		`If you write notebook pages, store only durable grounding knowledge for future contexts. ` +
+		`Keep transient task state in your final reply to the parent.\n\n` +
 		`## Task\n\n${params.prompt}\n\n` +
 		`When complete, provide a concise summary of findings. ` +
 		`Keep the result under ${CHILD_MAX_LINES} lines / ${(CHILD_MAX_BYTES / 1024).toFixed(0)}KB.`;
@@ -384,10 +386,10 @@ export async function executeSpawn(
  *
  * Creates a ToolDefinition that spawns an isolated child AgentSession
  * for focused subtasks. Children inherit the parent model, thinking
- * level, cwd, and ledger access.
+ * level, cwd, and notebook access.
  *
  * @param pi - Extension API instance for tool registration
- * @param state - Shared session state (child sessions, epoch, ledger)
+ * @param state - Shared session state (child sessions, epoch, notebook)
  * @param sessionFactory - Optional test seam for mocking createAgentSession
  */
 export function registerSpawnTool(
