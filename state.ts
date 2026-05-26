@@ -104,7 +104,7 @@ export function createState(): AgenticodingState {
 export function resetState(state: AgenticodingState): void {
 	state.childSessionEpoch++;
 	state.notebookPages.clear();
-	state.epoch = 0;
+	state.epoch = 0; // sentinel: 0 = not yet initialized; set to Date.now() on first write
 	state.activeNotebookTopic = null;
 	state.activeNotebookTopicSource = null;
 	state.pendingTopicBoundaryHint = null;

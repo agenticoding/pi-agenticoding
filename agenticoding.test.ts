@@ -1832,7 +1832,7 @@ test("notebook rehydration rebuilds the latest epoch and enables notebook tools"
 });
 
 
-test("notebook rehydration respects a preset epoch and avoids duplicate active tools", async () => {
+test("notebook rehydration rebuilds from the latest persisted epoch and avoids duplicate active tools", async () => {
 	const pi = new MockPi();
 	pi.activeTools = ["read", "notebook_read", "notebook_index"];
 	const state = createState();
@@ -1847,15 +1847,85 @@ test("notebook rehydration respects a preset epoch and avoids duplicate active t
 				getBranch: () => [
 					{ type: "custom", customType: "notebook-entry", data: { epoch: 6, name: "stale", content: "old" } },
 					{ type: "custom", customType: "notebook-entry", data: { epoch: 7, name: "keep", content: "fresh" } },
-					{ type: "custom", customType: "notebook-entry", data: { epoch: 8, name: "future", content: "skip" } },
+					{ type: "custom", customType: "notebook-entry", data: { epoch: 8, name: "future", content: "latest" } },
 				],
 			},
 		},
 	);
 
-	assert.equal(state.epoch, 7);
-	assert.deepEqual(Array.from(state.notebookPages.entries()), [["keep", "fresh"]]);
+	assert.equal(state.epoch, 8);
+	assert.deepEqual(Array.from(state.notebookPages.entries()), [["future", "latest"]]);
 	assert.deepEqual(pi.activeTools, ["read", "notebook_read", "notebook_index"]);
+});
+
+
+test("notebook rehydration clears stale in-memory notebook state when persisted history is empty", async () => {
+	const pi = new MockPi();
+	const state = createState();
+	state.epoch = 7;
+	state.notebookPages.set("stale", "stale body");
+	registerNotebookRehydration(pi as any, state);
+	const [handler] = pi.handlers.get("session_start")!;
+
+	await handler(
+		{},
+		{
+			sessionManager: {
+				getBranch: () => [],
+			},
+		},
+	);
+
+	assert.equal(state.epoch, 0);
+	assert.deepEqual(Array.from(state.notebookPages.entries()), []);
+	assert.deepEqual(pi.activeTools, ["notebook_read", "notebook_index"]);
+});
+
+
+test("session_start rehydrates the latest persisted notebook state through the full hook chain", async () => {
+	resetNotebookWriteLock();
+	const pi = new MockPi();
+	pi.activeTools = ["read", "notebook_read"];
+	registerAgenticoding(pi as any);
+
+	try {
+		const notebookWrite = pi.tools.get("notebook_write");
+		await notebookWrite.execute(
+			"seed",
+			{ name: "stale-page", content: "stale body" },
+			undefined,
+			undefined,
+			makeTUICtx({ hasUI: false }),
+		);
+
+		const sessionStartHandlers = pi.handlers.get("session_start")!;
+		const ctx = {
+			hasUI: false,
+			getContextUsage: () => null,
+			sessionManager: {
+				getBranch: () => [
+					{ type: "custom", customType: "notebook-entry", data: { epoch: 6, name: "stale", content: "old" } },
+					{ type: "custom", customType: "notebook-entry", data: { epoch: 8, name: "keep", content: "fresh" } },
+					{ type: "custom", customType: "notebook-entry", data: { epoch: 8, name: "keep", content: "newer" } },
+				],
+			},
+		};
+		for (const sessionStart of sessionStartHandlers) {
+			await sessionStart({ reason: "resume" }, ctx as any);
+		}
+
+		const notebookIndex = pi.tools.get("notebook_index");
+		const notebookRead = pi.tools.get("notebook_read");
+		const indexResult = await notebookIndex.execute("1", {}, undefined, undefined, {} as any);
+		assert.deepEqual(indexResult.details.entries, ["keep"]);
+
+		const readResult = await notebookRead.execute("2", { name: "keep" }, undefined, undefined, {} as any);
+		assert.equal(readResult.details.found, true);
+		assert.equal(readResult.details.body, "newer");
+		assert.deepEqual(pi.activeTools, ["read", "notebook_read", "notebook_index"]);
+	} finally {
+		resetNotebookWriteLock();
+	}
 });
 
 test("notebook tools add/get/list return stable contract details", async () => {
@@ -2187,6 +2257,34 @@ test("saveNotebookPage truncates oversized content before persisting", async () 
 	assert.equal(result.preview, "first line");
 	assert.match(persisted, /^first line/m);
 	resetNotebookWriteLock();
+});
+
+
+test("resetState clears epoch and the next notebook write starts a fresh generation", async () => {
+	resetNotebookWriteLock();
+	const pi = new MockPi();
+	const state = createState();
+	const originalNow = Date.now;
+
+	try {
+		Date.now = () => 1000;
+		await saveNotebookPage(pi as any, state, "entry-a", "first");
+		await saveNotebookPage(pi as any, state, "entry-b", "second");
+		assert.equal(state.epoch, 1000);
+		assert.equal(pi.appendedEntries[0].data.epoch, 1000);
+		assert.equal(pi.appendedEntries[1].data.epoch, 1000);
+
+		resetState(state);
+		assert.equal(state.epoch, 0);
+
+		Date.now = () => 2000;
+		await saveNotebookPage(pi as any, state, "entry-c", "third");
+		assert.equal(state.epoch, 2000);
+		assert.equal(pi.appendedEntries[2].data.epoch, 2000);
+	} finally {
+		Date.now = originalNow;
+		resetNotebookWriteLock();
+	}
 });
 
 test("nested spawn invalidate rebuilds from the attached session transcript", () => {

@@ -62,16 +62,16 @@ export function registerNotebookRehydration(
 			});
 		}
 
-		// Pick the epoch from the newest candidate across all names
-		let currentEpoch = state.epoch;
+		// Rehydrate from persisted history: branch entries are the durable
+		// notebook source of truth. Pick the latest persisted epoch across the
+		// surviving names, then rebuild the in-memory view from that generation.
+		let currentEpoch = 0;
 		for (const candidate of candidates.values()) {
 			if (candidate.epoch > currentEpoch) {
 				currentEpoch = candidate.epoch;
 			}
 		}
-		if (currentEpoch > state.epoch) {
-			state.epoch = currentEpoch;
-		}
+		state.epoch = currentEpoch;
 
 		// Rebuild state.notebookPages, filtering by epoch
 		state.notebookPages.clear();
