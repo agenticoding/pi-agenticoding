@@ -131,8 +131,6 @@ Settings are read from `~/.pi/agent/settings.json` and `<project>/.pi/settings.j
 
 Run `/agenticoding-settings` to change the global value from the TUI. It saves global-only to `~/.pi/agent/settings.json`, preserves unrelated JSON keys, shows the effective runtime value separately, and warns when a project override masks the global value. Setting changes affect future fresh agent turns; manual `/handoff` uses that same rule by waiting for idle before enabling the tool and starting its own fresh turn. Edit or remove project overrides manually.
 
-Migration note: the superseded PR-only `handoff.resumeBehavior` (`"wait"`/`"proceed"`) setting is ignored and cannot change the fixed post-compaction `Proceed.` continuation. Remove it when convenient.
-
 **Rule of thumb:** The notebook holds reusable learned knowledge. Handoff carries the remaining situational context.
 
 ---

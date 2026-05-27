@@ -714,10 +714,10 @@ test("handoff automatic setting is documented in README", async () => {
 	assert.match(readme, /true/);
 	assert.match(readme, /false/);
 	assert.match(readme, /default/i);
-	assert.match(readme, /resumeBehavior.*ignored|ignored.*resumeBehavior/i);
+	assert.match(readme, /Proceed/);
+	assert.doesNotMatch(readme, /PR-only/i);
 	assert.match(changelog, /handoff\.automaticEnabled/);
 	assert.match(changelog, /default.*enabled/i);
-	assert.match(changelog, /Proceed/);
 });
 
 test("agenticoding settings command registers /agenticoding-settings TUI surface", async () => {

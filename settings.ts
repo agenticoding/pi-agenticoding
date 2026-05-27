@@ -316,7 +316,7 @@ export function getAgenticodingSettingsDisplayLines(model: AgenticodingSettingsM
 		`Supported values: true, false. Default: true (automatic handoff enabled).`,
 		`When false, the agent-facing handoff tool is inactive for normal turns; manual /handoff <direction> still works from an idle prompt.`,
 		`Setting changes affect future fresh agent turns; in-flight queued follow-ups keep their existing tool schema.`,
-		`After successful handoff compaction, Pi auto-sends Proceed.; handoff.resumeBehavior is ignored and cannot change that behavior.`,
+		`After successful handoff compaction, Pi auto-sends Proceed.; this continuation is fixed, not configurable.`,
 		`Global settings: ${model.state.global.path} (${model.state.global.invalid ? "invalid JSON" : describeValue(model.state.global.automaticEnabled)})`,
 		`Project settings: ${model.state.project.path} (${model.state.project.invalid ? "invalid JSON" : describeValue(model.state.project.automaticEnabled)})`,
 		`TUI saves are global-only; project settings override global settings at runtime.`,
