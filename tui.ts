@@ -25,6 +25,9 @@ export const STATUS_KEY_NOTEBOOK = "agenticoding-notebook";
 /** Status bar key for the active notebook topic. */
 export const STATUS_KEY_TOPIC = "agenticoding-topic";
 
+/** Status bar key for the readonly mode indicator. */
+export const STATUS_KEY_READONLY = "agenticoding-readonly";
+
 /** Update TUI indicators: context usage, notebook count, topic, warning widget. */
 export function updateIndicators(ctx: ExtensionContext, state: AgenticodingState): void {
 	if (!ctx.hasUI) return;
@@ -46,6 +49,12 @@ export function updateIndicators(ctx: ExtensionContext, state: AgenticodingState
 	ctx.ui.setStatus(STATUS_KEY_NOTEBOOK, count > 0
 		? `\u{1F4D2} ${count}`
 		: theme.fg("dim", "\u{1F4D2} 0"),
+	);
+
+	// Readonly mode indicator
+	ctx.ui.setStatus(
+		STATUS_KEY_READONLY,
+		state.readonlyEnabled ? theme.fg("warning", "\u{1F512} readonly") : undefined,
 	);
 
 	// Active notebook topic — show a dim placeholder when unset so the frame is discoverable
