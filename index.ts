@@ -72,13 +72,15 @@ export default function (pi: ExtensionAPI): void {
 		pi.appendEntry("agenticoding-readonly", { enabled: state.readonlyEnabled });
 		updateIndicators(ctx, state);
 		ctx.ui.notify(
-			state.readonlyEnabled ? "Readonly mode enabled" : "Readonly mode disabled",
+			state.readonlyEnabled
+				? "Readonly mode enabled \u2014 write/edit/handoff/destructive-bash blocked"
+				: "Readonly mode disabled \u2014 write/edit/handoff/bash unblocked",
 			"info",
 		);
 	}
 
 	pi.registerCommand("readonly", {
-		description: "Toggle readonly mode (blocks write/edit/destructive-bash)",
+		description: "Toggle readonly mode (blocks write/edit/handoff/destructive-bash)",
 		handler: async (_args, ctx) => toggleReadonly(ctx),
 	});
 

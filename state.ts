@@ -64,7 +64,7 @@ export interface AgenticodingState {
 	 */
 	childSessionEpoch: number;
 
-	/** Whether readonly mode is active — blocks write/edit/destructive-bash. */
+	/** Whether readonly mode is active — blocks write/edit/handoff/destructive-bash. */
 	readonlyEnabled: boolean;
 
 	/** One-shot flag: deliver a readonly ON or OFF nudge via context hook, then clear. */
