@@ -63,7 +63,7 @@ export function registerHandoffTool(
 
 		promptSnippet: "Pivot to a new job via deliberate handoff compaction",
 		promptGuidelines: [
-			"Before handoff, promote any missing durable grounding knowledge to the notebook. " +
+			"Before handoff, promote any missing durable grounding knowledge that the next context will need to the notebook. " +
 				"Then draft a concise but sufficiently detailed brief with the distilled next task and immediate starting state for the next clean context. The active notebook topic will reset after handoff, so the next context should assign a fresh topic from the brief or user direction.",
 		],
 
