@@ -3,10 +3,6 @@ import type { AgenticodingState } from "../state.js";
 import { STATUS_KEY_HANDOFF } from "../tui.js";
 import { updateHandoffToolAvailability } from "./availability.js";
 
-export function buildMissingRequestedHandoffDiagnostic(direction: string): string {
-	return `Manual /handoff did not compact for direction "${direction}" because the assistant did not call the handoff tool. The temporary handoff tool activation has been cleared.`;
-}
-
 export function emitHandoffDiagnostic(
 	pi: ExtensionAPI,
 	ctx: ExtensionContext,
@@ -27,8 +23,6 @@ export async function clearStaleRequestedHandoff(
 	if (!requested) {
 		return;
 	}
-	const message = buildMissingRequestedHandoffDiagnostic(requested.direction);
-	emitHandoffDiagnostic(pi, ctx, message, "warning");
 	state.pendingRequestedHandoff = null;
 	state.pendingRequestedHandoffPrompt = null;
 	if (ctx.hasUI) {

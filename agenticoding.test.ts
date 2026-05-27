@@ -1072,7 +1072,7 @@ test("handoff compaction error clears pending state and status", async () => {
 	assert.equal(statuses.get(STATUS_KEY_HANDOFF), undefined);
 });
 
-test("turn_end fallback clears stale requested handoff status", async () => {
+test("turn_end fallback silently clears stale requested handoff status", async () => {
 	const pi = new MockPi();
 	registerAgenticoding(pi as any);
 	const statuses = new Map<string, string | undefined>();
@@ -1105,8 +1105,7 @@ test("turn_end fallback clears stale requested handoff status", async () => {
 	});
 
 	assert.equal(statuses.get(STATUS_KEY_HANDOFF), undefined);
-	assert.equal(notifications[0].level, "warning");
-	assert.match(notifications[0].message, /did not call the handoff tool/);
+	assert.deepEqual(notifications, []);
 	assert.deepEqual(pi.sentMessages, []);
 });
 
@@ -1253,7 +1252,7 @@ test("buildNudge handles null percent and boundary hints before topic guidance",
 	assert.match(noTopic, /No active notebook topic is set/);
 });
 
-test("watchdog stale requested handoff cleanup avoids conversation diagnostics", async () => {
+test("watchdog stale requested handoff cleanup stays silent", async () => {
 	const pi = new MockPi();
 	const state = createState();
 	state.pendingRequestedHandoff = { direction: "implement auth", enforcementAttempts: 0, toolCalled: false, awaitingAgentTurn: false };
@@ -1274,8 +1273,7 @@ test("watchdog stale requested handoff cleanup avoids conversation diagnostics",
 	);
 
 	assert.equal(state.pendingRequestedHandoff, null);
-	assert.equal(notifications[0].level, "warning");
-	assert.match(notifications[0].message, /did not call the handoff tool/);
+	assert.deepEqual(notifications, []);
 	assert.deepEqual(pi.sentMessages, []);
 	assert.deepEqual(pi.sentUserMessages, []);
 });
