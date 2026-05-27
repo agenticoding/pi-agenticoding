@@ -105,6 +105,8 @@ class MockPi {
 	toolSources = new Map<string, string>();
 	sentUserMessages: Array<{ content: string; options: any }> = [];
 	appendedEntries: Array<{ customType: string; data: any }> = [];
+	flags = new Map<string, any>();
+	shortcuts = new Map<string, { description?: string; handler: Handler }>();
 
 	registerCommand(name: string, definition: { description?: string; handler: Handler }) {
 		this.commands.set(name, definition);
@@ -161,6 +163,18 @@ class MockPi {
 
 	appendEntry(customType: string, data: any) {
 		this.appendedEntries.push({ customType, data });
+	}
+
+	registerFlag(name: string, definition: { description?: string; type: string; default: any }) {
+		if (!this.flags.has(name)) this.flags.set(name, definition.default);
+	}
+
+	getFlag(name: string): any {
+		return this.flags.get(name);
+	}
+
+	registerShortcut(key: string, definition: { description?: string; handler: Handler }) {
+		this.shortcuts.set(key, definition);
 	}
 }
 
@@ -3616,3 +3630,852 @@ test("registerSpawnTool registers a tool with correct name and metadata", () => 
 	assert.ok(tool.parameters, "should have parameters");
 	assert.equal(tool.executionMode, undefined, "spawn should not be sequential");
 });
+
+// ── Readonly mode: bash safety tests ───────────────────────────────
+
+import { isSafeReadonlyCommand } from "./readonly-bash.js";
+
+test("isSafeReadonlyCommand allows safe read commands", () => {
+	assert.equal(isSafeReadonlyCommand("ls -la"), true);
+	assert.equal(isSafeReadonlyCommand("cat file.txt"), true);
+	assert.equal(isSafeReadonlyCommand("grep pattern file"), true);
+	assert.equal(isSafeReadonlyCommand("find . -name '*.ts'"), true);
+	assert.equal(isSafeReadonlyCommand("pwd"), true);
+	assert.equal(isSafeReadonlyCommand("echo hello"), true);
+	assert.equal(isSafeReadonlyCommand("ps aux"), true);
+	assert.equal(isSafeReadonlyCommand("node --version"), true);
+});
+
+test("isSafeReadonlyCommand blocks file mutation commands", () => {
+	assert.equal(isSafeReadonlyCommand("rm file.txt"), false);
+	assert.equal(isSafeReadonlyCommand("rmdir dir"), false);
+	assert.equal(isSafeReadonlyCommand("mv a b"), false);
+	assert.equal(isSafeReadonlyCommand("cp a b"), false);
+	assert.equal(isSafeReadonlyCommand("mkdir newdir"), false);
+	assert.equal(isSafeReadonlyCommand("touch file"), false);
+	assert.equal(isSafeReadonlyCommand("chmod 755 file"), false);
+	assert.equal(isSafeReadonlyCommand("ln -s target link"), false);
+	assert.equal(isSafeReadonlyCommand("tee file"), false);
+	assert.equal(isSafeReadonlyCommand("truncate -s 0 file"), false);
+	assert.equal(isSafeReadonlyCommand("dd if=/dev/zero of=file"), false);
+	assert.equal(isSafeReadonlyCommand("shred file"), false);
+});
+
+test("isSafeReadonlyCommand blocks privilege and process mutation", () => {
+	assert.equal(isSafeReadonlyCommand("sudo apt install"), false);
+	assert.equal(isSafeReadonlyCommand("su root"), false);
+	assert.equal(isSafeReadonlyCommand("kill 1234"), false);
+	assert.equal(isSafeReadonlyCommand("pkill node"), false);
+	assert.equal(isSafeReadonlyCommand("killall node"), false);
+});
+
+test("isSafeReadonlyCommand blocks shell redirects", () => {
+	assert.equal(isSafeReadonlyCommand("echo hello > file"), false);
+	assert.equal(isSafeReadonlyCommand("echo hello >> file"), false);
+});
+
+test("isSafeReadonlyCommand blocks package mutation", () => {
+	assert.equal(isSafeReadonlyCommand("npm install express"), false);
+	assert.equal(isSafeReadonlyCommand("yarn add react"), false);
+	assert.equal(isSafeReadonlyCommand("pnpm remove lodash"), false);
+	assert.equal(isSafeReadonlyCommand("pip install flask"), false);
+	assert.equal(isSafeReadonlyCommand("apt install build-essential"), false);
+	assert.equal(isSafeReadonlyCommand("brew install ffmpeg"), false);
+	assert.equal(isSafeReadonlyCommand("cargo install cli"), false);
+	assert.equal(isSafeReadonlyCommand("gem install rails"), false);
+	assert.equal(isSafeReadonlyCommand("yum install nginx"), false);
+	assert.equal(isSafeReadonlyCommand("dnf install nginx"), false);
+	assert.equal(isSafeReadonlyCommand("pacman -S firefox"), false);
+	assert.equal(isSafeReadonlyCommand("choco install vscode"), false);
+});
+
+test("isSafeReadonlyCommand blocks editors", () => {
+	assert.equal(isSafeReadonlyCommand("vim file.txt"), false);
+	assert.equal(isSafeReadonlyCommand("nano file.txt"), false);
+	assert.equal(isSafeReadonlyCommand("code ."), false);
+	assert.equal(isSafeReadonlyCommand("emacs file.txt"), false);
+});
+
+test("isSafeReadonlyCommand allows git immutable subcommands", () => {
+	assert.equal(isSafeReadonlyCommand("git status"), true);
+	assert.equal(isSafeReadonlyCommand("git log --oneline"), true);
+	assert.equal(isSafeReadonlyCommand("git diff"), true);
+	assert.equal(isSafeReadonlyCommand("git show HEAD"), true);
+	assert.equal(isSafeReadonlyCommand("git blame file.ts"), true);
+	assert.equal(isSafeReadonlyCommand("git ls-files"), true);
+	assert.equal(isSafeReadonlyCommand("git rev-parse HEAD"), true);
+	assert.equal(isSafeReadonlyCommand("git branch --list"), true);
+	assert.equal(isSafeReadonlyCommand("git tag --list"), true);
+	assert.equal(isSafeReadonlyCommand("git stash list"), true);
+	assert.equal(isSafeReadonlyCommand("git remote -v"), true);
+	assert.equal(isSafeReadonlyCommand("git config --list"), true);
+	assert.equal(isSafeReadonlyCommand("git reflog"), true);
+	assert.equal(isSafeReadonlyCommand("git --no-pager diff"), true);
+	assert.equal(isSafeReadonlyCommand("git branch -l"), true);
+});
+
+test("isSafeReadonlyCommand blocks git mutable subcommands", () => {
+	assert.equal(isSafeReadonlyCommand("git add ."), false);
+	assert.equal(isSafeReadonlyCommand("git commit -m 'msg'"), false);
+	assert.equal(isSafeReadonlyCommand("git push"), false);
+	assert.equal(isSafeReadonlyCommand("git pull"), false);
+	assert.equal(isSafeReadonlyCommand("git merge main"), false);
+	assert.equal(isSafeReadonlyCommand("git rebase main"), false);
+	assert.equal(isSafeReadonlyCommand("git reset HEAD"), false);
+	assert.equal(isSafeReadonlyCommand("git checkout -b new"), false);
+	assert.equal(isSafeReadonlyCommand("git stash"), false);
+	assert.equal(isSafeReadonlyCommand("git stash pop"), false);
+	assert.equal(isSafeReadonlyCommand("git fetch"), false);
+	assert.equal(isSafeReadonlyCommand("git init"), false);
+	assert.equal(isSafeReadonlyCommand("git clean -fd"), false);
+	assert.equal(isSafeReadonlyCommand("git reflog delete HEAD@{0}"), false);
+});
+
+test("isSafeReadonlyCommand allows debugging and browser automation commands", () => {
+	assert.equal(isSafeReadonlyCommand("curl https://example.com"), true);
+	assert.equal(isSafeReadonlyCommand("node -e 'console.log(1)'"), true);
+	assert.equal(isSafeReadonlyCommand("python3 script.py"), true);
+	assert.equal(isSafeReadonlyCommand("docker ps"), true);
+	assert.equal(isSafeReadonlyCommand("agent-browser snapshot -ic"), true);
+});
+
+// ── Readonly mode: toggle + TUI indicator tests ────────────────────
+
+test("readonly toggle command enables and disables readonly mode", () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+
+	const state = createState();
+	const notifications: string[] = [];
+	const statuses = new Map<string, string | undefined>();
+
+	const ctx = {
+		hasUI: true,
+		ui: {
+			notify: (msg: string, _type: string) => notifications.push(msg),
+			theme: { fg: (_n: string, t: string) => t },
+			setStatus: (key: string, val: string | undefined) => statuses.set(key, val),
+			setWidget: () => {},
+		},
+		getContextUsage: () => null,
+		sessionManager: { getBranch: () => [] },
+	};
+
+	// First toggle: ON
+	pi.commands.get("readonly")!.handler("", ctx);
+	assert.equal(notifications.pop(), "Readonly mode enabled");
+	assert.ok(statuses.get("agenticoding-readonly")?.includes("readonly"));
+
+	// Second toggle: OFF
+	pi.commands.get("readonly")!.handler("", ctx);
+	assert.equal(notifications.pop(), "Readonly mode disabled");
+	assert.equal(statuses.get("agenticoding-readonly"), undefined);
+});
+
+test("readonly TUI indicator shows warning tone when enabled", () => {
+	const state = createState();
+	state.readonlyEnabled = true;
+	const record = { statuses: new Map<string, string | undefined>(), widgets: new Map<string, string[] | undefined>() };
+	const ctx = makeTUICtx({ percent: null, record });
+
+	updateIndicators(ctx, state);
+	const s = record.statuses.get("agenticoding-readonly");
+	assert.ok(s?.includes("🔒 readonly"), `expected readonly indicator, got: ${s}`);
+});
+
+test("readonly TUI indicator is cleared when disabled", () => {
+	const state = createState();
+	state.readonlyEnabled = false;
+	const record = { statuses: new Map<string, string | undefined>(), widgets: new Map<string, string[] | undefined>() };
+	const ctx = makeTUICtx({ percent: null, record });
+
+	updateIndicators(ctx, state);
+	assert.equal(record.statuses.get("agenticoding-readonly"), undefined);
+});
+
+// ── Readonly mode: tool_call blocking tests ────────────────────────
+
+test("readonly tool_call blocks write and edit", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+
+	// Toggle readonly ON via command (modifies internal state)
+	await pi.commands.get("readonly")!.handler("", {
+		hasUI: true,
+		ui: {
+			notify: () => {},
+			theme: { fg: (_n: string, t: string) => t },
+			setStatus: () => {},
+			setWidget: () => {},
+		},
+		getContextUsage: () => null,
+	});
+
+	const [toolCallHandler] = pi.handlers.get("tool_call")!;
+
+	// Block write
+	const writeResult = await toolCallHandler({ toolName: "write", input: { path: "/tmp/test" } }, {});
+	assert.equal(writeResult.block, true);
+	assert.match(writeResult.reason, /write\/edit disabled/);
+
+	// Block edit
+	const editResult = await toolCallHandler({ toolName: "edit", input: { path: "/tmp/test" } }, {});
+	assert.equal(editResult.block, true);
+
+	// Allow read
+	const readResult = await toolCallHandler({ toolName: "read", input: { path: "/tmp/test" } }, {});
+	assert.equal(readResult, undefined);
+});
+
+test("readonly tool_call blocks unsafe bash and allows safe bash", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+
+	const [toolCallHandler] = pi.handlers.get("tool_call")!;
+
+	// Block when readonly is OFF — should not block
+	const safeResult = await toolCallHandler({ toolName: "bash", input: { command: "rm -rf /" } }, {});
+	assert.equal(safeResult, undefined, "should not block when readonly is off");
+});
+
+test("readonly tool_call blocks destructive bash when readonly is on", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+
+	const [toolCallHandler] = pi.handlers.get("tool_call")!;
+
+	// Simulate readonly ON via state — need to get at the internal state
+	// The extension creates state internally, so we test through the event handlers
+	const [sessionStartHandler] = pi.handlers.get("session_start")!;
+
+	// Toggle readonly ON via command
+	const notifications: string[] = [];
+	const statuses = new Map<string, string | undefined>();
+	await pi.commands.get("readonly")!.handler("", {
+		hasUI: true,
+		ui: {
+			notify: (msg: string) => notifications.push(msg),
+			theme: { fg: (_n: string, t: string) => t },
+			setStatus: (key: string, val: string | undefined) => statuses.set(key, val),
+			setWidget: () => {},
+		},
+		getContextUsage: () => null,
+	});
+
+	// Now readonly is ON — block destructive bash
+	const blockedResult = await toolCallHandler({ toolName: "bash", input: { command: "rm -rf /" } }, {});
+	assert.equal(blockedResult.block, true);
+	assert.match(blockedResult.reason, /dangerous command blocked/);
+
+	// Allow safe bash
+	const safeResult = await toolCallHandler({ toolName: "bash", input: { command: "ls -la" } }, {});
+	assert.equal(safeResult, undefined);
+});
+
+// ── Readonly mode: spawn child filtering ───────────────────────────
+
+test("spawn filters write and edit from child tools when readonly is on", async () => {
+	const pi = new MockPi();
+	pi.setActiveTools(["read", "bash", "write", "edit", "spawn"]);
+	const state = createState();
+	state.readonlyEnabled = true;
+
+	let seenTools: string[] = [];
+	const mockFactory = async (config: any) => {
+		seenTools = config.tools;
+		const session = {
+			messages: [] as any[],
+			prompt: async (prompt: string) => {
+				session.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }] }];
+			},
+			abort: async () => {},
+			getSessionStats: () => undefined,
+		};
+		return { session: session as any };
+	};
+
+	registerSpawnTool(pi as any, state, mockFactory as any);
+	await pi.tools.get("spawn").execute(
+		"spawn-1",
+		{ prompt: "Do the task" },
+		undefined,
+		undefined,
+		{ model: { id: "mock-model" }, cwd: "/tmp" },
+	);
+
+	assert.equal(seenTools.includes("write"), false, "write should be filtered");
+	assert.equal(seenTools.includes("edit"), false, "edit should be filtered");
+	assert.equal(seenTools.includes("read"), true, "read should be inherited");
+	assert.equal(seenTools.includes("bash"), true, "bash should be inherited");
+});
+
+test("spawn adds a readonly bash override that blocks destructive commands", async () => {
+	const pi = new MockPi();
+	pi.setActiveTools(["read", "bash", "spawn"]);
+	const state = createState();
+	state.readonlyEnabled = true;
+
+	let seenTools: string[] = [];
+	let seenCustomTools: any[] = [];
+	const mockFactory = async (config: any) => {
+		seenTools = config.tools;
+		seenCustomTools = config.customTools;
+		const session = {
+			messages: [] as any[],
+			prompt: async () => {
+				session.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }] }];
+			},
+			abort: async () => {},
+			getSessionStats: () => undefined,
+		};
+		return { session: session as any };
+	};
+
+	registerSpawnTool(pi as any, state, mockFactory as any);
+	await pi.tools.get("spawn").execute(
+		"spawn-1",
+		{ prompt: "Do the task" },
+		undefined,
+		undefined,
+		{ model: { id: "mock-model" }, cwd: "/tmp" },
+	);
+
+	assert.equal(seenTools.includes("bash"), true, "bash should still be available");
+	const bashTool = seenCustomTools.find((tool) => tool.name === "bash");
+	assert.ok(bashTool, "readonly child should override bash");
+	await assert.rejects(
+		bashTool.execute("bash-1", { command: "rm -rf /" }, undefined, undefined, {}),
+		/Readonly mode: dangerous command blocked/,
+	);
+});
+
+test("spawn includes write and edit in child tools when readonly is off", async () => {
+	const pi = new MockPi();
+	pi.setActiveTools(["read", "bash", "write", "edit", "spawn"]);
+	const state = createState();
+	state.readonlyEnabled = false;
+
+	let seenTools: string[] = [];
+	const mockFactory = async (config: any) => {
+		seenTools = config.tools;
+		const session = {
+			messages: [] as any[],
+			prompt: async () => {
+				session.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }] }];
+			},
+			abort: async () => {},
+			getSessionStats: () => undefined,
+		};
+		return { session: session as any };
+	};
+
+	registerSpawnTool(pi as any, state, mockFactory as any);
+	await pi.tools.get("spawn").execute(
+		"spawn-1",
+		{ prompt: "Do the task" },
+		undefined,
+		undefined,
+		{ model: { id: "mock-model" }, cwd: "/tmp" },
+	);
+
+	assert.equal(seenTools.includes("write"), true, "write should be included");
+	assert.equal(seenTools.includes("edit"), true, "edit should be included");
+});
+
+test("spawn prompt includes readonly notice when enabled", async () => {
+	const pi = new MockPi();
+	pi.setActiveTools(["read", "bash", "spawn"]);
+	const state = createState();
+	state.readonlyEnabled = true;
+
+	let seenPrompt = "";
+	const mockFactory = async () => {
+		const session = {
+			messages: [] as any[],
+			prompt: async (prompt: string) => {
+				seenPrompt = prompt;
+				session.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }] }];
+			},
+			abort: async () => {},
+			getSessionStats: () => undefined,
+		};
+		return { session: session as any };
+	};
+
+	registerSpawnTool(pi as any, state, mockFactory as any);
+	await pi.tools.get("spawn").execute(
+		"spawn-1",
+		{ prompt: "Do the task" },
+		undefined,
+		undefined,
+		{ model: { id: "mock-model" }, cwd: "/tmp" },
+	);
+
+	assert.match(seenPrompt, /read-only authority/);
+	assert.match(seenPrompt, /Readonly restrictions apply/);
+	assert.doesNotMatch(seenPrompt, /same authority as the parent/);
+});
+
+test("spawn prompt uses standard authority wording when readonly is off", async () => {
+	const pi = new MockPi();
+	pi.setActiveTools(["read", "bash", "spawn"]);
+	const state = createState();
+	state.readonlyEnabled = false;
+
+	let seenPrompt = "";
+	const mockFactory = async () => {
+		const session = {
+			messages: [] as any[],
+			prompt: async (prompt: string) => {
+				seenPrompt = prompt;
+				session.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }] }];
+			},
+			abort: async () => {},
+			getSessionStats: () => undefined,
+		};
+		return { session: session as any };
+	};
+
+	registerSpawnTool(pi as any, state, mockFactory as any);
+	await pi.tools.get("spawn").execute(
+		"spawn-1",
+		{ prompt: "Do the task" },
+		undefined,
+		undefined,
+		{ model: { id: "mock-model" }, cwd: "/tmp" },
+	);
+
+	assert.match(seenPrompt, /same authority as the parent/);
+	assert.doesNotMatch(seenPrompt, /read-only authority/);
+	assert.doesNotMatch(seenPrompt, /Readonly restrictions apply/);
+});
+
+// ── Readonly mode: session rehydration ─────────────────────────────
+
+test("session_start rehydrates readonly from branch entries", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+
+	const statuses = new Map<string, string | undefined>();
+	const branch = [
+		{ type: "custom", customType: "agenticoding-readonly", data: { enabled: false } },
+		{ type: "custom", customType: "agenticoding-readonly", data: { enabled: true } },
+	];
+
+	const sessionStartHandlers = pi.handlers.get("session_start")!;
+	for (const handler of sessionStartHandlers) {
+		await handler({ reason: "resume" }, {
+			hasUI: true,
+			ui: {
+				theme: { fg: (_n: string, t: string) => t },
+				setStatus: (key: string, val: string | undefined) => statuses.set(key, val),
+				setWidget: () => {},
+			},
+			sessionManager: { getBranch: () => branch },
+			getContextUsage: () => null,
+		});
+	}
+
+	const s = statuses.get("agenticoding-readonly");
+	assert.ok(s?.includes("readonly"), "readonly indicator should be shown after rehydrating true");
+});
+
+test("session_start clears readonly indicator on /new", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+
+	const statuses = new Map<string, string | undefined>();
+
+	// First: enable readonly via command
+	await pi.commands.get("readonly")!.handler("", {
+		hasUI: true,
+		ui: {
+			notify: () => {},
+			theme: { fg: (_n: string, t: string) => t },
+			setStatus: (key: string, val: string | undefined) => statuses.set(key, val),
+			setWidget: () => {},
+		},
+		getContextUsage: () => null,
+	});
+
+	assert.ok(statuses.get("agenticoding-readonly")?.includes("readonly"));
+
+	// Now: /new should clear it
+	const sessionStartHandlers = pi.handlers.get("session_start")!;
+	for (const handler of sessionStartHandlers) {
+		await handler({ reason: "new" }, {
+			hasUI: true,
+			ui: {
+				theme: { fg: (_n: string, t: string) => t },
+				setStatus: (key: string, val: string | undefined) => statuses.set(key, val),
+				setWidget: () => {},
+			},
+			sessionManager: { getBranch: () => [] },
+			getContextUsage: () => null,
+		});
+	}
+
+	assert.equal(statuses.get("agenticoding-readonly"), undefined, "readonly indicator should be cleared on /new");
+});
+
+test("--readonly CLI flag overrides persisted branch state", async () => {
+	const pi = new MockPi();
+	pi.flags.set("readonly", true);
+	registerAgenticoding(pi as any);
+
+	const statuses = new Map<string, string | undefined>();
+	const branch = [
+		{ type: "custom", customType: "agenticoding-readonly", data: { enabled: false } },
+	];
+
+	const sessionStartHandlers = pi.handlers.get("session_start")!;
+	for (const handler of sessionStartHandlers) {
+		await handler({ reason: "resume" }, {
+			hasUI: true,
+			ui: {
+				theme: { fg: (_n: string, t: string) => t },
+				setStatus: (key: string, val: string | undefined) => statuses.set(key, val),
+				setWidget: () => {},
+			},
+			sessionManager: { getBranch: () => branch },
+			getContextUsage: () => null,
+		});
+	}
+
+	const s = statuses.get("agenticoding-readonly");
+	assert.ok(s?.includes("readonly"), "CLI --readonly flag should override persisted false");
+});
+
+test("--readonly CLI flag applies on session_start for new sessions", async () => {
+	const pi = new MockPi();
+	pi.flags.set("readonly", true);
+	registerAgenticoding(pi as any);
+
+	const statuses = new Map<string, string | undefined>();
+	const sessionStartHandlers = pi.handlers.get("session_start")!;
+	for (const handler of sessionStartHandlers) {
+		await handler({ reason: "new" }, {
+			hasUI: true,
+			ui: {
+				theme: { fg: (_n: string, t: string) => t },
+				setStatus: (key: string, val: string | undefined) => statuses.set(key, val),
+				setWidget: () => {},
+			},
+			sessionManager: { getBranch: () => [] },
+			getContextUsage: () => null,
+		});
+	}
+
+	assert.ok(statuses.get("agenticoding-readonly")?.includes("readonly"));
+});
+
+test("session_start clears stale readonly state on resume when the branch has no readonly entry", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+
+	const statuses = new Map<string, string | undefined>();
+	await pi.commands.get("readonly")!.handler("", {
+		hasUI: true,
+		ui: {
+			notify: () => {},
+			theme: { fg: (_n: string, t: string) => t },
+			setStatus: (key: string, val: string | undefined) => statuses.set(key, val),
+			setWidget: () => {},
+		},
+		getContextUsage: () => null,
+	});
+	assert.ok(statuses.get("agenticoding-readonly")?.includes("readonly"));
+
+	const sessionStartHandlers = pi.handlers.get("session_start")!;
+	for (const handler of sessionStartHandlers) {
+		await handler({ reason: "resume" }, {
+			hasUI: true,
+			ui: {
+				theme: { fg: (_n: string, t: string) => t },
+				setStatus: (key: string, val: string | undefined) => statuses.set(key, val),
+				setWidget: () => {},
+			},
+			sessionManager: { getBranch: () => [] },
+			getContextUsage: () => null,
+		});
+	}
+
+	assert.equal(statuses.get("agenticoding-readonly"), undefined);
+});
+
+// ── Readonly mode: context hook nudges ─────────────────────────────
+
+test("readonly ON nudge is delivered via context hook", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+
+	// Toggle readonly ON
+	await pi.commands.get("readonly")!.handler("", {
+		hasUI: true,
+		ui: {
+			notify: () => {},
+			theme: { fg: (_n: string, t: string) => t },
+			setStatus: () => {},
+			setWidget: () => {},
+		},
+		getContextUsage: () => null,
+	});
+
+	const [contextHandler] = pi.handlers.get("context")!;
+	const result = await contextHandler(
+		{ messages: [{ role: "user", content: "hi", timestamp: 1 }] },
+		{ getContextUsage: () => ({ percent: 10 }), sessionManager: { getBranch: () => [] } },
+	);
+
+	assert.equal(result.messages.length, 2);
+	assert.equal(result.messages[1].customType, "agenticoding-readonly-nudge");
+	assert.match(result.messages[1].content, /Readonly mode is active/);
+});
+
+test("readonly OFF nudge is delivered only if prior ON entry exists on branch", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+
+	// Toggle ON then OFF
+	await pi.commands.get("readonly")!.handler("", {
+		hasUI: true,
+		ui: {
+			notify: () => {},
+			theme: { fg: (_n: string, t: string) => t },
+			setStatus: () => {},
+			setWidget: () => {},
+		},
+		getContextUsage: () => null,
+	});
+	await pi.commands.get("readonly")!.handler("", {
+		hasUI: true,
+		ui: {
+			notify: () => {},
+			theme: { fg: (_n: string, t: string) => t },
+			setStatus: () => {},
+			setWidget: () => {},
+		},
+		getContextUsage: () => null,
+	});
+
+	// Branch has an ON entry
+	const branch = [
+		{ type: "custom", customType: "agenticoding-readonly", data: { enabled: true } },
+		{ type: "custom", customType: "agenticoding-readonly", data: { enabled: false } },
+	];
+
+	const [contextHandler] = pi.handlers.get("context")!;
+	const result = await contextHandler(
+		{ messages: [{ role: "user", content: "hi", timestamp: 1 }] },
+		{ getContextUsage: () => ({ percent: 10 }), sessionManager: { getBranch: () => branch } },
+	);
+
+	assert.equal(result.messages[1].customType, "agenticoding-readonly-nudge");
+	assert.match(result.messages[1].content, /turned off/);
+});
+
+test("readonly OFF nudge is suppressed when no prior ON entry exists", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+
+	// Toggle ON then OFF
+	await pi.commands.get("readonly")!.handler("", {
+		hasUI: true,
+		ui: {
+			notify: () => {},
+			theme: { fg: (_n: string, t: string) => t },
+			setStatus: () => {},
+			setWidget: () => {},
+		},
+		getContextUsage: () => null,
+	});
+	await pi.commands.get("readonly")!.handler("", {
+		hasUI: true,
+		ui: {
+			notify: () => {},
+			theme: { fg: (_n: string, t: string) => t },
+			setStatus: () => {},
+			setWidget: () => {},
+		},
+		getContextUsage: () => null,
+	});
+
+	// No prior ON entry on branch
+	const [contextHandler] = pi.handlers.get("context")!;
+	const result = await contextHandler(
+		{ messages: [{ role: "user", content: "hi", timestamp: 1 }] },
+		{ getContextUsage: () => ({ percent: 10 }), sessionManager: { getBranch: () => [] } },
+	);
+
+	assert.equal(result, undefined, "OFF nudge should be suppressed without prior ON entry");
+});
+
+test("readonly nudge is one-shot — not re-delivered on subsequent calls", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+
+	// Toggle readonly ON
+	await pi.commands.get("readonly")!.handler("", {
+		hasUI: true,
+		ui: {
+			notify: () => {},
+			theme: { fg: (_n: string, t: string) => t },
+			setStatus: () => {},
+			setWidget: () => {},
+		},
+		getContextUsage: () => null,
+	});
+
+	const [contextHandler] = pi.handlers.get("context")!;
+
+	// First call: delivers ON nudge
+	await contextHandler(
+		{ messages: [{ role: "user", content: "hi", timestamp: 1 }] },
+		{ getContextUsage: () => ({ percent: 10 }), sessionManager: { getBranch: () => [] } },
+	);
+
+	// Second call: no nudge
+	const result = await contextHandler(
+		{ messages: [{ role: "user", content: "hi", timestamp: 2 }] },
+		{ getContextUsage: () => ({ percent: 10 }), sessionManager: { getBranch: () => [] } },
+	);
+
+	assert.equal(result, undefined, "nudge should not be re-delivered");
+});
+
+test("session_tree rehydrates readonly from branch", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+
+	const statuses = new Map<string, string | undefined>();
+	const branch = [
+		{ type: "custom", customType: "agenticoding-readonly", data: { enabled: true } },
+	];
+
+	const [sessionTreeHandler] = pi.handlers.get("session_tree")!;
+	await sessionTreeHandler({}, {
+		hasUI: true,
+		ui: {
+			theme: { fg: (_n: string, t: string) => t },
+			setStatus: (key: string, val: string | undefined) => statuses.set(key, val),
+			setWidget: () => {},
+		},
+		sessionManager: { getBranch: () => branch },
+		getContextUsage: () => null,
+	});
+
+	const s = statuses.get("agenticoding-readonly");
+	assert.ok(s?.includes("readonly"), "session_tree should rehydrate readonly");
+});
+
+test("session_tree reapplies --readonly and clears stale readonly on no-entry branches", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+
+	const statuses = new Map<string, string | undefined>();
+	await pi.commands.get("readonly")!.handler("", {
+		hasUI: true,
+		ui: {
+			notify: () => {},
+			theme: { fg: (_n: string, t: string) => t },
+			setStatus: (key: string, val: string | undefined) => statuses.set(key, val),
+			setWidget: () => {},
+		},
+		getContextUsage: () => null,
+	});
+	assert.ok(statuses.get("agenticoding-readonly")?.includes("readonly"));
+
+	const [sessionTreeHandler] = pi.handlers.get("session_tree")!;
+	await sessionTreeHandler({}, {
+		hasUI: true,
+		ui: {
+			theme: { fg: (_n: string, t: string) => t },
+			setStatus: (key: string, val: string | undefined) => statuses.set(key, val),
+			setWidget: () => {},
+		},
+		sessionManager: { getBranch: () => [] },
+		getContextUsage: () => null,
+	});
+	assert.equal(statuses.get("agenticoding-readonly"), undefined, "no-entry branch should clear stale readonly");
+
+	pi.flags.set("readonly", true);
+	await sessionTreeHandler({}, {
+		hasUI: true,
+		ui: {
+			theme: { fg: (_n: string, t: string) => t },
+			setStatus: (key: string, val: string | undefined) => statuses.set(key, val),
+			setWidget: () => {},
+		},
+		sessionManager: { getBranch: () => [] },
+		getContextUsage: () => null,
+	});
+	assert.ok(statuses.get("agenticoding-readonly")?.includes("readonly"), "CLI flag should win during session_tree rehydration");
+});
+
+test("resetState clears readonly fields", () => {
+	const state = createState();
+	state.readonlyEnabled = true;
+	state.readonlyNudgePending = true;
+	resetState(state);
+	assert.equal(state.readonlyEnabled, false);
+	assert.equal(state.readonlyNudgePending, false);
+});
+
+test("readonly shortcut is registered and gated on isIdle", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+
+	assert.ok(pi.shortcuts.has("ctrl+shift+r"), "shortcut should be registered");
+
+	const shortcut = pi.shortcuts.get("ctrl+shift+r")!;
+
+	// isIdle = false: should not toggle
+	const statuses = new Map<string, string | undefined>();
+	await shortcut.handler({
+		isIdle: () => false,
+		hasUI: true,
+		ui: {
+			notify: () => {},
+			theme: { fg: (_n: string, t: string) => t },
+			setStatus: (key: string, val: string | undefined) => statuses.set(key, val),
+			setWidget: () => {},
+		},
+		getContextUsage: () => null,
+	});
+	assert.equal(statuses.get("agenticoding-readonly"), undefined, "should not toggle when not idle");
+
+	// isIdle = true: should toggle
+	await shortcut.handler({
+		isIdle: () => true,
+		hasUI: true,
+		ui: {
+			notify: () => {},
+			theme: { fg: (_n: string, t: string) => t },
+			setStatus: (key: string, val: string | undefined) => statuses.set(key, val),
+			setWidget: () => {},
+		},
+		getContextUsage: () => null,
+	});
+	assert.ok(statuses.get("agenticoding-readonly")?.includes("readonly"), "should toggle when idle");
+});
+
+test("readonly toggle persists entry via appendEntry", () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+
+	pi.commands.get("readonly")!.handler("", {
+		hasUI: true,
+		ui: {
+			notify: () => {},
+			theme: { fg: (_n: string, t: string) => t },
+			setStatus: () => {},
+			setWidget: () => {},
+		},
+		getContextUsage: () => null,
+	});
+
+	assert.equal(pi.appendedEntries.length, 1);
+	assert.equal(pi.appendedEntries[0].customType, "agenticoding-readonly");
+	assert.equal(pi.appendedEntries[0].data.enabled, true);
+});
+

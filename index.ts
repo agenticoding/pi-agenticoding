@@ -33,10 +33,12 @@ import { registerHandoffCompaction } from "./handoff/compact.js";
 import { registerSpawnTool } from "./spawn/index.js";
 import {
 	STATUS_KEY_HANDOFF,
+	STATUS_KEY_READONLY,
 	STATUS_KEY_TOPIC,
 	WIDGET_KEY_WARNING,
 	updateIndicators,
 } from "./tui.js";
+import { isSafeReadonlyCommand } from "./readonly-bash.js";
 import { formatPagePreview } from "./notebook/store.js";
 
 export default function (pi: ExtensionAPI): void {
@@ -55,6 +57,84 @@ export default function (pi: ExtensionAPI): void {
 
 	// ── Register commands ───────────────────────────────────────────
 	registerHandoffCommand(pi, state);
+
+	// ── Readonly mode ───────────────────────────────────────────────
+
+	pi.registerFlag("readonly", {
+		description: "Start in readonly mode",
+		type: "boolean",
+		default: false,
+	});
+
+	function toggleReadonly(ctx: ExtensionContext): void {
+		state.readonlyEnabled = !state.readonlyEnabled;
+		state.readonlyNudgePending = true;
+		pi.appendEntry("agenticoding-readonly", { enabled: state.readonlyEnabled });
+		updateIndicators(ctx, state);
+		ctx.ui.notify(
+			state.readonlyEnabled ? "Readonly mode enabled" : "Readonly mode disabled",
+			"info",
+		);
+	}
+
+	pi.registerCommand("readonly", {
+		description: "Toggle readonly mode (blocks write/edit/destructive-bash)",
+		handler: async (_args, ctx) => toggleReadonly(ctx),
+	});
+
+	pi.registerShortcut("ctrl+shift+r", {
+		description: "Toggle readonly mode",
+		handler: async (ctx) => {
+			if (ctx.isIdle()) toggleReadonly(ctx);
+		},
+	});
+
+	function rehydrateReadonlyState(ctx: ExtensionContext): void {
+		const wasEnabled = state.readonlyEnabled;
+		const branch = ctx.sessionManager?.getBranch?.() ?? [];
+		state.readonlyEnabled = false;
+		for (let i = branch.length - 1; i >= 0; i--) {
+			const entry = branch[i] as Record<string, unknown>;
+			if (
+				entry.type === "custom" &&
+				entry.customType === "agenticoding-readonly"
+			) {
+				state.readonlyEnabled = (entry.data as Record<string, unknown>)?.enabled === true;
+				break;
+			}
+		}
+		if (pi.getFlag("readonly") === true) {
+			state.readonlyEnabled = true;
+		}
+		// Nudge if readonly was activated by rehydration (CLI flag, branch restore, or undo)
+		if (state.readonlyEnabled && !wasEnabled) {
+			state.readonlyNudgePending = true;
+		}
+	}
+
+	// ── Readonly: tool_call blocking ────────────────────────────────
+	pi.on("tool_call", async (event) => {
+		if (!state.readonlyEnabled) return;
+
+		if (event.toolName === "write" || event.toolName === "edit") {
+			return {
+				block: true as const,
+				reason: "Readonly mode: write/edit disabled. Use /readonly to disable.",
+			};
+		}
+
+		if (event.toolName === "bash") {
+			const cmd = (event.input as Record<string, unknown>).command as string;
+			if (!isSafeReadonlyCommand(cmd)) {
+				return {
+					block: true as const,
+					reason:
+						"Readonly mode: dangerous command blocked. Use /readonly to disable.\n" +
+						`Command: ${cmd}`,
+				};
+			}
+		}
+	});
 
 	// ── /notebook command — interactive page selector ────────────────
 	pi.registerCommand("notebook", {
@@ -201,13 +281,59 @@ export default function (pi: ExtensionAPI): void {
 		return { systemPrompt: parts.join("\n\n") };
 	});
 
-	// ── context: inject primacy-zone nudge before each LLM call ────
+	// ── context: inject primacy-zone nudge + readonly nudges ──────
 	pi.on("context", async (event, ctx: ExtensionContext) => {
 		const usage = ctx.getContextUsage();
 		const percent = usage?.percent ?? null;
 		if (usage && usage.percent !== null) {
 			state.lastContextPercent = usage.percent;
 		}
+
+		// Readonly ON/OFF nudge (one-shot, merged into the same context hook)
+		if (state.readonlyNudgePending) {
+			state.readonlyNudgePending = false;
+
+			if (state.readonlyEnabled) {
+				// ON nudge
+				return {
+					messages: [
+						...event.messages,
+						{
+							role: "custom" as const,
+							customType: "agenticoding-readonly-nudge",
+							content:
+								"Readonly mode is active. Do not call write or edit. " +
+								"Destructive bash operations will be blocked. Use /readonly to disable.",
+							display: false,
+							timestamp: Date.now(),
+						},
+					],
+				};
+			} else {
+				// OFF nudge — only if there was a prior ON entry on this branch
+				const branch = ctx.sessionManager?.getBranch?.() ?? [];
+				const hasPriorOn = branch.some(
+					(e) =>
+						(e as Record<string, unknown>).customType === "agenticoding-readonly" &&
+						((e as Record<string, unknown>).data as Record<string, unknown>)?.enabled === true,
+				);
+				if (hasPriorOn) {
+					return {
+						messages: [
+							...event.messages,
+							{
+								role: "custom" as const,
+								customType: "agenticoding-readonly-nudge",
+								content: "Readonly mode has been turned off. You may now use write, edit, and bash freely.",
+								display: false,
+								timestamp: Date.now(),
+							},
+						],
+					};
+				}
+			}
+		}
+
 		if (!state.pendingTopicBoundaryHint && (percent === null || percent < 30)) {
 			return;
 		}
@@ -228,7 +354,7 @@ export default function (pi: ExtensionAPI): void {
 		};
 	});
 
-	// ── session_start: reset state + update indicators ─────────────
+	// ── session_start: reset state + readonly rehydration + indicators ──
 	pi.on("session_start", async (event, ctx: ExtensionContext) => {
 		if (event.reason === "new") {
 			resetState(state);
@@ -236,9 +362,17 @@ export default function (pi: ExtensionAPI): void {
 			if (ctx.hasUI) {
 				ctx.ui.setStatus(STATUS_KEY_HANDOFF, undefined);
 				ctx.ui.setStatus(STATUS_KEY_TOPIC, undefined);
+				ctx.ui.setStatus(STATUS_KEY_READONLY, undefined);
 				ctx.ui.setWidget(WIDGET_KEY_WARNING, undefined);
 			}
 		}
+		rehydrateReadonlyState(ctx);
+		updateIndicators(ctx, state);
+	});
+
+	// ── session_tree: rehydrate readonly state on tree changes ─────
+	pi.on("session_tree", async (_event, ctx: ExtensionContext) => {
+		rehydrateReadonlyState(ctx);
 		updateIndicators(ctx, state);
 	});
 

@@ -18,6 +18,7 @@ import type {
 import {
 	AuthStorage,
 	createAgentSession,
+	createBashToolDefinition,
 	ModelRegistry,
 	SessionManager,
 } from "@earendil-works/pi-coding-agent";
@@ -26,6 +27,7 @@ import { Type } from "typebox";
 import type { AgenticodingState } from "../state.js";
 import { formatPageList } from "../notebook/store.js";
 import { createNotebookToolDefinitions } from "../notebook/tools.js";
+import { isSafeReadonlyCommand } from "../readonly-bash.js";
 import {
 	renderSpawnCall,
 	renderSpawnResult,
@@ -133,6 +135,20 @@ export function buildChildToolNames(
 	return [...new Set([...inheritedTools, ...childTools.map((tool) => tool.name)])];
 }
 
+function createReadonlyChildBashTool(cwd: string): ToolDefinition {
+	return createBashToolDefinition(cwd, {
+		spawnHook: (spawnContext) => {
+			if (!isSafeReadonlyCommand(spawnContext.command)) {
+				throw new Error(
+					"Readonly mode: dangerous command blocked. Use /readonly to disable.\n" +
+					`Command: ${spawnContext.command}`,
+				);
+			}
+			return spawnContext;
+		},
+	});
+}
+
 // ── Spawn tool metadata ──
 
 const SPAWN_DESCRIPTION =
@@ -225,15 +241,21 @@ export async function executeSpawn(
 	const notebookListing = listing
 		? "Available notebook pages:\n" + listing
 		: "No notebook pages.";
+	const readonlyNotice = state.readonlyEnabled
+		? "\n\nReadonly restrictions apply. Do not attempt file writes or destructive bash operations."
+		: "";
+	const authorityNote = state.readonlyEnabled
+		? "You have read-only authority in this session."
+		: "You have the same authority as the parent.";
 	const fullPrompt =
 		`You are a focused child agent spawned by a parent agent. ` +
-		`You have the same authority as the parent. ` +
+		`${authorityNote} ` +
 		`Children cannot spawn further children. ` +
 		`Your result will be read by the parent, so be concise and complete.\n\n` +
 		`${notebookListing}\n\n` +
 		`If you write notebook pages, store only durable grounding knowledge for future contexts. ` +
 		`Keep transient task state in your final reply to the parent.\n\n` +
-		`## Task\n\n${params.prompt}\n\n` +
+		`## Task\n\n${params.prompt}${readonlyNotice}\n\n` +
 		`When complete, provide a concise summary of findings. ` +
 		`Keep the result under ${CHILD_MAX_LINES} lines / ${(CHILD_MAX_BYTES / 1024).toFixed(0)}KB.`;
 
@@ -244,14 +266,22 @@ export async function executeSpawn(
 	const childTools = createChildTools(pi, state, { isStale });
 	const parentToolNames = pi.getActiveTools();
 	const childToolNames = buildChildToolNames(parentToolNames, childTools, pi.getAllTools());
+	const effectiveChildTools = state.readonlyEnabled && childToolNames.includes("bash")
+		? [...childTools, createReadonlyChildBashTool(ctx.cwd)]
+		: childTools;
+
+	// Readonly: remove write/edit from child tools and hard-block destructive bash.
+	const effectiveToolNames = state.readonlyEnabled
+		? childToolNames.filter((name) => name !== "write" && name !== "edit")
+		: childToolNames;
 
 	const { session } = await sessionFactory({
 		sessionManager: SessionManager.inMemory(),
 		model: childModel,
 		thinkingLevel: childThinking,
 		cwd: ctx.cwd,
-		tools: childToolNames,
-		customTools: childTools,
+		tools: effectiveToolNames,
+		customTools: effectiveChildTools,
 		authStorage,
 		modelRegistry,
 	});
