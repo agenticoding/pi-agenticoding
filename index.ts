@@ -105,8 +105,14 @@ export default function (pi: ExtensionAPI): void {
 				break;
 			}
 		}
+		// CLI flag sets initial default, but branch state takes precedence after any toggle.
 		if (pi.getFlag("readonly") === true) {
-			state.readonlyEnabled = true;
+			const hasBranchEntry = branch.some(
+				(e) => (e as Record<string, unknown>).customType === "agenticoding-readonly"
+			);
+			if (!hasBranchEntry) {
+				state.readonlyEnabled = true;
+			}
 		}
 		// Nudge if readonly was activated by rehydration (CLI flag, branch restore, or undo)
 		if (state.readonlyEnabled && !wasEnabled) {
@@ -285,7 +291,9 @@ export default function (pi: ExtensionAPI): void {
 		return { systemPrompt: parts.join("\n\n") };
 	});
 
-	// ── context: inject primacy-zone nudge + readonly nudges ──────
+	// ── context: inject primacy-zone nudge + readonly ON/OFF nudges ──────
+	// ON: nudge once on toggle. OFF: checks --readonly CLI flag and prior
+	// branch entries to detect session-level un-toggle before nudging.
 	pi.on("context", async (event, ctx: ExtensionContext) => {
 		const usage = ctx.getContextUsage();
 		const percent = usage?.percent ?? null;
