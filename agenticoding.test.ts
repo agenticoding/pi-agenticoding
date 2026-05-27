@@ -226,6 +226,18 @@ test("updateIndicators uses error tone at 70%+ context", () => {
 	assert.ok(w?.[0]?.includes("85%"), "warning widget shown at 85%");
 });
 
+test("updateIndicators uses readonly-specific high-context guidance", () => {
+	const state = createState();
+	state.readonlyEnabled = true;
+	const record = { statuses: new Map<string, string | undefined>(), widgets: new Map<string, string[] | undefined>() };
+	const ctx = makeTUICtx({ percent: 85, record });
+
+	updateIndicators(ctx, state);
+	const w = record.widgets.get("agenticoding-warning");
+	assert.ok(w?.[0]?.includes("readonly: same topic → spawn"));
+	assert.ok(w?.[0]?.includes("disable readonly, then handoff"));
+});
+
 test("updateIndicators uses warning tone at 50-69% context", () => {
 	const state = createState();
 	const record = { statuses: new Map<string, string | undefined>(), widgets: new Map<string, string[] | undefined>() };
@@ -340,6 +352,29 @@ test("/handoff requires a direction", async () => {
 
 	assert.deepEqual(notifications, ["Usage: /handoff <direction>"]);
 	assert.deepEqual(pi.sentUserMessages, []);
+});
+
+test("/handoff is gated at command entry in readonly mode", async () => {
+	const pi = new MockPi();
+	const state = createState();
+	state.readonlyEnabled = true;
+	registerHandoffCommand(pi as any, state);
+
+	const notifications: Array<{ message: string; level: string }> = [];
+	await pi.commands.get("handoff")!.handler("implement auth", {
+		hasUI: true,
+		isIdle: () => true,
+		ui: {
+			notify: (message: string, level: string) => notifications.push({ message, level }),
+		},
+	});
+
+	assert.deepEqual(pi.sentUserMessages, []);
+	assert.equal(state.pendingRequestedHandoff, null);
+	assert.equal(notifications.length, 1);
+	assert.match(notifications[0].message, /Readonly mode blocks \/handoff/);
+	assert.match(notifications[0].message, /disable readonly with \/readonly/);
+	assert.equal(notifications[0].level, "warning");
 });
 
 test("handoff tool triggers compaction and resumes with the compacted task", async () => {
@@ -624,13 +659,14 @@ test("buildNudge handles null percent and boundary hints before topic guidance",
 		{
 			activeNotebookTopic: "oauth",
 			pendingTopicBoundaryHint: { from: "oauth", to: "billing", source: "human" },
+			readonlyEnabled: false,
 		},
 		null,
 	);
 	assert.match(boundary, /Notebook topic changed from oauth to billing/);
 	assert.doesNotMatch(boundary, /Active notebook topic: oauth/);
 
-	const noTopic = buildNudge({ activeNotebookTopic: null, pendingTopicBoundaryHint: null }, null);
+	const noTopic = buildNudge({ activeNotebookTopic: null, pendingTopicBoundaryHint: null, readonlyEnabled: false }, null);
 	assert.match(noTopic, /Topic-aware context reminder/);
 	assert.match(noTopic, /No active notebook topic is set/);
 });
@@ -2188,6 +2224,30 @@ test("/notebook <topic> notifies with info on first set and warning on boundary 
 	assert.equal(widgets.get(WIDGET_KEY_WARNING), undefined);
 });
 
+test("/notebook <topic> warns with readonly-safe guidance on boundary change", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+	const notifications: Array<{ message: string; level: string }> = [];
+	const ctx = {
+		hasUI: true,
+		getContextUsage: () => ({ percent: 20 }),
+		ui: {
+			theme: { fg: (_name: string, text: string) => text },
+			notify: (message: string, level: string) => { notifications.push({ message, level }); },
+			setStatus: () => {},
+			setWidget: () => {},
+		},
+	};
+
+	await pi.commands.get("readonly")!.handler("", ctx as any);
+	await pi.commands.get("notebook")!.handler("oauth", ctx as any);
+	await pi.commands.get("notebook")!.handler("billing", ctx as any);
+
+	assert.match(notifications[2].message, /use spawn only for same-topic delegation/);
+	assert.match(notifications[2].message, /disable readonly with \/readonly before handoff/);
+	assert.equal(notifications[2].level, "warning");
+});
+
 test("/notebook empty overlay renders empty state and closes on input", async () => {
 	const pi = new MockPi();
 	registerAgenticoding(pi as any);
@@ -3291,8 +3351,37 @@ test("notebook_topic_set preserves human authority, stays idempotent for equal t
 	);
 });
 
+test("buildNudge readonly with topic suggests same-topic spawn and readonly disable for handoff", () => {
+	const nudge = buildNudge(
+		{ readonlyEnabled: true, activeNotebookTopic: "my-topic", pendingTopicBoundaryHint: null },
+		50,
+	);
+	assert.match(nudge, /my-topic/);
+	assert.match(nudge, /same-topic delegation/);
+	assert.match(nudge, /disable readonly with \/readonly/i);
+});
+
+test("buildNudge readonly without topic suggests notebook_topic_set", () => {
+	const nudge = buildNudge(
+		{ readonlyEnabled: true, activeNotebookTopic: null, pendingTopicBoundaryHint: null },
+		50,
+	);
+	assert.match(nudge, /disable readonly with \/readonly/i);
+	assert.match(nudge, /notebook_topic_set/);
+});
+
+test("buildNudge readonly with boundary hint points to spawn vs disable readonly", () => {
+	const nudge = buildNudge(
+		{ readonlyEnabled: true, activeNotebookTopic: null, pendingTopicBoundaryHint: { from: "old", to: "new", source: "agent" } },
+		null,
+	);
+	assert.match(nudge, /Readonly blocks handoff/);
+	assert.match(nudge, /current topic/);
+	assert.match(nudge, /disable readonly with \/readonly/i);
+});
+
 test("buildNudge no longer emits the old percent-only handoff text", () => {
-	const old = buildNudge({ activeNotebookTopic: "oauth", pendingTopicBoundaryHint: null }, 46);
+	const old = buildNudge({ activeNotebookTopic: "oauth", pendingTopicBoundaryHint: null, readonlyEnabled: false }, 46);
 	assert.doesNotMatch(old, /One context, one job\.|If you're mid-job and still clear|consider a handoff and draft a clear brief/i);
 	assert.match(old, /Active notebook topic: oauth/);
 	assert.match(old, /prefer spawn/i);
@@ -3669,9 +3758,12 @@ test("isSafeReadonlyCommand blocks privilege and process mutation", () => {
 	assert.equal(isSafeReadonlyCommand("killall node"), false);
 });
 
-test("isSafeReadonlyCommand blocks shell redirects", () => {
+test("isSafeReadonlyCommand blocks shell redirects that can write files", () => {
 	assert.equal(isSafeReadonlyCommand("echo hello > file"), false);
 	assert.equal(isSafeReadonlyCommand("echo hello >> file"), false);
+	assert.equal(isSafeReadonlyCommand("echo hello 1>file"), false);
+	assert.equal(isSafeReadonlyCommand("echo hello 2>file"), false);
+	assert.equal(isSafeReadonlyCommand("git status > file"), false);
 });
 
 test("isSafeReadonlyCommand blocks package mutation", () => {
@@ -3696,6 +3788,35 @@ test("isSafeReadonlyCommand blocks editors", () => {
 	assert.equal(isSafeReadonlyCommand("emacs file.txt"), false);
 });
 
+test("isSafeReadonlyCommand allows non-editor code arguments", () => {
+	assert.equal(isSafeReadonlyCommand("rg \\bcode\\b readonly-bash.ts"), true);
+});
+test("isSafeReadonlyCommand allows safe fd routing redirects", function () {
+	assert.equal(isSafeReadonlyCommand("ls 2>&1"), true, "allows stderr to stdout redirect");
+	assert.equal(isSafeReadonlyCommand("ls 1>&2"), true, "allows stdout to stderr redirect");
+	assert.equal(isSafeReadonlyCommand("ls 2>/dev/null"), true, "allows stderr to null device");
+	assert.equal(isSafeReadonlyCommand("ls >/dev/null"), true, "allows stdout to null device");
+});
+
+test("isSafeReadonlyCommand blocks code editor edge cases", () => {
+	assert.equal(isSafeReadonlyCommand("code-insiders ."), false, "blocks VS Code Insiders");
+	assert.equal(isSafeReadonlyCommand("FOO=bar code ."), false, "blocks env-var prefix");
+	assert.equal(isSafeReadonlyCommand("FOO='a b' code ."), false, "blocks quoted env-var prefix");
+	assert.equal(isSafeReadonlyCommand("env FOO=bar code ."), false, "blocks env command prefix");
+	assert.equal(isSafeReadonlyCommand("command code ."), false, "blocks command wrapper prefix");
+	assert.equal(isSafeReadonlyCommand("/usr/bin/code ."), false, "blocks path-qualified code");
+	assert.equal(isSafeReadonlyCommand("ls && code ."), false, "blocks after shell chaining");
+	assert.equal(isSafeReadonlyCommand("code --diff a b"), false, "blocks with flags");
+	assert.equal(isSafeReadonlyCommand("grep code file.txt"), true, "allows grep matching word code");
+	assert.equal(isSafeReadonlyCommand("echo 'code' | cat"), true, "allows echo containing code");
+	assert.equal(isSafeReadonlyCommand("rg 'foo|code .' file.txt"), true, "allows quoted pipe content");
+	assert.equal(isSafeReadonlyCommand("echo hi | code ."), false, "blocks editor after a real pipe");
+	assert.equal(isSafeReadonlyCommand("echo hi & code ."), false, "blocks editor after backgrounding");
+	assert.equal(isSafeReadonlyCommand("echo hi\ncode ."), false, "blocks editor after a newline");
+	assert.equal(isSafeReadonlyCommand("git status\ncode ."), false, "blocks editor after a git read command");
+	assert.equal(isSafeReadonlyCommand("git status\nrm -rf tmp"), false, "blocks destructive command after a git read command");
+});
+
 test("isSafeReadonlyCommand allows git immutable subcommands", () => {
 	assert.equal(isSafeReadonlyCommand("git status"), true);
 	assert.equal(isSafeReadonlyCommand("git log --oneline"), true);
@@ -3710,6 +3831,9 @@ test("isSafeReadonlyCommand allows git immutable subcommands", () => {
 	assert.equal(isSafeReadonlyCommand("git remote -v"), true);
 	assert.equal(isSafeReadonlyCommand("git config --list"), true);
 	assert.equal(isSafeReadonlyCommand("git reflog"), true);
+	assert.equal(isSafeReadonlyCommand("git reflog show"), true);
+	assert.equal(isSafeReadonlyCommand("git reflog show HEAD"), true);
+	assert.equal(isSafeReadonlyCommand("git reflog show --all"), true);
 	assert.equal(isSafeReadonlyCommand("git --no-pager diff"), true);
 	assert.equal(isSafeReadonlyCommand("git branch -l"), true);
 });
@@ -3763,12 +3887,12 @@ test("readonly toggle command enables and disables readonly mode", () => {
 
 	// First toggle: ON
 	pi.commands.get("readonly")!.handler("", ctx);
-	assert.equal(notifications.pop(), "Readonly mode enabled");
+	assert.equal(notifications.pop(), "Readonly mode enabled \u2014 write/edit/handoff/destructive-bash blocked");
 	assert.ok(statuses.get("agenticoding-readonly")?.includes("readonly"));
 
 	// Second toggle: OFF
 	pi.commands.get("readonly")!.handler("", ctx);
-	assert.equal(notifications.pop(), "Readonly mode disabled");
+	assert.equal(notifications.pop(), "Readonly mode disabled \u2014 write/edit/handoff/bash unblocked");
 	assert.equal(statuses.get("agenticoding-readonly"), undefined);
 });
 
@@ -3795,7 +3919,7 @@ test("readonly TUI indicator is cleared when disabled", () => {
 
 // ── Readonly mode: tool_call blocking tests ────────────────────────
 
-test("readonly tool_call blocks write and edit", async () => {
+test("readonly tool_call blocks write, edit, and handoff", async () => {
 	const pi = new MockPi();
 	registerAgenticoding(pi as any);
 
@@ -3816,24 +3940,28 @@ test("readonly tool_call blocks write and edit", async () => {
 	// Block write
 	const writeResult = await toolCallHandler({ toolName: "write", input: { path: "/tmp/test" } }, {});
 	assert.equal(writeResult.block, true);
-	assert.match(writeResult.reason, /write\/edit disabled/);
+	assert.match(writeResult.reason, /write\/edit\/handoff disabled/);
 
 	// Block edit
 	const editResult = await toolCallHandler({ toolName: "edit", input: { path: "/tmp/test" } }, {});
 	assert.equal(editResult.block, true);
+
+	// Block handoff
+	const handoffResult = await toolCallHandler({ toolName: "handoff", input: { task: "test" } }, {});
+	assert.equal(handoffResult.block, true);
 
 	// Allow read
 	const readResult = await toolCallHandler({ toolName: "read", input: { path: "/tmp/test" } }, {});
 	assert.equal(readResult, undefined);
 });
 
-test("readonly tool_call blocks unsafe bash and allows safe bash", async () => {
+test("readonly tool_call does not block bash when readonly is off", async () => {
 	const pi = new MockPi();
 	registerAgenticoding(pi as any);
 
 	const [toolCallHandler] = pi.handlers.get("tool_call")!;
 
-	// Block when readonly is OFF — should not block
+	// Bash not blocked when readonly is off
 	const safeResult = await toolCallHandler({ toolName: "bash", input: { command: "rm -rf /" } }, {});
 	assert.equal(safeResult, undefined, "should not block when readonly is off");
 });
@@ -4118,7 +4246,7 @@ test("session_start clears readonly indicator on /new", async () => {
 	assert.equal(statuses.get("agenticoding-readonly"), undefined, "readonly indicator should be cleared on /new");
 });
 
-test("--readonly CLI flag overrides persisted branch state", async () => {
+test("--readonly CLI flag does not override branch state when branch has entries", async () => {
 	const pi = new MockPi();
 	pi.flags.set("readonly", true);
 	registerAgenticoding(pi as any);
@@ -4142,8 +4270,9 @@ test("--readonly CLI flag overrides persisted branch state", async () => {
 		});
 	}
 
+	// Branch has an explicit OFF entry; CLI flag only applies when no entries exist.
 	const s = statuses.get("agenticoding-readonly");
-	assert.ok(s?.includes("readonly"), "CLI --readonly flag should override persisted false");
+	assert.equal(s, undefined, "branch state should win over CLI flag");
 });
 
 test("--readonly CLI flag applies on session_start for new sessions", async () => {
@@ -4232,7 +4361,7 @@ test("readonly ON nudge is delivered via context hook", async () => {
 	assert.match(result.messages[1].content, /Readonly mode is active/);
 });
 
-test("readonly OFF nudge is delivered only if prior ON entry exists on branch", async () => {
+test("readonly OFF nudge is delivered when the current tree has a prior ON entry", async () => {
 	const pi = new MockPi();
 	registerAgenticoding(pi as any);
 
@@ -4258,12 +4387,10 @@ test("readonly OFF nudge is delivered only if prior ON entry exists on branch", 
 		getContextUsage: () => null,
 	});
 
-	// Branch has an ON entry
 	const branch = [
 		{ type: "custom", customType: "agenticoding-readonly", data: { enabled: true } },
 		{ type: "custom", customType: "agenticoding-readonly", data: { enabled: false } },
 	];
-
 	const [contextHandler] = pi.handlers.get("context")!;
 	const result = await contextHandler(
 		{ messages: [{ role: "user", content: "hi", timestamp: 1 }] },
@@ -4274,11 +4401,10 @@ test("readonly OFF nudge is delivered only if prior ON entry exists on branch", 
 	assert.match(result.messages[1].content, /turned off/);
 });
 
-test("readonly OFF nudge is suppressed when no prior ON entry exists", async () => {
+test("readonly OFF nudge is suppressed without a prior ON source", async () => {
 	const pi = new MockPi();
 	registerAgenticoding(pi as any);
 
-	// Toggle ON then OFF
 	await pi.commands.get("readonly")!.handler("", {
 		hasUI: true,
 		ui: {
@@ -4300,14 +4426,52 @@ test("readonly OFF nudge is suppressed when no prior ON entry exists", async () 
 		getContextUsage: () => null,
 	});
 
-	// No prior ON entry on branch
 	const [contextHandler] = pi.handlers.get("context")!;
 	const result = await contextHandler(
 		{ messages: [{ role: "user", content: "hi", timestamp: 1 }] },
 		{ getContextUsage: () => ({ percent: 10 }), sessionManager: { getBranch: () => [] } },
 	);
 
-	assert.equal(result, undefined, "OFF nudge should be suppressed without prior ON entry");
+	assert.equal(result, undefined);
+});
+
+test("readonly OFF nudge includes a handoff hint after high-context disable", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+
+	await pi.commands.get("readonly")!.handler("", {
+		hasUI: true,
+		ui: {
+			notify: () => {},
+			theme: { fg: (_n: string, t: string) => t },
+			setStatus: () => {},
+			setWidget: () => {},
+		},
+		getContextUsage: () => null,
+	});
+	await pi.commands.get("readonly")!.handler("", {
+		hasUI: true,
+		ui: {
+			notify: () => {},
+			theme: { fg: (_n: string, t: string) => t },
+			setStatus: () => {},
+			setWidget: () => {},
+		},
+		getContextUsage: () => null,
+	});
+
+	const branch = [
+		{ type: "custom", customType: "agenticoding-readonly", data: { enabled: true } },
+		{ type: "custom", customType: "agenticoding-readonly", data: { enabled: false } },
+	];
+	const [contextHandler] = pi.handlers.get("context")!;
+	const result = await contextHandler(
+		{ messages: [{ role: "user", content: "hi", timestamp: 1 }] },
+		{ getContextUsage: () => ({ percent: 61 }), sessionManager: { getBranch: () => branch } },
+	);
+
+	assert.match(result.messages[1].content, /Context was at 61%/);
+	assert.match(result.messages[1].content, /if the work changed topics, you can handoff now/);
 });
 
 test("readonly nudge is one-shot — not re-delivered on subsequent calls", async () => {
@@ -4410,6 +4574,31 @@ test("session_tree reapplies --readonly and clears stale readonly on no-entry br
 		getContextUsage: () => null,
 	});
 	assert.ok(statuses.get("agenticoding-readonly")?.includes("readonly"), "CLI flag should win during session_tree rehydration");
+});
+
+test("--readonly rehydration does not append synthetic history entries", async () => {
+	const pi = new MockPi();
+	pi.flags.set("readonly", true);
+	registerAgenticoding(pi as any);
+
+	const ctx = {
+		hasUI: true,
+		ui: {
+			theme: { fg: (_n: string, t: string) => t },
+			setStatus: () => {},
+			setWidget: () => {},
+		},
+		sessionManager: { getBranch: () => [] },
+		getContextUsage: () => null,
+	};
+
+	for (const handler of pi.handlers.get("session_start")!) {
+		await handler({ reason: "resume" }, ctx as any);
+	}
+	const [sessionTreeHandler] = pi.handlers.get("session_tree")!;
+	await sessionTreeHandler({}, ctx as any);
+
+	assert.equal(pi.appendedEntries.length, 0);
 });
 
 test("resetState clears readonly fields", () => {
