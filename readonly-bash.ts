@@ -1,8 +1,8 @@
 /**
  * Bash safety classifier for readonly mode.
  *
- * Blacklist approach: block destructive commands, allow everything else
- * (debugging, browser automation, system inspection, etc.).
+ * Pipeline: git strict allowlist → code editor detection (smart parser
+ * to avoid false-positives from grep) → destructive-command blacklist.
  *
  * Git uses a strict allowlist — only known-immutable subcommands pass.
  */
@@ -14,9 +14,6 @@ const DESTRUCTIVE_PATTERNS: RegExp[] = [
 	/\b(rm|rmdir|mv|cp|mkdir|touch|chmod|chown|chgrp|ln|tee|truncate|dd|shred)\b/,
 	// Privilege / process mutation
 	/\b(sudo|su|kill|pkill|killall|reboot|shutdown)\b/,
-	// Shell redirects
-	/(^|[^<])>(?!>)/,
-	/>>/,
 	// Package mutation
 	/\b(npm|yarn|pnpm)\s+(install|uninstall|update|ci|link|publish|add|remove)\b/i,
 	/\bpip\s+(install|uninstall)\b/i,
@@ -30,9 +27,169 @@ const DESTRUCTIVE_PATTERNS: RegExp[] = [
 	/\bsystemctl\s+(start|stop|restart|enable|disable)\b/i,
 	/\bservice\s+\S+\s+(start|stop|restart)\b/i,
 	// Editors (interactive or IDE-launching)
-	/\b(vim?|nano|emacs|code|subl)\b/i,
+	/\b(vim?|nano|emacs|subl)\b/i,
 ];
 
+/**
+ * Detect VS Code CLI invocation that would hang in headless readonly mode.
+ *
+ * `code` is handled separately because agents commonly grep for `\bcode\b`
+ * as a token (e.g. rg \bcode\b), causing false-positives with a simple
+ * word-boundary regex. Parse only unquoted shell separators so
+ * "rg \bcode\b file" is safe while "code .", "echo hi | code .",
+ * and newline-separated editor launches are blocked.
+ *
+ * Also catches code-insiders (VS Code Insiders variant). The optional
+ * leading env-var prefix handles cases like FOO=bar code .
+ */
+function splitUnquotedShellSegments(cmd: string): string[] {
+	const segments: string[] = [];
+	let current = "";
+	let quote: '"' | "'" | null = null;
+	let escaped = false;
+
+	for (let i = 0; i < cmd.length; i++) {
+		const ch = cmd[i];
+		const next = cmd[i + 1];
+
+		if (escaped) {
+			current += ch;
+			escaped = false;
+			continue;
+		}
+		if (ch === "\\") {
+			current += ch;
+			escaped = true;
+			continue;
+		}
+		if (quote) {
+			current += ch;
+			if (ch === quote) quote = null;
+			continue;
+		}
+		if (ch === '"' || ch === "'") {
+			quote = ch;
+			current += ch;
+			continue;
+		}
+		if ((ch === "&" && next === "&") || (ch === "|" && next === "|")) {
+			segments.push(current);
+			current = "";
+			i++;
+			continue;
+		}
+		const prev = current[current.length - 1];
+		if (ch === "|" && prev === ">") {
+			current += ch;
+			continue;
+		}
+		if (ch === "&" && (prev === ">" || prev === "<" || next === ">")) {
+			current += ch;
+			continue;
+		}
+		if (ch === ";" || ch === "|" || ch === "&" || ch === "\n") {
+			segments.push(current);
+			current = "";
+			continue;
+		}
+		current += ch;
+	}
+	segments.push(current);
+	return segments;
+}
+
+function stripMatchingQuotes(token: string): string {
+	if (
+		(token.startsWith('"') && token.endsWith('"')) ||
+		(token.startsWith("'") && token.endsWith("'"))
+	) {
+		return token.slice(1, -1);
+	}
+	return token;
+}
+
+function readRedirectTarget(cmd: string, start: number): { target: string; end: number } {
+	let i = start;
+	while (i < cmd.length && /\s/.test(cmd[i])) i++;
+	if (i >= cmd.length) return { target: "", end: i };
+
+	const first = cmd[i];
+	if (first === '"' || first === "'") {
+		const quote = first;
+		let target = quote;
+		i++;
+		while (i < cmd.length) {
+			const ch = cmd[i];
+			target += ch;
+			if (ch === "\\" && quote === '"' && i + 1 < cmd.length) {
+				i++;
+				target += cmd[i];
+				continue;
+			}
+			if (ch === quote) {
+				i++;
+				break;
+			}
+			i++;
+		}
+		return { target, end: i };
+	}
+
+	let target = "";
+	while (i < cmd.length) {
+		const ch = cmd[i];
+		if (/\s/.test(ch) || ch === ";" || ch === "|" || ch === "\n") break;
+		if (ch === "&" && target !== "") break;
+		target += ch;
+		i++;
+	}
+	return { target, end: i };
+}
+
+function isSafeRedirectTarget(target: string): boolean {
+	const normalized = stripMatchingQuotes(target);
+	return normalized === "/dev/null" || /^&\d+$/.test(normalized);
+}
+
+function hasUnsafeWriteRedirect(cmd: string): boolean {
+	let quote: '"' | "'" | null = null;
+	let escaped = false;
+
+	for (let i = 0; i < cmd.length; i++) {
+		const ch = cmd[i];
+
+		if (escaped) {
+			escaped = false;
+			continue;
+		}
+		if (ch === "\\") {
+			escaped = true;
+			continue;
+		}
+		if (quote) {
+			if (ch === quote) quote = null;
+			continue;
+		}
+		if (ch === '"' || ch === "'") {
+			quote = ch;
+			continue;
+		}
+		if (ch !== ">") continue;
+
+		const next = cmd[i + 1];
+		const opLen = next === ">" || next === "|" ? 2 : 1;
+		const { target, end } = readRedirectTarget(cmd, i + opLen);
+		if (!isSafeRedirectTarget(target)) return true;
+		i = Math.max(i, end - 1);
+	}
+
+	return false;
+}
+
+function isCodeEditorInvocation(cmd: string): boolean {
+	// Caller already split on shell operators.
+	return /^(?:env\s+)?(?:\w+=(?:"[^"]*"|\u0027[^\u0027]*\u0027|\S+)\s+)*(?:command\s+)?(?:\S*\/)?code(?:-insiders)?(?:\s|$)/i.test(cmd.trim());
+}
 /**
  * Git subcommand policy — three-tier classification.
  *
@@ -48,7 +205,7 @@ const DESTRUCTIVE_PATTERNS: RegExp[] = [
  * GIT_MIXED: Allow only read-oriented flags/subcommands. Each entry has a
  *   predicate function. Strategy: ALLOWLIST — only known-safe subcommands pass,
  *   everything else blocks (conservative).
- *   reflog:     bare only (sub === "")
+ *   reflog:     bare or show...
  *   branch:     --list, -l, bare, or any non-flag arg (e.g. a branch name)
  *   tag:        --list, -l, bare, or any non-flag arg
  *   stash:      list, show
@@ -80,7 +237,7 @@ const GIT_MUTABLE = new Set([
 
 /** Mixed subcommands: allow only read-oriented flags/subcommands. */
 const GIT_MIXED: Record<string, (sub: string) => boolean> = {
-	reflog: (sub) => sub === "",
+	reflog: (sub) => sub === "" || sub === "show" || sub.startsWith("show "),
 	branch: (sub) => /^--?[a-zA-Z]*list/.test(sub) || sub === "-l" || sub === "" || !sub.startsWith("-"),
 	tag: (sub) => /^--?[a-zA-Z]*list/.test(sub) || sub === "-l" || sub === "" || !sub.startsWith("-"),
 	stash: (sub) => sub === "list" || sub === "show",
@@ -142,16 +299,24 @@ function isSafeGitCommand(cmd: string): boolean {
  *
  * Policy: blacklist destructive commands, allow everything else.
  * Git is the exception — strict allowlist.
+ *
+ * Internally splits the command into shell-operator-separated segments
+ * (handling `&&`, `||`, `;`, `|`, `&`, `\n`) and tests each segment
+ * independently. A single unsafe segment blocks the entire command.
  */
 export function isSafeReadonlyCommand(cmd: string): boolean {
-	// Git special policy
-	if (/^\s*git\b/i.test(cmd)) {
-		return isSafeGitCommand(cmd);
-	}
+	for (const segment of splitUnquotedShellSegments(cmd)) {
+		const trimmed = segment.trim();
+		if (!trimmed) continue;
 
-	// Blacklist: if any destructive pattern matches, block
-	for (const pattern of DESTRUCTIVE_PATTERNS) {
-		if (pattern.test(cmd)) return false;
+		if (/^\s*git\b/i.test(trimmed) && !isSafeGitCommand(trimmed)) return false;
+		if (isCodeEditorInvocation(trimmed)) return false;
+		if (hasUnsafeWriteRedirect(trimmed)) return false;
+
+		// Blacklist: if any destructive pattern matches, block
+		for (const pattern of DESTRUCTIVE_PATTERNS) {
+			if (pattern.test(trimmed)) return false;
+		}
 	}
 
 	return true;
