@@ -155,7 +155,9 @@ export default function (pi: ExtensionAPI): void {
 				const result = setActiveNotebookTopic(state, topicArg, "human");
 				if (ctx.hasUI) {
 					const message = result.boundaryHint
-						? `Active notebook topic changed: ${result.boundaryHint.from} → ${result.boundaryHint.to}. This is a likely task boundary; handoff is recommended before continuing.`
+						? state.readonlyEnabled
+							? `Active notebook topic changed: ${result.boundaryHint.from} → ${result.boundaryHint.to}. This is a likely task boundary; use spawn only for same-topic delegation, or disable readonly with /readonly before handoff.`
+							: `Active notebook topic changed: ${result.boundaryHint.from} → ${result.boundaryHint.to}. This is a likely task boundary; handoff is recommended before continuing.`
 						: `Active notebook topic: ${result.current}`;
 					ctx.ui.notify(message, result.boundaryHint ? "warning" : "info");
 				}
@@ -314,17 +316,16 @@ export default function (pi: ExtensionAPI): void {
 							role: "custom" as const,
 							customType: "agenticoding-readonly-nudge",
 							content:
-								"Readonly mode is active. Do not call write or edit. " +
-								"Destructive bash operations will be blocked.",
+								"Readonly mode is active. write, edit, handoff, and destructive " +
+								"bash operations are blocked. Allowed: read, notebook, safe bash, spawn for same-topic delegation. Disable readonly with /readonly before handoff.",
 							display: false,
 							timestamp: Date.now(),
 						},
 					],
 				};
 			} else {
-				// OFF nudge — only if there was a prior ON entry on this branch
 				const branch = ctx.sessionManager?.getBranch?.() ?? [];
-				const hasPriorOn = branch.some(
+				const hasPriorOn = pi.getFlag("readonly") === true || branch.some(
 					(e) =>
 						(e as Record<string, unknown>).customType === "agenticoding-readonly" &&
 						((e as Record<string, unknown>).data as Record<string, unknown>)?.enabled === true,
@@ -336,7 +337,11 @@ export default function (pi: ExtensionAPI): void {
 							{
 								role: "custom" as const,
 								customType: "agenticoding-readonly-nudge",
-								content: "Readonly mode has been turned off. You may now use write, edit, and bash freely.",
+								content:
+									"Readonly mode has been turned off. You may now use write, edit, handoff, and bash freely." +
+									(percent !== null && percent >= 30
+										? " Context was at " + Math.round(percent) + "% — if the work changed topics, you can handoff now."
+										: ""),
 								display: false,
 								timestamp: Date.now(),
 							},
@@ -346,6 +351,8 @@ export default function (pi: ExtensionAPI): void {
 			}
 		}
 
+		// Below primacy-zone threshold (~30%), skip watchdog unless a boundary
+		// hint is pending — context is still fresh enough that nudges add noise.
 		if (!state.pendingTopicBoundaryHint && (percent === null || percent < 30)) {
 			return;
 		}

@@ -67,9 +67,12 @@ export function updateIndicators(ctx: ExtensionContext, state: AgenticodingState
 
 	// High-context warning widget (above editor)
 	if (usage && usage.percent !== null && usage.percent >= 70) {
-		const warning = state.activeNotebookTopic
-			? `Context at ${Math.round(usage.percent)}% — use topic fit: same topic → spawn, different topic → handoff`
-			: `Context at ${Math.round(usage.percent)}% — no active topic; handoff soon unless you can assign one cleanly`;
+		const pct = Math.round(usage.percent);
+		const warning = state.readonlyEnabled
+			? `Context at ${pct}% — readonly: same topic → spawn; different topic → disable readonly, then handoff`
+			: state.activeNotebookTopic
+				? `Context at ${pct}% — use topic fit: same topic → spawn, different topic → handoff`
+				: `Context at ${pct}% — no active topic; handoff soon unless you can assign one cleanly`;
 		ctx.ui.setWidget(WIDGET_KEY_WARNING, [
 			theme.fg("error", "\u26A0 ") + theme.fg("warning", warning),
 		]);

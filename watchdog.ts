@@ -12,12 +12,20 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import type { AgenticodingState } from "./state.js";
 import { STATUS_KEY_HANDOFF } from "./tui.js";
 
-export function buildNudge(state: Pick<AgenticodingState, "activeNotebookTopic" | "pendingTopicBoundaryHint">, percent: number | null): string {
+export function buildNudge(
+	state: Pick<AgenticodingState, "activeNotebookTopic" | "pendingTopicBoundaryHint" | "readonlyEnabled">,
+	percent: number | null,
+): string {
 	const pct = percent === null ? null : Math.round(percent);
 	const topic = state.activeNotebookTopic;
 	const boundary = state.pendingTopicBoundaryHint;
+	const readonly = state.readonlyEnabled;
 
 	if (boundary) {
+		if (readonly) {
+			return `Notebook topic changed from ${boundary.from ?? "(unset)"} to ${boundary.to}.
+Readonly blocks handoff. Use spawn only for subtasks that still fit the current topic. Disable readonly with /readonly before a real handoff.`;
+		}
 		return `Notebook topic changed from ${boundary.from ?? "(unset)"} to ${boundary.to}.
 Treat this as a strong task-boundary signal. Prefer a deliberate handoff before
 continuing under the new topic: save durable findings to the notebook, draft a
@@ -25,6 +33,24 @@ concise situational brief, and call handoff. Only continue inline if this was
 merely a rename rather than a real pivot.`;
 	}
 
+	if (readonly) {
+		const contextLead = pct === null
+			? "Readonly mode is active."
+			: `Context at ${pct}% — readonly mode is active.`;
+
+		const readonlyAdvice = "Use spawn only for same-topic delegation. Disable readonly with /readonly before a real handoff.";
+		if (topic) {
+			return `${contextLead}
+Active notebook topic: ${topic}.
+${readonlyAdvice}
+Save durable findings to the notebook before moving on.`;
+		}
+		return `${contextLead}
+${readonlyAdvice}
+Assign a short stable topic with notebook_topic_set to track the current frame.`;
+	}
+
+	// ── Not readonly — existing logic unchanged ──────────────────────
 	const contextLead = pct === null
 		? "Topic-aware context reminder."
 		: pct >= 70
