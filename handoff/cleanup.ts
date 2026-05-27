@@ -7,10 +7,6 @@ export function buildMissingRequestedHandoffDiagnostic(direction: string): strin
 	return `Manual /handoff did not compact for direction "${direction}" because the assistant did not call the handoff tool. The temporary handoff tool activation has been cleared.`;
 }
 
-export function buildBusyRequestedHandoffDiagnostic(direction: string): string {
-	return `Manual /handoff was not queued for direction "${direction}" because the assistant is currently streaming. Retry /handoff once the assistant is idle so Pi can start a fresh turn with the handoff tool available.`;
-}
-
 export function emitHandoffDiagnostic(
 	pi: ExtensionAPI,
 	ctx: ExtensionContext,
@@ -20,11 +16,6 @@ export function emitHandoffDiagnostic(
 	if (ctx.hasUI) {
 		ctx.ui.notify?.(message, level);
 	}
-	pi.sendMessage({
-		customType: "agenticoding-handoff-diagnostic",
-		content: message,
-		display: true,
-	});
 }
 
 export async function clearStaleRequestedHandoff(

@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Breaking:** handoff no longer auto-sends `Proceed.` after compaction and no longer supports configurable auto-resume. The superseded `handoff.resumeBehavior` (`"wait"`/`"proceed"`) setting is ignored.
 - Added `handoff.automaticEnabled` raw settings support with JSON boolean values. Missing settings default to automatic handoff enabled; `false` removes the agent-facing handoff tool and handoff-call guidance during normal turns while preserving explicit `/handoff <direction>`.
 - Added the extension-owned `/agenticoding-settings` TUI panel for automatic handoff availability. TUI saves are global-only to `~/.pi/agent/settings.json`, preserve unrelated settings keys, persist real booleans, and visibly warn when a project override masks the global value.
-- Manual `/handoff <direction>` now refuses while the assistant is streaming and tells the operator to retry once idle. This reflects Pi's tool-schema snapshot semantics and missing fresh-turn lifecycle hooks for queued follow-up turns.
+- Manual `/handoff <direction>` now waits behind the scenes when the assistant is streaming, then enables the `handoff` tool and starts a fresh handoff turn once idle. Visible `agenticoding-handoff-diagnostic` conversation messages have been removed from this flow.
 
 ## [0.3.0] - 2026-05-23
 

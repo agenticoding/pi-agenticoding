@@ -646,23 +646,44 @@ test("manual slash handoff restores deactivated handoff after success error or s
 	});
 });
 
-test("manual slash handoff refuses busy requests and asks the operator to retry once idle", async () => {
+test("manual slash handoff waits for busy runs then starts a fresh handoff turn", async () => {
 	await withIsolatedSettings(async ({ cwd }) => {
 		await writeSettingsFile(join(cwd, ".pi", "settings.json"), { handoff: { automaticEnabled: false } });
 		const pi = new MockPi();
 		registerAgenticoding(pi as any);
+		const deferred = createDeferred();
+		let idle = false;
+		let waitCalls = 0;
 
-		await pi.commands.get("handoff")!.handler("implement auth", { cwd, hasUI: false, isIdle: () => false });
+		const command = pi.commands.get("handoff")!.handler("implement auth", {
+			cwd,
+			hasUI: false,
+			isIdle: () => idle,
+			waitForIdle: async () => {
+				waitCalls += 1;
+				await deferred.promise;
+				idle = true;
+			},
+		});
 
+		await Promise.resolve();
+		assert.equal(waitCalls, 1);
 		assert.equal(pi.activeTools.includes("handoff"), false);
 		assert.deepEqual(pi.sentUserMessages, []);
-		assert.equal(pi.sentMessages[0]?.message.customType, "agenticoding-handoff-diagnostic");
-		assert.match(pi.sentMessages[0]?.message.content, /currently streaming/);
-		assert.match(pi.sentMessages[0]?.message.content, /Retry \/handoff once the assistant is idle/);
+		assert.deepEqual(pi.sentMessages, []);
+
+		deferred.resolve();
+		await command;
+
+		assert.ok(pi.activeTools.includes("handoff"));
+		assert.equal(pi.sentUserMessages.length, 1);
+		assert.equal(pi.sentUserMessages[0].options, undefined);
+		assert.match(pi.sentUserMessages[0].content, /Handoff direction: implement auth/);
+		assert.deepEqual(pi.sentMessages, []);
 	});
 });
 
-test("manual slash handoff reports a diagnostic instead of prompting prose when handoff cannot be activated", async () => {
+test("manual slash handoff reports only a UI error when handoff cannot be activated", async () => {
 	const pi = new MockPi();
 	(pi as any).setActiveTools = undefined;
 	const state = createState();
@@ -679,7 +700,7 @@ test("manual slash handoff reports a diagnostic instead of prompting prose when 
 	assert.deepEqual(pi.sentUserMessages, []);
 	assert.equal(notifications[0].level, "error");
 	assert.match(notifications[0].message, /could not be activated/);
-	assert.equal(pi.sentMessages[0].message.customType, "agenticoding-handoff-diagnostic");
+	assert.deepEqual(pi.sentMessages, []);
 });
 
 test("handoff automatic setting is documented in README", async () => {
@@ -1086,7 +1107,7 @@ test("turn_end fallback clears stale requested handoff status", async () => {
 	assert.equal(statuses.get(STATUS_KEY_HANDOFF), undefined);
 	assert.equal(notifications[0].level, "warning");
 	assert.match(notifications[0].message, /did not call the handoff tool/);
-	assert.equal(pi.sentMessages.at(-1)?.message.customType, "agenticoding-handoff-diagnostic");
+	assert.deepEqual(pi.sentMessages, []);
 });
 
 test("session_start new clears stale handoff status and warning widget", async () => {
@@ -1232,7 +1253,7 @@ test("buildNudge handles null percent and boundary hints before topic guidance",
 	assert.match(noTopic, /No active notebook topic is set/);
 });
 
-test("watchdog stale requested handoff cleanup emits a visible context diagnostic", async () => {
+test("watchdog stale requested handoff cleanup avoids conversation diagnostics", async () => {
 	const pi = new MockPi();
 	const state = createState();
 	state.pendingRequestedHandoff = { direction: "implement auth", enforcementAttempts: 0, toolCalled: false, awaitingAgentTurn: false };
@@ -1255,8 +1276,7 @@ test("watchdog stale requested handoff cleanup emits a visible context diagnosti
 	assert.equal(state.pendingRequestedHandoff, null);
 	assert.equal(notifications[0].level, "warning");
 	assert.match(notifications[0].message, /did not call the handoff tool/);
-	assert.equal(pi.sentMessages[0].message.customType, "agenticoding-handoff-diagnostic");
-	assert.match(pi.sentMessages[0].message.content, /did not call the handoff tool/);
+	assert.deepEqual(pi.sentMessages, []);
 	assert.deepEqual(pi.sentUserMessages, []);
 });
 

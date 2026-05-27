@@ -8,8 +8,8 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { AgenticodingState } from "../state.js";
 import { STATUS_KEY_HANDOFF } from "../tui.js";
-import { temporarilyActivateHandoffTool } from "./availability.js";
-import { buildBusyRequestedHandoffDiagnostic, emitHandoffDiagnostic } from "./cleanup.js";
+import { temporarilyActivateHandoffTool, updateHandoffToolAvailability } from "./availability.js";
+import { emitHandoffDiagnostic } from "./cleanup.js";
 
 export function registerHandoffCommand(pi: ExtensionAPI, state: AgenticodingState): void {
 	pi.registerCommand("handoff", {
@@ -24,9 +24,25 @@ export function registerHandoffCommand(pi: ExtensionAPI, state: AgenticodingStat
 				return;
 			}
 
-			const isIdle = typeof ctx.isIdle === "function" ? ctx.isIdle() : true;
+			let isIdle = typeof ctx.isIdle === "function" ? ctx.isIdle() : true;
 			if (!isIdle) {
-				emitHandoffDiagnostic(pi, ctx, buildBusyRequestedHandoffDiagnostic(direction), "warning");
+				if (ctx.hasUI && ctx.ui.theme) {
+					ctx.ui.setStatus?.(
+						STATUS_KEY_HANDOFF,
+						ctx.ui.theme.fg("accent", "\uD83E\uDD1D Handoff pending"),
+					);
+				}
+				if (typeof ctx.waitForIdle === "function") {
+					await ctx.waitForIdle();
+				}
+				isIdle = typeof ctx.isIdle === "function" ? ctx.isIdle() : true;
+			}
+
+			if (!isIdle) {
+				if (ctx.hasUI) {
+					ctx.ui.setStatus?.(STATUS_KEY_HANDOFF, undefined);
+					ctx.ui.notify?.("Manual /handoff is waiting for the assistant to become idle before starting a fresh handoff turn.", "warning");
+				}
 				return;
 			}
 
@@ -55,10 +71,18 @@ export function registerHandoffCommand(pi: ExtensionAPI, state: AgenticodingStat
 				);
 			}
 
-			pi.sendUserMessage(
-				prompt,
-				isIdle ? undefined : { deliverAs: "followUp" },
-			);
+			void Promise.resolve(pi.sendUserMessage(prompt)).catch(async (error) => {
+				state.pendingRequestedHandoff = null;
+				state.pendingRequestedHandoffPrompt = null;
+				if (ctx.hasUI) {
+					ctx.ui.setStatus?.(STATUS_KEY_HANDOFF, undefined);
+					ctx.ui.notify?.(
+						`Manual /handoff could not start: ${error instanceof Error ? error.message : String(error)}`,
+						"error",
+					);
+				}
+				await updateHandoffToolAvailability(pi, state, ctx);
+			});
 		},
 	});
 }
