@@ -12,7 +12,8 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type { AgenticodingState } from "../state.js";
-import { STATUS_KEY_HANDOFF } from "../tui.js";
+import { resolveHandoffAutomaticAvailability } from "../settings.js";
+import { clearPendingHandoffCompaction } from "./cleanup.js";
 
 /**
  * Build the enriched task that becomes the compaction summary.
@@ -46,59 +47,57 @@ export function registerHandoffTool(
 		name: "handoff",
 		label: "Handoff",
 		description:
-			"Replace the active context with a compact task brief at the end of " +
-			"the current turn while keeping full history in the session file. Handoff clears the active notebook topic so the next clean context can assign a fresh one.\n\n" +
-			"WHEN TO USE:\n" +
-			"  1. Context past ~30% and the current job is no longer cleanly " +
-			"represented near the front of attention.\n" +
-			"  2. Context is filled with mechanics irrelevant to what comes " +
-			"next (research traces, planning deliberation, dead ends).\n" +
-			"  3. The current job is complete and a new distinct task starts.\n\n" +
-			"Rule: one context, one job. When the job changes, call handoff.\n\n" +
-			"AFTER HANDOFF the LLM sees:\n" +
-			"  • System prompt + context primer\n" +
-			"  • The handoff task — the distilled next work at the top of context\n" +
-			"  • All notebook pages — durable grounding accessible via notebook_read / notebook_index",
-
-		promptSnippet: "Pivot to a new job via deliberate handoff compaction",
-		promptGuidelines: [
-			"Before handoff, promote any missing durable grounding knowledge that the next context will need to the notebook. " +
-				"Then draft a concise but sufficiently detailed brief with the distilled next task and immediate starting state for the next clean context. The active notebook topic will reset after handoff, so the next context should assign a fresh topic from the brief or user direction.",
-		],
+			"Performs authorized context compaction with a supplied task brief. " +
+			"Availability is enforced at execution time by extension state and settings.",
 
 		executionMode: "sequential",
 
 		parameters: Type.Object({
 			task: Type.String({
 				description:
-					"What to do next. A concise but sufficiently detailed handoff brief. " +
-					"This becomes the FIRST thing the LLM sees after handoff. Capture the distilled next task, " +
-					"immediate starting state, blockers, failed paths worth avoiding, and relevant notebook page names. " +
-					"The notebook is the long-term grounding store; this brief should carry only the remaining situational context.",
+					"Task brief to place at the start of the next compacted context when this handoff request is authorized.",
 			}),
 		}),
 
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const availability = await resolveHandoffAutomaticAvailability(ctx);
+			const manualRequest = state.pendingRequestedHandoff;
+			const awaitingManualRequest = manualRequest?.awaitingAgentTurn === true;
+			const activeManualRequest = manualRequest?.awaitingAgentTurn === false ? manualRequest : null;
+			if (awaitingManualRequest) {
+				return {
+					content: [{ type: "text", text: "A manual /handoff request is queued, but its generated user turn has not started yet. No compaction was started." }],
+					details: { automaticEnabled: availability.automaticEnabled, manualRequest: "awaiting_agent_turn" },
+				};
+			}
+			if (!availability.automaticEnabled && !activeManualRequest) {
+				if (ctx.hasUI) {
+					ctx.ui.notify("Automatic handoff is disabled by handoff.automaticEnabled=false; use the explicit /handoff <direction> command to request a manual handoff.", "warning");
+				}
+				return {
+					content: [{ type: "text", text: "Automatic handoff is disabled, and there is no active manual /handoff request. No compaction was started." }],
+					details: { automaticEnabled: false, manualRequest: false },
+				};
+			}
+
 			const enrichedTask = buildEnrichedTask(params.task);
 			state.pendingHandoff = { task: enrichedTask, source: "tool" };
-			if (state.pendingRequestedHandoff) {
-				state.pendingRequestedHandoff.toolCalled = true;
+			if (activeManualRequest) {
+				activeManualRequest.toolCalled = true;
 			}
-			ctx.compact({
-				onComplete: () => {
-					pi.sendUserMessage("Proceed.");
-				},
-				onError: () => {
-					state.pendingHandoff = null;
-					// Safe: pendingRequestedHandoff may already be cleaned up by watchdog
-					if (state.pendingRequestedHandoff) {
-						state.pendingRequestedHandoff.toolCalled = false;
-					}
-					if (ctx.hasUI) {
-						ctx.ui.setStatus(STATUS_KEY_HANDOFF, undefined);
-					}
-				},
-			});
+			try {
+				ctx.compact({
+					onComplete: () => {
+						pi.sendUserMessage("Proceed.");
+					},
+					onError: () => {
+						clearPendingHandoffCompaction(state, ctx);
+					},
+				});
+			} catch (error) {
+				clearPendingHandoffCompaction(state, ctx);
+				throw error;
+			}
 
 			return {
 				content: [{ type: "text", text: "Handoff started." }],

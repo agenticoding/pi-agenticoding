@@ -24,6 +24,7 @@ export function registerHandoffCompaction(pi: ExtensionAPI, state: AgenticodingS
 
 		state.pendingHandoff = null;
 		state.pendingRequestedHandoff = null;
+		state.pendingRequestedHandoffPrompt = null;
 		clearActiveNotebookTopic(state);
 
 		// Clear the handoff progress indicator now that compaction is consuming it

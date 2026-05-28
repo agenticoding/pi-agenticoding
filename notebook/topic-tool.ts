@@ -17,7 +17,7 @@ export function registerNotebookTopicTool(
 		promptSnippet: "Set the active notebook topic for the current session",
 		promptGuidelines: [
 			"Use this early in a fresh session when no active notebook topic exists yet.",
-			"Do not use this to override a human-set topic. If the work no longer fits the current topic, prefer handoff instead.",
+			"Do not use this to override a human-set topic. If the work no longer fits the current topic, keep the current topic and follow the session's context-pivot guidance before continuing in a different semantic frame.",
 		],
 		parameters: Type.Object({
 			topic: Type.String({
@@ -30,8 +30,8 @@ export function registerNotebookTopicTool(
 				if (state.activeNotebookTopic !== normalized) {
 					throw new Error(
 						state.activeNotebookTopicSource === "human"
-							? "Human-set notebook topic is authoritative. Use handoff instead of overriding it."
-							: "Active notebook topic already exists. Use handoff instead of changing it mid-session.",
+							? "Human-set notebook topic is authoritative. Keep the current topic and follow the session's context-pivot guidance before switching work."
+							: "Active notebook topic already exists. Keep the current topic and follow the session's context-pivot guidance before switching work.",
 					);
 				}
 				return {

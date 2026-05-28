@@ -10,42 +10,74 @@
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AgenticodingState } from "./state.js";
-import { STATUS_KEY_HANDOFF } from "./tui.js";
+import { clearStaleRequestedHandoff } from "./handoff/cleanup.js";
 
-export function buildNudge(state: Pick<AgenticodingState, "activeNotebookTopic" | "pendingTopicBoundaryHint">, percent: number | null): string {
+function formatContextLead(percent: number | null): string {
 	const pct = percent === null ? null : Math.round(percent);
-	const topic = state.activeNotebookTopic;
-	const boundary = state.pendingTopicBoundaryHint;
-
-	if (boundary) {
-		return `Notebook topic changed from ${boundary.from ?? "(unset)"} to ${boundary.to}.
-Treat this as a strong task-boundary signal. Prefer a deliberate handoff before
-continuing under the new topic: save durable findings to the notebook, draft a
-concise situational brief, and call handoff. Only continue inline if this was
-merely a rename rather than a real pivot.`;
-	}
-
-	const contextLead = pct === null
+	return pct === null
 		? "Topic-aware context reminder."
 		: pct >= 70
 			? `Context at ${pct}% — topic discipline is urgent.`
 			: pct >= 50
 				? `Context at ${pct}% — topic discipline matters now.`
 				: `Context at ${pct}% — choose your next step by topic fit.`;
+}
+
+export function buildManualHandoffNudge(state: Pick<AgenticodingState, "activeNotebookTopic" | "pendingTopicBoundaryHint">, percent: number | null): string {
+	const topic = state.activeNotebookTopic;
+	const boundary = state.pendingTopicBoundaryHint;
+	const boundaryText = boundary
+		? `Notebook topic changed from ${boundary.from ?? "(unset)"} to ${boundary.to}. Treat this as context to capture, but keep following the active manual handoff request.`
+		: "An explicit manual /handoff request is active.";
+	const topicText = topic ? `Active notebook topic: ${topic}.` : "No active notebook topic is set.";
+
+	return `${formatContextLead(percent)}
+${boundaryText}
+${topicText}
+Follow the user's manual /handoff direction: save durable findings to the notebook, draft the handoff brief, and call the handoff tool. Do not replace this with normal disabled-mode clean-transition guidance.`;
+}
+
+export function buildNudge(state: Pick<AgenticodingState, "activeNotebookTopic" | "pendingTopicBoundaryHint">, percent: number | null, handoffAutomaticEnabled = true): string {
+	const pct = percent === null ? null : Math.round(percent);
+	const topic = state.activeNotebookTopic;
+	const boundary = state.pendingTopicBoundaryHint;
+
+	if (boundary) {
+		return handoffAutomaticEnabled
+			? `Notebook topic changed from ${boundary.from ?? "(unset)"} to ${boundary.to}.
+Treat this as a strong task-boundary signal. Prefer a deliberate handoff before
+continuing under the new topic: save durable findings to the notebook, draft a
+concise situational brief, and call handoff. Only continue inline if this was
+merely a rename rather than a real pivot.`
+			: `Notebook topic changed from ${boundary.from ?? "(unset)"} to ${boundary.to}.
+Treat this as a strong task-boundary signal. Save durable findings to the
+notebook, then continue inline only if this was merely a rename or still safe.
+If this is a real pivot, tell the operator the clean next direction needed.`;
+	}
+
+	const contextLead = formatContextLead(percent);
 
 	if (topic) {
-		const urgency = pct !== null && pct >= 70
-			? "If the work no longer fits this topic, prefer a deliberate handoff now. If it still fits and only a focused noisy branch is needed, spawn it instead of polluting the parent context."
-			: "If the current work still fits this topic, prefer spawn for isolated noisy subtasks. If it no longer fits, prefer handoff instead of dragging stale context forward.";
+		const urgency = handoffAutomaticEnabled
+			? (pct !== null && pct >= 70
+				? "If the work no longer fits this topic, prefer a deliberate handoff now. If it still fits and only a focused noisy branch is needed, spawn it instead of polluting the parent context."
+				: "If the current work still fits this topic, prefer spawn for isolated noisy subtasks. If it no longer fits, prefer handoff instead of dragging stale context forward.")
+			: (pct !== null && pct >= 70
+				? "If the work no longer fits this topic, save notebook findings and tell the operator the clean next direction needed. If it still fits and only a focused noisy branch is needed, spawn it instead of polluting the parent context."
+				: "If the current work still fits this topic, prefer spawn for isolated noisy subtasks. If it no longer fits, save notebook findings, continue inline only if safe, or tell the operator.");
 		return `${contextLead}
 Active notebook topic: ${topic}.
 Use the topic as the current semantic frame. ${urgency}
-Save durable findings to the notebook before handoff.`;
+Save durable findings to the notebook before any clean transition.`;
 	}
 
-	const noTopicUrgency = pct !== null && pct >= 70
-		? "Assign a fresh topic in the next clean context after handoff."
-		: "Assign a short stable topic soon. If the work stays within that topic, prefer spawn for noisy subtasks. If the work shifts beyond it, prefer handoff.";
+	const noTopicUrgency = handoffAutomaticEnabled
+		? (pct !== null && pct >= 70
+			? "Assign a fresh topic in the next clean context after handoff."
+			: "Assign a short stable topic soon. If the work stays within that topic, prefer spawn for noisy subtasks. If the work shifts beyond it, prefer handoff.")
+		: (pct !== null && pct >= 70
+			? "Save notebook findings, tell the operator if a clean transition is needed, and assign a fresh topic in any new context."
+			: "Assign a short stable topic soon. If the work stays within that topic, prefer spawn for noisy subtasks. If the work shifts beyond it, save notebook findings and continue inline only if safe.");
 	return `${contextLead}
 No active notebook topic is set. ${noTopicUrgency}`;
 }
@@ -60,11 +92,8 @@ export function registerWatchdog(pi: ExtensionAPI, state: AgenticodingState): vo
 		const requestedHandoff = state.pendingRequestedHandoff;
 		if (requestedHandoff) {
 			requestedHandoff.enforcementAttempts += 1;
-			if (!requestedHandoff.toolCalled) {
-				state.pendingRequestedHandoff = null;
-				if (ctx.hasUI) {
-					ctx.ui.setStatus(STATUS_KEY_HANDOFF, undefined);
-				}
+			if (!requestedHandoff.toolCalled && !requestedHandoff.awaitingAgentTurn) {
+				await clearStaleRequestedHandoff(pi, state, ctx);
 			}
 		}
 

@@ -26,7 +26,7 @@ export const STATUS_KEY_NOTEBOOK = "agenticoding-notebook";
 export const STATUS_KEY_TOPIC = "agenticoding-topic";
 
 /** Update TUI indicators: context usage, notebook count, topic, warning widget. */
-export function updateIndicators(ctx: ExtensionContext, state: AgenticodingState): void {
+export function updateIndicators(ctx: ExtensionContext, state: AgenticodingState, handoffAutomaticEnabled = true): void {
 	if (!ctx.hasUI) return;
 
 	const theme = ctx.ui.theme;
@@ -58,9 +58,13 @@ export function updateIndicators(ctx: ExtensionContext, state: AgenticodingState
 
 	// High-context warning widget (above editor)
 	if (usage && usage.percent !== null && usage.percent >= 70) {
-		const warning = state.activeNotebookTopic
-			? `Context at ${Math.round(usage.percent)}% — use topic fit: same topic → spawn, different topic → handoff`
-			: `Context at ${Math.round(usage.percent)}% — no active topic; handoff soon unless you can assign one cleanly`;
+		const warning = handoffAutomaticEnabled
+			? (state.activeNotebookTopic
+				? `Context at ${Math.round(usage.percent)}% — use topic fit: same topic → spawn, different topic → handoff`
+				: `Context at ${Math.round(usage.percent)}% — no active topic; handoff soon unless you can assign one cleanly`)
+			: (state.activeNotebookTopic
+				? `Context at ${Math.round(usage.percent)}% — use topic fit: same topic → spawn, different topic → save notes and tell operator if a clean transition is needed`
+				: `Context at ${Math.round(usage.percent)}% — no active topic; save notebook findings and continue inline only if safe`);
 		ctx.ui.setWidget(WIDGET_KEY_WARNING, [
 			theme.fg("error", "\u26A0 ") + theme.fg("warning", warning),
 		]);

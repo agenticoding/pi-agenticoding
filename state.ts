@@ -38,7 +38,12 @@ export interface AgenticodingState {
 		direction: string;
 		enforcementAttempts: number;
 		toolCalled: boolean;
+		/** True until the LLM run created by /handoff has actually started. */
+		awaitingAgentTurn: boolean;
 	} | null;
+
+	/** Exact extension-injected user message that should start the pending /handoff run. */
+	pendingRequestedHandoffPrompt: string | null;
 
 	/**
 	 * Published child agent sessions keyed by toolCallId.
@@ -78,6 +83,7 @@ export function createState(): AgenticodingState {
 		lastContextPercent: null,
 		pendingHandoff: null,
 		pendingRequestedHandoff: null,
+		pendingRequestedHandoffPrompt: null,
 		childSessions,
 		liveChildSessions,
 		childSessionEpoch: 0,
@@ -111,6 +117,7 @@ export function resetState(state: AgenticodingState): void {
 	state.lastContextPercent = null;
 	state.pendingHandoff = null;
 	state.pendingRequestedHandoff = null;
+	state.pendingRequestedHandoffPrompt = null;
 	abortAndClearChildSessions(state);
 }
 
