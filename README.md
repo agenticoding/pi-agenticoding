@@ -127,9 +127,9 @@ To make handoff human-driven only, set `handoff.automaticEnabled` to `false` in 
 }
 ```
 
-Settings are read from `~/.pi/agent/settings.json` and `<project>/.pi/settings.json`, with project settings overriding global settings. When automatic handoff is disabled, the agent-facing `handoff` tool and handoff-call guidance are removed from normal turns. The explicit operator command `/handoff <direction>` still works from idle or busy prompts: if the assistant is streaming, it waits behind the scenes until the current run is idle, temporarily enables the tool for a fresh requested handoff turn, compacts, restores the disabled state, and auto-sends `Proceed.` after successful compaction.
+Settings are read from `~/.pi/agent/settings.json` and `<project>/.pi/settings.json`, with project settings overriding global settings. When automatic handoff is disabled, handoff-call guidance is removed from normal turns and direct `handoff` tool calls are rejected unless they are satisfying an explicit operator `/handoff <direction>` request. The tool remains registered; the setting is enforced by runtime guards rather than provider-schema removal.
 
-Run `/agenticoding-settings` to change the global value from the TUI. It saves global-only to `~/.pi/agent/settings.json`, preserves unrelated JSON keys, shows the effective runtime value separately, and warns when a project override masks the global value. Setting changes affect future fresh agent turns; manual `/handoff` uses that same rule by waiting for idle before enabling the tool and starting its own fresh turn. Edit or remove project overrides manually.
+Run `/agenticoding-settings` to change the global value from the TUI. It saves global-only to `~/.pi/agent/settings.json`, preserves unrelated JSON keys, shows the effective runtime value separately, and warns when a project override masks the global value. Setting changes affect prompt guidance on future fresh agent turns, while direct handoff tool calls are checked against the effective setting at execution time. Edit or remove project overrides manually.
 
 **Rule of thumb:** The notebook holds reusable learned knowledge. Handoff carries the remaining situational context.
 

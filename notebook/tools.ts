@@ -10,6 +10,7 @@ import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-age
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import type { AgenticodingState } from "../state.js";
+import { resolveHandoffAutomaticAvailability } from "../settings.js";
 import { updateIndicators } from "../tui.js";
 import { formatPageList, formatPagePreview, getPageNames, saveNotebookPage } from "./store.js";
 
@@ -50,7 +51,7 @@ export function createNotebookToolDefinitions(
 						"Reuse or refine an existing page when possible.",
 						"Prefer stable subject-oriented pages over workflow-phase pages.",
 						"Write for a fresh context: keep reusable facts, architecture, decisions, constraints, expensive discoveries, and durable open questions.",
-						"Avoid transient task state, scratch reasoning, transcripts, logs, or large tool output; the immediate next task belongs in handoff.",
+						"Avoid transient task state, scratch reasoning, transcripts, logs, or large tool output; keep immediate next-step state out of durable notebook pages.",
 					],
 				}
 			: {}),
@@ -94,7 +95,8 @@ export function createNotebookToolDefinitions(
 		async execute(_toolCallId, params, _signal, onUpdate, ctx) {
 			assertFresh();
 			const saved = await saveNotebookPage(pi, state, params.name, params.content, assertFresh);
-			updateIndicators(ctx, state);
+			const availability = await resolveHandoffAutomaticAvailability(ctx);
+			updateIndicators(ctx, state, availability.automaticEnabled);
 
 			onUpdate?.({
 				content: [{

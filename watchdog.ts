@@ -12,6 +12,31 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import type { AgenticodingState } from "./state.js";
 import { clearStaleRequestedHandoff } from "./handoff/cleanup.js";
 
+function formatContextLead(percent: number | null): string {
+	const pct = percent === null ? null : Math.round(percent);
+	return pct === null
+		? "Topic-aware context reminder."
+		: pct >= 70
+			? `Context at ${pct}% — topic discipline is urgent.`
+			: pct >= 50
+				? `Context at ${pct}% — topic discipline matters now.`
+				: `Context at ${pct}% — choose your next step by topic fit.`;
+}
+
+export function buildManualHandoffNudge(state: Pick<AgenticodingState, "activeNotebookTopic" | "pendingTopicBoundaryHint">, percent: number | null): string {
+	const topic = state.activeNotebookTopic;
+	const boundary = state.pendingTopicBoundaryHint;
+	const boundaryText = boundary
+		? `Notebook topic changed from ${boundary.from ?? "(unset)"} to ${boundary.to}. Treat this as context to capture, but keep following the active manual handoff request.`
+		: "An explicit manual /handoff request is active.";
+	const topicText = topic ? `Active notebook topic: ${topic}.` : "No active notebook topic is set.";
+
+	return `${formatContextLead(percent)}
+${boundaryText}
+${topicText}
+Follow the user's manual /handoff direction: save durable findings to the notebook, draft the handoff brief, and call the handoff tool. Do not replace this with normal disabled-mode clean-transition guidance.`;
+}
+
 export function buildNudge(state: Pick<AgenticodingState, "activeNotebookTopic" | "pendingTopicBoundaryHint">, percent: number | null, handoffAutomaticEnabled = true): string {
 	const pct = percent === null ? null : Math.round(percent);
 	const topic = state.activeNotebookTopic;
@@ -30,13 +55,7 @@ notebook, then continue inline only if this was merely a rename or still safe.
 If this is a real pivot, tell the operator the clean next direction needed.`;
 	}
 
-	const contextLead = pct === null
-		? "Topic-aware context reminder."
-		: pct >= 70
-			? `Context at ${pct}% — topic discipline is urgent.`
-			: pct >= 50
-				? `Context at ${pct}% — topic discipline matters now.`
-				: `Context at ${pct}% — choose your next step by topic fit.`;
+	const contextLead = formatContextLead(percent);
 
 	if (topic) {
 		const urgency = handoffAutomaticEnabled

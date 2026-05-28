@@ -9,9 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Added `handoff.automaticEnabled` raw settings support with JSON boolean values. Missing settings default to automatic handoff enabled; `false` removes the agent-facing handoff tool and handoff-call guidance during normal turns while preserving explicit `/handoff <direction>`.
+- Added `handoff.automaticEnabled` raw settings support with JSON boolean values. Missing settings default to automatic handoff enabled; `false` suppresses automatic handoff guidance and blocks direct agent-initiated handoff unless an explicit `/handoff <direction>` request is pending.
 - Added the extension-owned `/agenticoding-settings` TUI panel for automatic handoff availability. TUI saves are global-only to `~/.pi/agent/settings.json`, preserve unrelated settings keys, persist real booleans, and visibly warn when a project override masks the global value.
-- Manual `/handoff <direction>` now waits behind the scenes when the assistant is streaming, then enables the `handoff` tool and starts a fresh handoff turn once idle.
+- Manual `/handoff <direction>` remains available even when automatic handoff is disabled: it records the operator request, sends the handoff prompt, and lets the guarded `handoff` tool compact that requested turn.
+
+### Fixed
+
+- Queued manual `/handoff` follow-up prompts can no longer be preempted by an older agent turn's automatic handoff call before the generated user turn starts.
+- Global `handoff.automaticEnabled` saves now write through a same-directory temporary file and rename over the target, preserving the previous settings file if replacement fails.
 
 ## [0.3.0] - 2026-05-23
 
@@ -114,4 +119,3 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.3.0]: https://github.com/agenticoding/pi-agenticoding/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/agenticoding/pi-agenticoding/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/agenticoding/pi-agenticoding/releases/tag/v0.1.0
-

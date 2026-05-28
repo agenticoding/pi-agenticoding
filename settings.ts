@@ -1,6 +1,7 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { DynamicBorder, getSettingsListTheme } from "@earendil-works/pi-coding-agent";
 import {
@@ -15,6 +16,11 @@ export type HandoffAutomaticValue = "true" | "false";
 
 type SettingsObject = Record<string, unknown>;
 type SettingsSourceLabel = "global" | "project";
+type AtomicWriteOperations = {
+	writeFile: typeof writeFile;
+	rename: typeof rename;
+	rm: typeof rm;
+};
 
 export interface SettingsSourceState {
 	label: SettingsSourceLabel;
@@ -48,6 +54,12 @@ export interface AgenticodingSettingsModel {
 }
 
 const SUPPORTED_HANDOFF_AUTOMATIC_VALUES: HandoffAutomaticValue[] = ["true", "false"];
+const defaultAtomicWriteOperations: AtomicWriteOperations = { writeFile, rename, rm };
+let atomicWriteOperations: AtomicWriteOperations = defaultAtomicWriteOperations;
+
+export function setSettingsAtomicWriteOperationsForTest(operations: Partial<AtomicWriteOperations> | null): void {
+	atomicWriteOperations = operations ? { ...defaultAtomicWriteOperations, ...operations } : defaultAtomicWriteOperations;
+}
 
 export const MANUAL_AGENTICODING_SETTINGS_INSTRUCTIONS =
 	"No interactive settings TUI is available. Edit ~/.pi/agent/settings.json and set handoff.automaticEnabled, for example { \"handoff\": { \"automaticEnabled\": true } } or false. Project .pi/settings.json can override the global value.";
@@ -58,6 +70,18 @@ function getGlobalSettingsPath(): string {
 
 function getProjectSettingsPath(cwd: string | undefined): string {
 	return join(cwd ?? process.cwd(), ".pi", "settings.json");
+}
+
+async function writeFileAtomically(path: string, contents: string): Promise<void> {
+	const directory = dirname(path);
+	const tempPath = join(directory, `.${basename(path)}.${process.pid}.${Date.now()}.${randomUUID()}.tmp`);
+	try {
+		await atomicWriteOperations.writeFile(tempPath, contents, "utf8");
+		await atomicWriteOperations.rename(tempPath, path);
+	} catch (error) {
+		await atomicWriteOperations.rm(tempPath, { force: true }).catch(() => {});
+		throw error;
+	}
 }
 
 function isPlainObject(value: unknown): value is SettingsObject {
@@ -97,6 +121,9 @@ function mergeSettings(base: SettingsObject, override: SettingsObject): Settings
 	const result = cloneSettingsObject(base);
 	for (const [key, value] of Object.entries(override)) {
 		const existing = getOwnSetting(result, key);
+		if (key === "handoff" && !isPlainObject(value)) {
+			continue;
+		}
 		if (isPlainObject(existing) && isPlainObject(value)) {
 			setOwnSetting(result, key, mergeSettings(existing, value));
 		} else {
@@ -111,6 +138,16 @@ function extractAutomaticEnabled(settings: SettingsObject): unknown {
 	return isPlainObject(handoff) && hasOwnSetting(handoff, "automaticEnabled")
 		? getOwnSetting(handoff, "automaticEnabled")
 		: undefined;
+}
+
+function getLayeredAutomaticEnabled(state: HandoffSettingsState): { value: unknown; source: "default" | "global" | "project" } {
+	if (state.project.automaticEnabled !== undefined) {
+		return { value: state.project.automaticEnabled, source: "project" };
+	}
+	if (state.global.automaticEnabled !== undefined) {
+		return { value: state.global.automaticEnabled, source: "global" };
+	}
+	return { value: undefined, source: "default" };
 }
 
 function isHandoffAutomaticValue(value: unknown): value is HandoffAutomaticValue {
@@ -175,15 +212,12 @@ function resolveFromState(state: HandoffSettingsState): HandoffAutomaticAvailabi
 		return { automaticEnabled: false, source: "fallback" };
 	}
 
-	const automaticEnabled = extractAutomaticEnabled(state.merged);
-	if (automaticEnabled === undefined) {
+	const automatic = getLayeredAutomaticEnabled(state);
+	if (automatic.value === undefined) {
 		return { automaticEnabled: true, source: "default" };
 	}
-	if (typeof automaticEnabled === "boolean") {
-		return {
-			automaticEnabled,
-			source: state.project.automaticEnabled !== undefined ? "project" : "global",
-		};
+	if (typeof automatic.value === "boolean") {
+		return { automaticEnabled: automatic.value, source: automatic.source };
 	}
 	return { automaticEnabled: false, source: "fallback" };
 }
@@ -201,20 +235,17 @@ export async function resolveHandoffAutomaticAvailability(ctx: ExtensionContext)
 		return { automaticEnabled: false, source: "fallback" };
 	}
 
-	const automaticEnabled = extractAutomaticEnabled(state.merged);
-	if (automaticEnabled === undefined) {
+	const automatic = getLayeredAutomaticEnabled(state);
+	if (automatic.value === undefined) {
 		return { automaticEnabled: true, source: "default" };
 	}
-	if (typeof automaticEnabled === "boolean") {
-		return {
-			automaticEnabled,
-			source: state.project.automaticEnabled !== undefined ? "project" : "global",
-		};
+	if (typeof automatic.value === "boolean") {
+		return { automaticEnabled: automatic.value, source: automatic.source };
 	}
 
 	notify(
 		ctx,
-		`Unsupported handoff.automaticEnabled value ${formatSettingValue(automaticEnabled)}; supported values are true or false, falling back to automatic handoff disabled.`,
+		`Unsupported handoff.automaticEnabled value ${formatSettingValue(automatic.value)}; supported values are true or false, falling back to automatic handoff disabled.`,
 		"warning",
 	);
 	return { automaticEnabled: false, source: "fallback" };
@@ -259,7 +290,7 @@ export async function writeGlobalHandoffAutomaticEnabled(
 	setOwnSetting(settings, "handoff", handoff);
 
 	await mkdir(dirname(path), { recursive: true });
-	await writeFile(path, JSON.stringify(settings, null, 2) + "\n", "utf8");
+	await writeFileAtomically(path, JSON.stringify(settings, null, 2) + "\n");
 	notify(ctx, `Saved global handoff.automaticEnabled = ${booleanValue}.`, "info");
 	return true;
 }
@@ -274,9 +305,9 @@ export async function buildAgenticodingSettingsModel(ctx: ExtensionContext): Pro
 	} else if (state.project.invalid) {
 		messages.push(`Invalid project settings JSON at ${state.project.path}; runtime falls back to automatic handoff disabled, but global TUI saves are still allowed.`);
 	} else {
-		const mergedValue = extractAutomaticEnabled(state.merged);
-		if (mergedValue !== undefined && typeof mergedValue !== "boolean") {
-			messages.push(`Unsupported handoff.automaticEnabled value ${formatSettingValue(mergedValue)}; runtime falls back to automatic handoff disabled.`);
+		const automatic = getLayeredAutomaticEnabled(state);
+		if (automatic.value !== undefined && typeof automatic.value !== "boolean") {
+			messages.push(`Unsupported handoff.automaticEnabled value ${formatSettingValue(automatic.value)}; runtime falls back to automatic handoff disabled.`);
 		}
 	}
 
@@ -314,8 +345,8 @@ export function getAgenticodingSettingsDisplayLines(model: AgenticodingSettingsM
 	const lines = [
 		`Resolved handoff.automaticEnabled: ${model.effectiveAutomaticEnabled} (${model.effectiveSource})`,
 		`Supported values: true, false. Default: true (automatic handoff enabled).`,
-		`When false, the agent-facing handoff tool is inactive for normal turns; manual /handoff <direction> still works from an idle prompt.`,
-		`Setting changes affect future fresh agent turns; in-flight queued follow-ups keep their existing tool schema.`,
+		`When false, automatic agent-initiated handoff is blocked; explicit /handoff <direction> still works.`,
+		`Prompt guidance updates on future fresh agent turns; direct tool calls are guarded at execution time.`,
 		`After successful handoff compaction, Pi auto-sends Proceed.; this continuation is fixed, not configurable.`,
 		`Global settings: ${model.state.global.path} (${model.state.global.invalid ? "invalid JSON" : describeValue(model.state.global.automaticEnabled)})`,
 		`Project settings: ${model.state.project.path} (${model.state.project.invalid ? "invalid JSON" : describeValue(model.state.project.automaticEnabled)})`,

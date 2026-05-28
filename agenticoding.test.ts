@@ -1,6 +1,6 @@
 import test, { after } from "node:test";
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Theme } from "@earendil-works/pi-coding-agent";
@@ -30,6 +30,7 @@ import {
 	getAgenticodingSettingsDisplayLines,
 	readHandoffSettingsState,
 	resolveHandoffAutomaticAvailability,
+	setSettingsAtomicWriteOperationsForTest,
 	writeGlobalHandoffAutomaticEnabled,
 } from "./settings.js";
 import { CONTEXT_PRIMER } from "./system-prompt.js";
@@ -386,7 +387,7 @@ test("/handoff sends the direction back through the LLM without opening the edit
 	assert.deepEqual(pi.sentUserMessages, [
 		{
 			content:
-				"Handoff direction: implement auth\n\nPrepare a handoff in the current session. First, save any durable reusable knowledge that aligns with the direction above to the notebook: findings worth keeping, constraints discovered, decisions made, or other grounding future contexts will need. Then draft a concise but sufficiently detailed handoff brief capturing only the remaining situational context: current state, blockers, unresolved questions, failed paths worth avoiding, and next steps. The next context will read the notebook on demand, so do not duplicate notebook content in the brief. Use any structure that makes the next work unambiguous. Reference notebook pages by name when relevant. After drafting the brief, you must call the `handoff` tool with the brief as its task so the session actually compacts. Do not answer with only prose; if the `handoff` tool is unavailable, say that manual handoff cannot compact because the handoff tool is unavailable.",
+				"Handoff direction: implement auth\n\nPrepare a handoff in the current session. First, save any durable reusable knowledge that aligns with the direction above to the notebook: findings worth keeping, constraints discovered, decisions made, or other grounding future contexts will need. Then draft a concise but sufficiently detailed handoff brief capturing only the remaining situational context: current state, blockers, unresolved questions, failed paths worth avoiding, and next steps. The next context will read the notebook on demand, so do not duplicate notebook content in the brief. Use any structure that makes the next work unambiguous. Reference notebook pages by name when relevant. After drafting the brief, you must call the `handoff` tool with the brief as its task so the session actually compacts. Do not answer with only prose.",
 			options: undefined,
 		},
 	]);
@@ -406,6 +407,67 @@ test("/handoff requires a direction", async () => {
 
 	assert.deepEqual(notifications, ["Usage: /handoff <direction>"]);
 	assert.deepEqual(pi.sentUserMessages, []);
+});
+
+test("/handoff clears pending manual request when sendUserMessage throws synchronously", async () => {
+	const pi = new MockPi();
+	pi.sendUserMessage = () => { throw new Error("send failed"); };
+	const state = createState();
+	registerHandoffCommand(pi as any, state);
+	const notifications: Array<{ message: string; level: string }> = [];
+	const statuses: Array<string | undefined> = [];
+
+	await pi.commands.get("handoff")!.handler("implement auth", {
+		hasUI: true,
+		isIdle: () => true,
+		ui: {
+			theme,
+			setStatus: (_key: string, status: string | undefined) => statuses.push(status),
+			notify: (message: string, level: string) => notifications.push({ message, level }),
+		},
+	});
+
+	assert.equal(state.pendingRequestedHandoff, null);
+	assert.equal(state.pendingRequestedHandoffPrompt, null);
+	assert.deepEqual(statuses, ["🤝 Handoff in progress", undefined]);
+	assert.equal(notifications.length, 1);
+	assert.equal(notifications[0].level, "error");
+	assert.match(notifications[0].message, /send failed/);
+});
+
+test("/handoff async send failure does not clear a later manual request", async () => {
+	const pi = new MockPi();
+	const state = createState();
+	registerHandoffCommand(pi as any, state);
+	let sendCount = 0;
+	let rejectFirst!: (error: Error) => void;
+	const firstSend = new Promise<void>((_resolve, reject) => { rejectFirst = reject; });
+	pi.sendUserMessage = (content: string, options?: any) => {
+		pi.sentUserMessages.push({ content, options });
+		sendCount++;
+		return sendCount === 1 ? firstSend : new Promise<void>(() => {});
+	};
+	const notifications: Array<{ message: string; level: string }> = [];
+	const ctx = {
+		hasUI: true,
+		isIdle: () => true,
+		ui: {
+			theme,
+			setStatus: () => {},
+			notify: (message: string, level: string) => notifications.push({ message, level }),
+		},
+	};
+
+	await pi.commands.get("handoff")!.handler("first", ctx);
+	await pi.commands.get("handoff")!.handler("second", ctx);
+	assert.equal(state.pendingRequestedHandoff?.direction, "second");
+
+	rejectFirst(new Error("first failed later"));
+	await new Promise(resolve => setTimeout(resolve, 0));
+
+	assert.equal(state.pendingRequestedHandoff?.direction, "second");
+	assert.match(state.pendingRequestedHandoffPrompt ?? "", /Handoff direction: second/);
+	assert.deepEqual(notifications, []);
 });
 
 test("handoff automatic setting defaults to enabled with post-compaction Proceed", async () => {
@@ -442,10 +504,9 @@ test("handoff automatic setting defaults to enabled with post-compaction Proceed
 
 	compactOptions.onComplete({});
 	assert.deepEqual(pi.sentUserMessages, [{ content: "Proceed.", options: undefined }]);
-	assert.ok(pi.activeTools.includes("handoff"));
 });
 
-test("handoff automatic setting true keeps handoff active and proceeds after compaction", async () => {
+test("handoff automatic setting true proceeds after compaction", async () => {
 	const result = await runHandoffResumeScenario({
 		globalSettings: { handoff: { automaticEnabled: false } },
 		projectSettings: { handoff: { automaticEnabled: true } },
@@ -455,10 +516,10 @@ test("handoff automatic setting true keeps handoff active and proceeds after com
 	result.compactOptions.onComplete({});
 	assert.deepEqual(result.sentUserMessages, [{ content: "Proceed.", options: undefined }]);
 	assert.deepEqual(result.notifications, []);
-	assert.ok(result.activeTools.includes("handoff"));
+	assert.deepEqual(result.activeTools, []);
 });
 
-test("handoff automatic setting false deactivates handoff for normal agent turns and blocks stale direct calls", async () => {
+test("handoff automatic setting false leaves tool registered but blocks stale direct calls", async () => {
 	const result = await runHandoffResumeScenario({
 		globalSettings: { handoff: { automaticEnabled: true } },
 		projectSettings: { handoff: { automaticEnabled: false } },
@@ -495,6 +556,30 @@ test("handoff automatic setting ignores prototype/meta keys unless automaticEnab
 		assert.equal(model.effectiveSource, "default");
 		assert.equal(model.projectOverride, false);
 		assert.match(getAgenticodingSettingsDisplayLines(model).join("\n"), /Resolved handoff\.automaticEnabled: true \(default\)/);
+	});
+});
+
+test("handoff automatic setting malformed project parent does not erase global disabled", async () => {
+	const result = await runHandoffResumeScenario({
+		globalSettings: { handoff: { automaticEnabled: false } },
+		projectSettings: { handoff: null },
+	});
+
+	assert.equal(result.compactOptions, undefined);
+	assert.equal(result.notifications.length, 1);
+	assert.match(result.notifications[0].message, /Automatic handoff is disabled/);
+
+	await withIsolatedSettings(async ({ home, cwd }) => {
+		await writeSettingsFile(join(home, ".pi", "agent", "settings.json"), { handoff: { automaticEnabled: false } });
+		await writeSettingsFile(join(cwd, ".pi", "settings.json"), { handoff: null });
+
+		const state = await readHandoffSettingsState(cwd);
+		assert.equal((state.merged.handoff as any).automaticEnabled, false);
+
+		const model = await buildAgenticodingSettingsModel({ cwd, hasUI: true, ui: { notify: () => {} } } as any);
+		assert.equal(model.effectiveAutomaticEnabled, false);
+		assert.equal(model.effectiveSource, "global");
+		assert.equal(model.projectOverride, false);
 	});
 });
 
@@ -569,7 +654,7 @@ test("handoff resumeBehavior is ignored and completion still uses fixed Proceed"
 	assert.deepEqual(result.notifications, []);
 });
 
-test("manual slash handoff temporarily activates handoff when automatic handoff is disabled", async () => {
+test("manual slash handoff permits handoff when automatic handoff is disabled", async () => {
 	await withIsolatedSettings(async ({ cwd }) => {
 		await writeSettingsFile(join(cwd, ".pi", "settings.json"), { handoff: { automaticEnabled: false } });
 		const pi = new MockPi();
@@ -583,7 +668,8 @@ test("manual slash handoff temporarily activates handoff when automatic handoff 
 			isIdle: () => true,
 			ui: { theme, notify: () => {}, setStatus: () => {} },
 		});
-		assert.ok(pi.activeTools.includes("handoff"));
+		assert.deepEqual(pi.activeTools, []);
+		state.pendingRequestedHandoff!.awaitingAgentTurn = false;
 
 		let compactOptions: any;
 		await pi.tools.get("handoff").execute("1", { task: "continue" }, undefined, undefined, {
@@ -599,7 +685,7 @@ test("manual slash handoff temporarily activates handoff when automatic handoff 
 	});
 });
 
-test("manual slash handoff restores deactivated handoff after success error or stale cleanup", async () => {
+test("manual slash handoff does not mutate active tools after success error or stale cleanup", async () => {
 	await withIsolatedSettings(async ({ cwd }) => {
 		await writeSettingsFile(join(cwd, ".pi", "settings.json"), { handoff: { automaticEnabled: false } });
 		const pi = new MockPi();
@@ -610,6 +696,7 @@ test("manual slash handoff restores deactivated handoff after success error or s
 		const [compactHandler] = pi.handlers.get("session_before_compact")!;
 
 		await pi.commands.get("handoff")!.handler("implement auth", { cwd, hasUI: false, isIdle: () => true });
+		state.pendingRequestedHandoff!.awaitingAgentTurn = false;
 		let compactOptions: any;
 		await pi.tools.get("handoff").execute("1", { task: "continue" }, undefined, undefined, {
 			cwd,
@@ -620,6 +707,7 @@ test("manual slash handoff restores deactivated handoff after success error or s
 		assert.deepEqual(pi.activeTools, []);
 
 		await pi.commands.get("handoff")!.handler("implement auth", { cwd, hasUI: false, isIdle: () => true });
+		state.pendingRequestedHandoff!.awaitingAgentTurn = false;
 		await pi.tools.get("handoff").execute("2", { task: "continue" }, undefined, undefined, {
 			cwd,
 			hasUI: false,
@@ -629,7 +717,6 @@ test("manual slash handoff restores deactivated handoff after success error or s
 		await new Promise(resolve => setTimeout(resolve, 10));
 		assert.deepEqual(pi.activeTools, []);
 		assert.equal(state.pendingRequestedHandoff, null);
-
 	});
 
 	await withIsolatedSettings(async ({ cwd }) => {
@@ -637,7 +724,7 @@ test("manual slash handoff restores deactivated handoff after success error or s
 		const pi = new MockPi();
 		registerAgenticoding(pi as any);
 		await pi.commands.get("handoff")!.handler("implement auth", { cwd, hasUI: false, isIdle: () => true });
-		assert.ok(pi.activeTools.includes("handoff"));
+		assert.deepEqual(pi.activeTools, []);
 		const [beforeAgentStart] = pi.handlers.get("before_agent_start")!;
 		const [turnEnd] = pi.handlers.get("turn_end")!;
 		await beforeAgentStart(
@@ -649,44 +736,188 @@ test("manual slash handoff restores deactivated handoff after success error or s
 	});
 });
 
-test("manual slash handoff waits for busy runs then starts a fresh handoff turn", async () => {
+test("manual slash handoff permits disabled-mode handoff when the queued user message starts", async () => {
 	await withIsolatedSettings(async ({ cwd }) => {
 		await writeSettingsFile(join(cwd, ".pi", "settings.json"), { handoff: { automaticEnabled: false } });
 		const pi = new MockPi();
 		registerAgenticoding(pi as any);
-		const deferred = createDeferred();
-		let idle = false;
-		let waitCalls = 0;
 
-		const command = pi.commands.get("handoff")!.handler("implement auth", {
+		await pi.commands.get("handoff")!.handler("implement auth", {
 			cwd,
 			hasUI: false,
-			isIdle: () => idle,
-			waitForIdle: async () => {
-				waitCalls += 1;
-				await deferred.promise;
-				idle = true;
-			},
+			isIdle: () => true,
 		});
 
-		await Promise.resolve();
-		assert.equal(waitCalls, 1);
-		assert.equal(pi.activeTools.includes("handoff"), false);
-		assert.deepEqual(pi.sentUserMessages, []);
-		assert.deepEqual(pi.sentMessages, []);
+		const [messageStart] = pi.handlers.get("message_start")!;
+		await messageStart({
+			message: {
+				role: "user",
+				content: [{ type: "text", text: pi.sentUserMessages[0].content }],
+			},
+		}, { cwd, hasUI: false } as any);
 
-		deferred.resolve();
-		await command;
+		let compactOptions: any;
+		const result = await pi.tools.get("handoff").execute("1", { task: "continue" }, undefined, undefined, {
+			cwd,
+			hasUI: false,
+			compact: (options: any) => { compactOptions = options; },
+		});
 
-		assert.ok(pi.activeTools.includes("handoff"));
+		assert.ok(compactOptions);
+		assert.equal(result.terminate, true);
+		assert.match(result.content[0].text, /Handoff started/);
+	});
+});
+
+test("manual slash handoff stays active across notebook/tool turns before handoff", async () => {
+	await withIsolatedSettings(async ({ cwd }) => {
+		await writeSettingsFile(join(cwd, ".pi", "settings.json"), { handoff: { automaticEnabled: false } });
+		const pi = new MockPi();
+		registerAgenticoding(pi as any);
+
+		await pi.commands.get("handoff")!.handler("implement auth", {
+			cwd,
+			hasUI: false,
+			isIdle: () => true,
+		});
+
+		const [messageStart] = pi.handlers.get("message_start")!;
+		await messageStart({
+			message: { role: "user", content: pi.sentUserMessages[0].content },
+		}, { cwd, hasUI: false } as any);
+
+		const [turnEnd] = pi.handlers.get("turn_end")!;
+		await turnEnd({}, {
+			cwd,
+			hasUI: true,
+			ui: { theme, setStatus: () => {}, setWidget: () => {} },
+			getContextUsage: () => null,
+		} as any);
+
+		let compactOptions: any;
+		const result = await pi.tools.get("handoff").execute("1", { task: "continue after notebook writes" }, undefined, undefined, {
+			cwd,
+			hasUI: false,
+			compact: (options: any) => { compactOptions = options; },
+		});
+
+		assert.ok(compactOptions);
+		assert.equal(result.terminate, true);
+		assert.match(result.content[0].text, /Handoff started/);
+	});
+});
+
+test("manual slash handoff message_start parsing fails closed for malformed payloads", async () => {
+	await withIsolatedSettings(async ({ cwd }) => {
+		await writeSettingsFile(join(cwd, ".pi", "settings.json"), { handoff: { automaticEnabled: false } });
+		const pi = new MockPi();
+		registerAgenticoding(pi as any);
+
+		await pi.commands.get("handoff")!.handler("implement auth", {
+			cwd,
+			hasUI: false,
+			isIdle: () => true,
+		});
+
+		const [messageStart] = pi.handlers.get("message_start")!;
+		await assert.doesNotReject(() => messageStart({}, { cwd, hasUI: false } as any));
+		await assert.doesNotReject(() => messageStart({ message: null }, { cwd, hasUI: false } as any));
+
+		let compactOptions: any;
+		const blockedResult = await pi.tools.get("handoff").execute("1", { task: "old turn" }, undefined, undefined, {
+			cwd,
+			hasUI: false,
+			compact: (options: any) => { compactOptions = options; },
+		});
+		assert.equal(compactOptions, undefined);
+		assert.match(blockedResult.content[0].text, /No compaction was started/);
+
+		await messageStart({
+			message: { role: "user", content: [{ type: "text", text: pi.sentUserMessages[0].content }] },
+		}, { cwd, hasUI: false } as any);
+
+		const allowedResult = await pi.tools.get("handoff").execute("2", { task: "requested turn" }, undefined, undefined, {
+			cwd,
+			hasUI: false,
+			compact: (options: any) => { compactOptions = options; },
+		});
+		assert.ok(compactOptions);
+		assert.equal(allowedResult.terminate, true);
+	});
+});
+
+test("manual slash handoff queues a follow-up when invoked during a busy run", async () => {
+	await withIsolatedSettings(async ({ cwd }) => {
+		await writeSettingsFile(join(cwd, ".pi", "settings.json"), { handoff: { automaticEnabled: false } });
+		const pi = new MockPi();
+		registerAgenticoding(pi as any);
+		let waitCalls = 0;
+
+		await pi.commands.get("handoff")!.handler("implement auth", {
+			cwd,
+			hasUI: false,
+			isIdle: () => false,
+			waitForIdle: async () => { waitCalls += 1; },
+		});
+
+		assert.equal(waitCalls, 0);
+		assert.deepEqual(pi.activeTools, []);
 		assert.equal(pi.sentUserMessages.length, 1);
-		assert.equal(pi.sentUserMessages[0].options, undefined);
+		assert.equal(pi.sentUserMessages[0].options?.deliverAs, "followUp");
 		assert.match(pi.sentUserMessages[0].content, /Handoff direction: implement auth/);
+
+		let compactOptions: any;
+		const blockedResult = await pi.tools.get("handoff").execute("1", { task: "old turn" }, undefined, undefined, {
+			cwd,
+			hasUI: false,
+			compact: (options: any) => { compactOptions = options; },
+		});
+		assert.equal(compactOptions, undefined);
+		assert.match(blockedResult.content[0].text, /No compaction was started/);
+		assert.equal(blockedResult.terminate, undefined);
 		assert.deepEqual(pi.sentMessages, []);
 	});
 });
 
-test("manual slash handoff reports only a UI error when handoff cannot be activated", async () => {
+test("manual slash handoff follow-up is not preempted by old-turn automatic handoff", async () => {
+	await withIsolatedSettings(async ({ cwd }) => {
+		const pi = new MockPi();
+		registerAgenticoding(pi as any);
+
+		await pi.commands.get("handoff")!.handler("implement auth", {
+			cwd,
+			hasUI: false,
+			isIdle: () => false,
+		});
+		assert.equal(pi.sentUserMessages[0].options?.deliverAs, "followUp");
+
+		let compactOptions: any;
+		const blockedResult = await pi.tools.get("handoff").execute("old", { task: "old automatic turn" }, undefined, undefined, {
+			cwd,
+			hasUI: false,
+			compact: (options: any) => { compactOptions = options; },
+		});
+		assert.equal(compactOptions, undefined);
+		assert.match(blockedResult.content[0].text, /generated user turn has not started/);
+		assert.equal(blockedResult.terminate, undefined);
+
+		const [messageStart] = pi.handlers.get("message_start")!;
+		await messageStart({
+			message: { role: "user", content: [{ type: "text", text: pi.sentUserMessages[0].content }] },
+		}, { cwd, hasUI: false } as any);
+
+		const allowedResult = await pi.tools.get("handoff").execute("requested", { task: "requested manual turn" }, undefined, undefined, {
+			cwd,
+			hasUI: false,
+			compact: (options: any) => { compactOptions = options; },
+		});
+		assert.ok(compactOptions);
+		assert.equal(allowedResult.terminate, true);
+		assert.match(allowedResult.content[0].text, /Handoff started/);
+	});
+});
+
+test("manual slash handoff does not require active-tool APIs", async () => {
 	const pi = new MockPi();
 	(pi as any).setActiveTools = undefined;
 	const state = createState();
@@ -696,13 +927,12 @@ test("manual slash handoff reports only a UI error when handoff cannot be activa
 	await pi.commands.get("handoff")!.handler("implement auth", {
 		hasUI: true,
 		isIdle: () => true,
-		ui: { notify: (message: string, level: string) => notifications.push({ message, level }) },
+		ui: { theme, notify: (message: string, level: string) => notifications.push({ message, level }), setStatus: () => {} },
 	});
 
-	assert.equal(state.pendingRequestedHandoff, null);
-	assert.deepEqual(pi.sentUserMessages, []);
-	assert.equal(notifications[0].level, "error");
-	assert.match(notifications[0].message, /could not be activated/);
+	assert.equal(state.pendingRequestedHandoff?.direction, "implement auth");
+	assert.equal(pi.sentUserMessages.length, 1);
+	assert.deepEqual(notifications, []);
 	assert.deepEqual(pi.sentMessages, []);
 });
 
@@ -921,7 +1151,7 @@ test("agenticoding settings write path refuses non-ENOENT read failures without 
 	});
 });
 
-test("agenticoding settings write path handles save failure with error notification", async () => {
+test("agenticoding settings write path rejects save failures", async () => {
 	await withIsolatedSettings(async ({ home }) => {
 		const settingsDir = join(home, ".pi", "agent");
 		await mkdir(settingsDir, { recursive: true });
@@ -942,6 +1172,65 @@ test("agenticoding settings write path handles save failure with error notificat
 		} finally {
 			await chmod(settingsDir, 0o700);
 		}
+	});
+});
+
+test("agenticoding settings TUI reports save failure notification", async () => {
+	await withIsolatedSettings(async ({ home, cwd }) => {
+		const globalPath = join(home, ".pi", "agent", "settings.json");
+		await writeSettingsFile(globalPath, { handoff: { automaticEnabled: true } });
+		const notifications: Array<{ message: string; level: string }> = [];
+		const ctx = {
+			cwd,
+			hasUI: true,
+			ui: { notify: (message: string, level: string) => notifications.push({ message, level }) },
+		} as any;
+		const model = await buildAgenticodingSettingsModel(ctx);
+		const component = createAgenticodingSettingsComponent(model, ctx, { requestRender: () => {} }, theme, () => {});
+
+		setSettingsAtomicWriteOperationsForTest({
+			rename: async () => { throw new Error("simulated save failure"); },
+		});
+		try {
+			component.handleInput("\r");
+			await new Promise(resolve => setTimeout(resolve, 50));
+		} finally {
+			setSettingsAtomicWriteOperationsForTest(null);
+		}
+
+		assert.equal(notifications.length, 1);
+		assert.equal(notifications[0].level, "error");
+		assert.match(notifications[0].message, /Failed to save handoff\.automaticEnabled/);
+		assert.match(notifications[0].message, /simulated save failure/);
+	});
+});
+
+test("agenticoding settings atomic save preserves original settings when rename fails", async () => {
+	await withIsolatedSettings(async ({ home, cwd }) => {
+		const globalPath = join(home, ".pi", "agent", "settings.json");
+		const original = JSON.stringify({ packages: ["keep"], handoff: { automaticEnabled: true } });
+		await writeSettingsFile(globalPath, original);
+		const renameError = new Error("simulated rename failure");
+		const notifications: Array<{ message: string; level: string }> = [];
+		const ctx = {
+			cwd,
+			hasUI: true,
+			ui: { notify: (message: string, level: string) => notifications.push({ message, level }) },
+		} as any;
+
+		setSettingsAtomicWriteOperationsForTest({
+			rename: async () => { throw renameError; },
+		});
+		try {
+			await assert.rejects(() => writeGlobalHandoffAutomaticEnabled("false", ctx), /simulated rename failure/);
+		} finally {
+			setSettingsAtomicWriteOperationsForTest(null);
+		}
+
+		assert.equal(await readFile(globalPath, "utf8"), original);
+		const files = await readdir(dirname(globalPath));
+		assert.equal(files.some(file => file.startsWith(".settings.json.") && file.endsWith(".tmp")), false);
+		assert.deepEqual(notifications, []);
 	});
 });
 
@@ -984,6 +1273,8 @@ test("agenticoding settings documentation covers TUI and global-only/project ove
 	assert.match(changelog, /\/agenticoding-settings/);
 	assert.match(changelog, /global-only/i);
 	assert.match(changelog, /project.*override/i);
+	assert.match(changelog, /\n$/);
+	assert.doesNotMatch(changelog, /\n\n$/);
 });
 
 test("handoff compaction replaces old context with the queued task", async () => {
@@ -1075,7 +1366,36 @@ test("handoff compaction error clears pending state and status", async () => {
 	assert.equal(statuses.get(STATUS_KEY_HANDOFF), undefined);
 });
 
-test("turn_end fallback silently clears stale requested handoff status", async () => {
+test("handoff compact synchronous throw clears pending state and status", async () => {
+	const pi = new MockPi();
+	const state = createState();
+	state.pendingRequestedHandoff = { direction: "implement auth", enforcementAttempts: 0, toolCalled: false, awaitingAgentTurn: false };
+	state.pendingRequestedHandoffPrompt = "Handoff direction: implement auth";
+	registerHandoffTool(pi as any, state);
+	const statuses = new Map<string, string | undefined>();
+
+	await assert.rejects(
+		() => pi.tools.get("handoff").execute(
+			"1",
+			{ task: "Goal: continue" },
+			undefined,
+			undefined,
+			{
+				hasUI: true,
+				ui: { setStatus: (key: string, value: string | undefined) => { statuses.set(key, value); } },
+				compact: () => { throw new Error("compact start failed"); },
+			},
+		),
+		/compact start failed/,
+	);
+
+	assert.equal(state.pendingHandoff, null);
+	assert.equal(state.pendingRequestedHandoff, null);
+	assert.equal(state.pendingRequestedHandoffPrompt, null);
+	assert.equal(statuses.get(STATUS_KEY_HANDOFF), undefined);
+});
+
+test("agent_end fallback silently clears stale requested handoff status", async () => {
 	const pi = new MockPi();
 	registerAgenticoding(pi as any);
 	const statuses = new Map<string, string | undefined>();
@@ -1091,12 +1411,12 @@ test("turn_end fallback silently clears stale requested handoff status", async (
 
 	const notifications: Array<{ message: string; level: string }> = [];
 	const [beforeAgentStart] = pi.handlers.get("before_agent_start")!;
-	const [turnEnd] = pi.handlers.get("turn_end")!;
+	const [agentEnd] = pi.handlers.get("agent_end")!;
 	await beforeAgentStart(
 		{ prompt: pi.sentUserMessages[0].content, systemPrompt: "base" },
 		{ hasUI: false } as any,
 	);
-	await turnEnd({}, {
+	await agentEnd({}, {
 		hasUI: true,
 		ui: {
 			theme: { fg: (_name: string, text: string) => text },
@@ -1178,6 +1498,36 @@ test("context injects watchdog reminder before each LLM call", async () => {
 	assert.match(result.messages[1].content, /Active notebook topic: oauth/);
 	assert.match(result.messages[1].content, /spawn it instead of polluting the parent context/i);
 	assert.doesNotMatch(result.messages[1].content, /If you're mid-job and still clear|consider a handoff and draft a clear brief for what comes next/i);
+});
+
+test("disabled-mode context nudge follows an active manual handoff request", async () => {
+	await withIsolatedSettings(async ({ cwd }) => {
+		await writeSettingsFile(join(cwd, ".pi", "settings.json"), { handoff: { automaticEnabled: false } });
+		const pi = new MockPi();
+		registerAgenticoding(pi as any);
+
+		await pi.commands.get("handoff")!.handler("implement auth", {
+			cwd,
+			hasUI: false,
+			isIdle: () => true,
+		});
+		const [beforeAgentStart] = pi.handlers.get("before_agent_start")!;
+		await beforeAgentStart(
+			{ prompt: pi.sentUserMessages[0].content, systemPrompt: "base" },
+			{ cwd, hasUI: false } as any,
+		);
+
+		const [contextHandler] = pi.handlers.get("context")!;
+		const result = await contextHandler(
+			{ messages: [{ role: "user", content: "handoff", timestamp: 1 }] },
+			{ cwd, getContextUsage: () => ({ percent: 70 }) },
+		);
+
+		assert.equal(result.messages[1].customType, "agenticoding-watchdog");
+		assert.match(result.messages[1].content, /manual \/handoff request is active/i);
+		assert.match(result.messages[1].content, /call the handoff tool/i);
+		assert.doesNotMatch(result.messages[1].content, /tell the operator|continue inline only if safe/i);
+	});
 });
 
 test("context injects a boundary nudge below 30% after an explicit topic change", async () => {
@@ -2616,7 +2966,7 @@ test("session_start rehydrates the latest persisted notebook state through the f
 			const readResult = await notebookRead.execute("2", { name: "keep" }, undefined, undefined, {} as any);
 			assert.equal(readResult.details.found, true);
 			assert.equal(readResult.details.body, "newer");
-			assert.deepEqual(pi.activeTools, ["read", "notebook_read", "notebook_index", "handoff"]);
+			assert.deepEqual(pi.activeTools, ["read", "notebook_read", "notebook_index"]);
 		} finally {
 			resetNotebookWriteLock();
 		}
@@ -3843,7 +4193,8 @@ test("notebook tool definitions include prompt hints when withPromptHints is tru
 	const writeGuidelines = notebookWrite.promptGuidelines!.join(" ");
 	assert.match(writeGuidelines, /subject-oriented pages/i);
 	assert.match(writeGuidelines, /fresh context/i);
-	assert.match(writeGuidelines, /belongs in handoff/i);
+	assert.match(writeGuidelines, /immediate next-step state/i);
+	assert.doesNotMatch(writeGuidelines, /handoff|\/handoff/i);
 
 	// Conceptual: descriptions mention the notebook-page metaphor
 	assert.match(notebookWrite.description, /page|future contexts/i);
@@ -3875,6 +4226,8 @@ test("notebook_topic_set establishes a fresh topic, is idempotent, and refuses o
 	registerNotebookTopicTool(pi as any, state);
 
 	const tool = pi.tools.get("notebook_topic_set");
+	assert.doesNotMatch(tool.promptGuidelines.join(" "), /tell the operator/i);
+	assert.match(tool.promptGuidelines.join(" "), /context-pivot guidance/i);
 	const first = await tool.execute("1", { topic: "OAuth" });
 	assert.equal(first.details.topic, "oauth");
 	assert.equal(state.activeNotebookTopic, "oauth");
@@ -3886,8 +4239,11 @@ test("notebook_topic_set establishes a fresh topic, is idempotent, and refuses o
 	assert.match(second.content[0].text, /already set to "oauth"/i);
 
 	await assert.rejects(() => tool.execute("3", { topic: "billing" }), /already exists/);
+	await assert.rejects(() => tool.execute("4", { topic: "billing" }), (error: unknown) => {
+		assert.doesNotMatch(String(error), /handoff|\/handoff/i);
+		return true;
+	});
 });
-
 
 test("notebook_topic_set preserves human authority, stays idempotent for equal topics, and rejects empty normalized topics", async () => {
 	const pi = new MockPi();
@@ -3902,7 +4258,11 @@ test("notebook_topic_set preserves human authority, stays idempotent for equal t
 	assert.match(same.content[0].text, /already set to "oauth"/i);
 	await assert.rejects(
 		() => tool.execute("2", { topic: "billing" }),
-		/human-set notebook topic is authoritative/i,
+		(error: unknown) => {
+			assert.match(String(error), /human-set notebook topic is authoritative/i);
+			assert.doesNotMatch(String(error), /handoff|\/handoff/i);
+			return true;
+		},
 	);
 
 	const freshPi = new MockPi();
@@ -3985,7 +4345,7 @@ test("before_agent_start injects no-topic guidance when the topic is unset", asy
 	assert.match(result.systemPrompt, /notebook_topic_set/);
 });
 
-test("handoff automatic setting false removes handoff calls from primer and watchdog guidance", async () => {
+test("handoff automatic setting false suppresses handoff calls in primer and watchdog guidance", async () => {
 	await withIsolatedSettings(async ({ cwd }) => {
 		await writeSettingsFile(join(cwd, ".pi", "settings.json"), { handoff: { automaticEnabled: false } });
 		const pi = new MockPi();
@@ -3997,8 +4357,12 @@ test("handoff automatic setting false removes handoff calls from primer and watc
 			cwd,
 		});
 
-		assert.equal(pi.activeTools.includes("handoff"), false);
+		assert.equal(pi.activeTools.includes("handoff"), true);
 		assert.doesNotMatch(result.systemPrompt, /call (?:the )?handoff|use handoff|prefer handoff|\/handoff/i);
+		assert.match(
+			result.systemPrompt,
+			/handoff\s+tool is disabled for normal turns; use it only after an explicit manual\s+handoff request/i,
+		);
 		assert.match(result.systemPrompt, /save durable/i);
 		assert.match(result.systemPrompt, /tell the operator/i);
 
@@ -4006,10 +4370,34 @@ test("handoff automatic setting false removes handoff calls from primer and watc
 		assert.doesNotMatch(disabledNudge, /handoff|\/handoff/i);
 		assert.match(disabledNudge, /tell the operator/i);
 
+		const topicTool = pi.tools.get("notebook_topic_set")!;
+		assert.doesNotMatch(topicTool.promptGuidelines.join("\n"), /handoff|\/handoff/i);
+		const notebookWrite = pi.tools.get("notebook_write")!;
+		assert.doesNotMatch(notebookWrite.promptGuidelines.join("\n"), /handoff|\/handoff/i);
+
 		const record = { statuses: new Map<string, string | undefined>(), widgets: new Map<string, string[] | undefined>() };
 		updateIndicators(makeTUICtx({ percent: 70, record }), { ...createState(), activeNotebookTopic: "oauth" }, false);
 		assert.doesNotMatch(record.widgets.get(WIDGET_KEY_WARNING)?.join("\n") ?? "", /handoff|\/handoff/i);
+
+		const writeRecord = { statuses: new Map<string, string | undefined>(), widgets: new Map<string, string[] | undefined>() };
+		await notebookWrite.execute("1", { name: "disabled-hints", content: "saved" }, undefined, undefined, {
+			...makeTUICtx({ percent: 70, record: writeRecord }),
+			cwd,
+		});
+		assert.doesNotMatch(writeRecord.widgets.get(WIDGET_KEY_WARNING)?.join("\n") ?? "", /handoff|\/handoff/i);
 	});
+});
+
+test("handoff tool metadata omits prompt hints and call guidance", () => {
+	const pi = new MockPi();
+	const state = createState();
+	registerHandoffTool(pi as any, state);
+
+	const tool = pi.tools.get("handoff")!;
+	assert.equal(tool.promptSnippet, undefined);
+	assert.equal(tool.promptGuidelines, undefined);
+	assert.doesNotMatch(tool.description, /WHEN TO USE|call handoff|use handoff|\/handoff/i);
+	assert.doesNotMatch(tool.parameters.properties.task.description, /what to do next|capture the distilled|notebook/i);
 });
 
 test("notebook tool definitions omit prompt hints by default", () => {

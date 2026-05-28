@@ -1,7 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AgenticodingState } from "../state.js";
 import { STATUS_KEY_HANDOFF } from "../tui.js";
-import { updateHandoffToolAvailability } from "./availability.js";
 
 export function emitHandoffDiagnostic(
 	pi: ExtensionAPI,
@@ -14,8 +13,17 @@ export function emitHandoffDiagnostic(
 	}
 }
 
+export function clearPendingHandoffCompaction(state: AgenticodingState, ctx: ExtensionContext): void {
+	state.pendingHandoff = null;
+	state.pendingRequestedHandoff = null;
+	state.pendingRequestedHandoffPrompt = null;
+	if (ctx.hasUI) {
+		ctx.ui.setStatus?.(STATUS_KEY_HANDOFF, undefined);
+	}
+}
+
 export async function clearStaleRequestedHandoff(
-	pi: ExtensionAPI,
+	_pi: ExtensionAPI,
 	state: AgenticodingState,
 	ctx: ExtensionContext,
 ): Promise<void> {
@@ -28,5 +36,4 @@ export async function clearStaleRequestedHandoff(
 	if (ctx.hasUI) {
 		ctx.ui.setStatus?.(STATUS_KEY_HANDOFF, undefined);
 	}
-	await updateHandoffToolAvailability(pi, state, ctx);
 }

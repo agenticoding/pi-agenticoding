@@ -9,7 +9,6 @@ import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-wor
 import type { AgenticodingState } from "../state.js";
 import { clearActiveNotebookTopic } from "../notebook/topic.js";
 import { STATUS_KEY_HANDOFF } from "../tui.js";
-import { updateHandoffToolAvailability } from "./availability.js";
 
 function getImpossibleKeptId(branchEntries: SessionEntry[]): string {
 	const leaf = branchEntries[branchEntries.length - 1];
@@ -32,7 +31,6 @@ export function registerHandoffCompaction(pi: ExtensionAPI, state: AgenticodingS
 		if (ctx.hasUI) {
 			ctx.ui.setStatus(STATUS_KEY_HANDOFF, undefined);
 		}
-		await updateHandoffToolAvailability(pi, state, ctx);
 
 		return {
 			compaction: {

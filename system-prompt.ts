@@ -22,11 +22,12 @@ for direction. Reference notebook pages by name; do not duplicate their content
 in the brief. The handoff should help the next context start well without
 re-deriving what you already learned.`
 		: `### Context pivoting when automatic handoff is disabled
-The automatic context-compaction tool is not active in normal agent turns. At
-job boundaries or when context gets noisy, save durable reusable knowledge to
-the notebook first. Then either continue inline if it is still safe and clear,
-or tell the operator that a clean-context transition would help and summarize
-the next direction they should provide.`;
+Automatic context compaction is guarded in normal agent turns. The handoff
+tool is disabled for normal turns; use it only after an explicit manual
+handoff request. At job boundaries or when context gets noisy, save durable
+reusable knowledge to the notebook first. Then either continue inline if it is
+still safe and clear, or tell the operator that a clean-context transition
+would help and summarize the next direction they should provide.`;
 
 	const topicGuidance = handoffAutomaticEnabled
 		? `If the current work still fits that topic, prefer spawn for isolated noisy
