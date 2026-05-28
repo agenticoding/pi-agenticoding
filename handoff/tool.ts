@@ -55,6 +55,13 @@ export function registerHandoffTool(
 			"next (research traces, planning deliberation, dead ends).\n" +
 			"  3. The current job is complete and a new distinct task starts.\n\n" +
 			"Rule: one context, one job. When the job changes, call handoff.\n\n" +
+			"BEFORE CALLING HANDOFF you MUST:\n" +
+			"  1. Persist all reusable findings to the notebook — anything not in the " +
+			"notebook or the brief is permanently lost from context.\n" +
+			"  2. Write a brief focused on the NEXT job, not a session recap. " +
+			"Summaries of completed work belong in the notebook.\n" +
+			"  3. Verify the next context would have everything it needs. If not, " +
+			"notebook it first.\n\n" +
 			"AFTER HANDOFF the LLM sees:\n" +
 			"  • System prompt + context primer\n" +
 			"  • The handoff task — the distilled next work at the top of context\n" +
@@ -64,6 +71,9 @@ export function registerHandoffTool(
 		promptGuidelines: [
 			"Before handoff, promote any missing durable grounding knowledge that the next context will need to the notebook. " +
 				"Then draft a concise but sufficiently detailed brief with the distilled next task and immediate starting state for the next clean context. The active notebook topic will reset after handoff, so the next context should assign a fresh topic from the brief or user direction.",
+			"The brief describes what to do NEXT — not a recap of what was done. " +
+				"Findings, decisions, and analysis belong in the notebook. The brief is the " +
+				"task description for the next agent context.",
 		],
 
 		executionMode: "sequential",
@@ -72,9 +82,10 @@ export function registerHandoffTool(
 			task: Type.String({
 				description:
 					"What to do next. A concise but sufficiently detailed handoff brief. " +
-					"This becomes the FIRST thing the LLM sees after handoff. Capture the distilled next task, " +
-					"immediate starting state, blockers, failed paths worth avoiding, and relevant notebook page names. " +
-					"The notebook is the long-term grounding store; this brief should carry only the remaining situational context.",
+					"This becomes the FIRST thing the LLM sees after handoff. Focus on the " +
+					"next job: current state, unresolved questions, constraints, and next steps. " +
+					"Do NOT recap completed work — persist findings to the notebook before calling " +
+					"handoff. Anything not in the notebook or this brief is lost.",
 			}),
 		}),
 
