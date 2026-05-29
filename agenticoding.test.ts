@@ -1,5 +1,6 @@
 import test, { after } from "node:test";
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { registerHandoffCommand } from "./handoff/command.js";
@@ -102,6 +103,7 @@ class MockPi {
 	tools = new Map<string, any>();
 	handlers = new Map<string, Handler[]>();
 	activeTools: string[] = [];
+	allToolNames: string[] | undefined;
 	toolSources = new Map<string, string>();
 	sentUserMessages: Array<{ content: string; options: any }> = [];
 	appendedEntries: Array<{ customType: string; data: any }> = [];
@@ -137,8 +139,17 @@ class MockPi {
 		this.toolSources.set(name, source);
 	}
 
+	setAllTools(tools: string[]) {
+		this.allToolNames = [...tools];
+		for (const tool of tools) {
+			if (!this.toolSources.has(tool)) {
+				this.toolSources.set(tool, "builtin");
+			}
+		}
+	}
+
 	getAllTools() {
-		return this.activeTools.map((name) => ({
+		return (this.allToolNames ?? this.activeTools).map((name) => ({
 			name,
 			description: "",
 			parameters: {},
@@ -883,10 +894,48 @@ test("nested spawn rerenders when stats become unavailable", () => {
 	assert.equal(after.some((l: string) => l.includes("initializing")), false);
 });
 
-test("spawn execute propagates only executable parent tools to child session", async () => {
+test("agentic e2e spawn child can use active registered non-builtin tool", async () => {
 	const pi = new MockPi();
-	pi.setActiveTools(["read", "bash", "spawn", "handoff", "future_tool"]);
-	pi.setToolSource("future_tool", "project");
+	pi.setToolSource("agentic_e2e_probe", "project");
+	pi.setActiveTools(["read", "agentic_e2e_probe", "spawn"]);
+	const state = createState();
+	const sentinel = "AGENTIC_E2E_PROBE_OK";
+	const childPrompt = `Use the agentic_e2e_probe tool and return ${sentinel}.`;
+
+	const mockFactory = async (config: any) => {
+		const session = {
+			messages: [] as any[],
+			prompt: async (prompt: string) => {
+				assert.match(prompt, /agentic_e2e_probe/);
+				if (!config.tools.includes("agentic_e2e_probe")) {
+					throw new Error("Child could not find tool agentic_e2e_probe");
+				}
+				session.messages = [{ role: "assistant", content: [{ type: "text", text: sentinel }] }];
+			},
+			abort: async () => {},
+			getSessionStats: () => undefined,
+		};
+		return { session: session as any };
+	};
+
+	registerSpawnTool(pi as any, state, mockFactory as any);
+	const result = await pi.tools.get("spawn").execute(
+		"spawn-e2e",
+		{ prompt: childPrompt, thinking: "medium" },
+		undefined,
+		undefined,
+		{ model: { id: "mock-model" }, cwd: "/tmp" },
+	);
+
+	assert.equal(result.content[0].text, sentinel);
+});
+
+test("spawn execute passes broad active registered tool formula to child session", async () => {
+	const pi = new MockPi();
+	pi.setToolSource("project_search", "project");
+	pi.setToolSource("inactive_registered", "extension");
+	pi.setActiveTools(["read", "bash", "spawn", "handoff", "project_search", "phantom_tool"]);
+	pi.setAllTools(["read", "bash", "spawn", "handoff", "project_search", "inactive_registered"]);
 	const state = createState();
 
 	let seenConfig: any;
@@ -916,11 +965,11 @@ test("spawn execute propagates only executable parent tools to child session", a
 	assert.equal(seenConfig.model.id, "mock-model");
 	assert.equal(seenConfig.thinkingLevel, "high");
 	assert.equal(seenConfig.cwd, "/tmp");
-	assert.equal(seenConfig.tools.includes("read"), true);
-	assert.equal(seenConfig.tools.includes("bash"), true);
-	assert.equal(seenConfig.tools.includes("future_tool"), false);
-	assert.equal(seenConfig.tools.includes("handoff"), false);
-	assert.equal(seenConfig.tools.includes("spawn"), false);
+	assert.deepEqual(
+		new Set(seenConfig.tools),
+		new Set(["read", "bash", "project_search", "notebook_write", "notebook_read", "notebook_index"]),
+	);
+	assert.deepEqual(seenConfig.customTools.map((tool: any) => tool.name), ["notebook_write", "notebook_read", "notebook_index"]);
 });
 
 test("spawn execute builds prompt with notebook pages and task", async () => {
@@ -1193,7 +1242,7 @@ test("spawn execute fails explicitly without a configured model", async () => {
 	);
 });
 
-test("child tool set omits spawn", () => {
+test("child tool names inherit active registered builtins and exclude recursive controls", () => {
 	const state = createState();
 	const childTools = createChildTools(new MockPi() as any, state);
 	assert.equal(childTools.some(t => t.name === "spawn"), false);
@@ -1208,9 +1257,10 @@ test("child tool set omits spawn", () => {
 			{ name: "future_tool", sourceInfo: { source: "project" } },
 		] as any,
 	);
+	assert.equal(childToolNames.includes("read"), true);
+	assert.equal(childToolNames.includes("bash"), true);
 	assert.equal(childToolNames.includes("spawn"), false);
 	assert.equal(childToolNames.includes("handoff"), false);
-	assert.equal(childToolNames.includes("future_tool"), false);
 });
 
 test("spawn renderResult transfers session ownership out of shared state", () => {
@@ -1359,24 +1409,59 @@ test("executeSpawn suppresses stale child sessions after resetState during async
 	assert.equal(state.liveChildSessions.get("spawn-1"), freshSession);
 });
 
-test("child tool names inherit builtin parent tools, exclude handoff and spawn", () => {
+test("child tool names inherit active registered MCP extension tools", () => {
 	const state = createState();
 	const childTools = createChildTools(new MockPi() as any, state);
 
 	const toolNames = buildChildToolNames(
-		["read", "bash", "handoff", "future_tool"],
+		["read", "chunkhound_code_research", "mcp_status"],
 		childTools,
 		[
 			{ name: "read", sourceInfo: { source: "builtin" } },
-			{ name: "bash", sourceInfo: { source: "builtin" } },
-			{ name: "handoff", sourceInfo: { source: "builtin" } },
-			{ name: "future_tool", sourceInfo: { source: "project" } },
+			{ name: "chunkhound_code_research", sourceInfo: { source: "extension" } },
+			{ name: "mcp_status", sourceInfo: { source: "extension" } },
 		] as any,
 	);
 
-	assert.ok(toolNames.includes("read"));
-	assert.ok(toolNames.includes("bash"));
-	assert.equal(toolNames.includes("future_tool"), false);
+	assert.equal(toolNames.includes("chunkhound_code_research"), true);
+	assert.equal(toolNames.includes("mcp_status"), true);
+});
+
+test("child tool names inherit active registered project package and local extension tools", () => {
+	const state = createState();
+	const childTools = createChildTools(new MockPi() as any, state);
+
+	const toolNames = buildChildToolNames(
+		["project_search", "package_lint", "local_helper"],
+		childTools,
+		[
+			{ name: "project_search", sourceInfo: { source: "project" } },
+			{ name: "package_lint", sourceInfo: { source: "package" } },
+			{ name: "local_helper", sourceInfo: { source: "local" } },
+		] as any,
+	);
+
+	assert.equal(toolNames.includes("project_search"), true);
+	assert.equal(toolNames.includes("package_lint"), true);
+	assert.equal(toolNames.includes("local_helper"), true);
+});
+
+test("child tool names exclude inactive registered and active phantom tools", () => {
+	const state = createState();
+	const childTools = createChildTools(new MockPi() as any, state);
+
+	const toolNames = buildChildToolNames(
+		["read", "active_phantom"],
+		childTools,
+		[
+			{ name: "read", sourceInfo: { source: "builtin" } },
+			{ name: "inactive_registered", sourceInfo: { source: "extension" } },
+		] as any,
+	);
+
+	assert.equal(toolNames.includes("read"), true);
+	assert.equal(toolNames.includes("inactive_registered"), false);
+	assert.equal(toolNames.includes("active_phantom"), false);
 	assert.ok(toolNames.includes("notebook_write"));
 	assert.ok(toolNames.includes("notebook_read"));
 	assert.ok(toolNames.includes("notebook_index"));
@@ -3608,6 +3693,10 @@ test("registerSpawnTool registers a tool with correct name and metadata", () => 
 	assert.equal(tool.name, "spawn");
 	assert.equal(tool.label, "Spawn");
 	assert.equal(typeof tool.description, "string");
+	assert.match(tool.description, /active registered tools executable in the child session/);
+	assert.match(tool.description, /shared notebook tools/);
+	assert.match(tool.description, /cannot spawn or handoff/);
+	assert.doesNotMatch(tool.description, /supported built-in tools/);
 	assert.equal(typeof tool.execute, "function");
 	assert.equal(typeof tool.renderCall, "function");
 	assert.equal(typeof tool.renderResult, "function");
@@ -3615,4 +3704,20 @@ test("registerSpawnTool registers a tool with correct name and metadata", () => 
 	// parameters are a TypeBox schema object — just verify it exists
 	assert.ok(tool.parameters, "should have parameters");
 	assert.equal(tool.executionMode, undefined, "spawn should not be sequential");
+});
+
+test("spawn docs document active registered inheritance", async () => {
+	const readme = await readFile("README.md", "utf8");
+	const changelog = await readFile("CHANGELOG.md", "utf8");
+	const spawnSection = /### Spawn — Isolate Noise[\s\S]*?### Notebook/.exec(readme)?.[0] ?? "";
+	const unreleased = /## \[Unreleased\][\s\S]*?## \[0\.3\.0\]/.exec(changelog)?.[0] ?? "";
+
+	assert.match(spawnSection, /active registered tools executable in the child session/);
+	assert.match(spawnSection, /MCP\/extension tools such as ChunkHound/);
+	assert.match(spawnSection, /[Cc]hild-local notebook tools/);
+	assert.match(spawnSection, /cannot spawn grandchildren or handoff/);
+	assert.doesNotMatch(spawnSection, /built-in tools only/);
+	assert.match(unreleased, /active registered parent tools/);
+	assert.match(unreleased, /spawn and handoff/);
+	assert.match(unreleased, /notebook tools/);
 });

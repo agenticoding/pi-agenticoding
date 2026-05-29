@@ -2,8 +2,9 @@
  * Spawn tool for the agenticoding extension.
  *
  * Creates an isolated in-memory child AgentSession for focused subtask execution.
- * Children inherit the parent's model, thinking level, cwd, and notebook access.
- * Children do not inherit the spawn tool (recursion prevention).
+ * Children inherit the parent's model, thinking level, cwd, active registered
+ * executable tools, and notebook access.
+ * Children do not inherit the spawn or handoff tools (recursion prevention).
  *
  * Spawn is context isolation, not a security boundary. Child agents are trusted
  * extensions of the parent and inherit parent authority by design.
@@ -108,16 +109,17 @@ function truncateResult(text: string): { text: string; truncated: boolean } {
 /**
  * Build the final list of tool names for a child session.
  *
- * Child sessions inherit the parent's active built-in tools plus the local
- * child custom tools defined here. Parent-only custom tools are intentionally
- * excluded so the child never advertises a tool it cannot execute.
+ * Child sessions inherit parent tool names that are both active in the parent
+ * and present in Pi's registered tool registry, regardless of source label.
+ * Local child custom tools are added separately. Parent-only custom tools are
+ * intentionally excluded so the child never advertises a tool it cannot execute.
  *
  * handoff and spawn never carry into children.
  */
 function getInheritableParentToolNames(parentToolNames: string[], availableTools: Pick<ToolInfo, "name" | "sourceInfo">[]): string[] {
 	const activeToolNames = new Set(parentToolNames);
 	return availableTools
-		.filter((tool) => activeToolNames.has(tool.name) && tool.sourceInfo?.source === "builtin")
+		.filter((tool) => activeToolNames.has(tool.name))
 		.map((tool) => tool.name);
 }
 
@@ -137,7 +139,7 @@ export function buildChildToolNames(
 
 const SPAWN_DESCRIPTION =
 	"Spawn an isolated child agent for a focused subtask. " +
-	"Child inherits parent model, thinking level, cwd, supported built-in tools, and shared notebook tools; children cannot spawn further children. " +
+	"Child inherits parent model, thinking level, cwd, active registered tools executable in the child session, and shared notebook tools; children cannot spawn or handoff. " +
 	"Reference notebook pages by name — child will notebook_read them on demand.";
 
 const SPAWN_PROMPT_SNIPPET = "Spawn a focused subtask agent";
@@ -386,7 +388,7 @@ export async function executeSpawn(
  *
  * Creates a ToolDefinition that spawns an isolated child AgentSession
  * for focused subtasks. Children inherit the parent model, thinking
- * level, cwd, and notebook access.
+ * level, cwd, active registered executable tools, and notebook access.
  *
  * @param pi - Extension API instance for tool registration
  * @param state - Shared session state (child sessions, epoch, notebook)
