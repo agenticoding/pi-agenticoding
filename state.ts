@@ -63,6 +63,20 @@ export interface AgenticodingState {
 	 * Increment on /new so stale child updates/results cannot touch fresh state.
 	 */
 	childSessionEpoch: number;
+
+	/** Whether readonly mode is active — blocks write/edit/handoff and bash writes outside temp. */
+	readonlyEnabled: boolean;
+
+	/** One-shot flag: deliver a readonly ON or OFF nudge via context hook, then clear. */
+	readonlyNudgePending: boolean;
+
+	/**
+	 * Last context-percentage band at which the watchdog nudge was delivered.
+	 * null = never delivered. Bands: null (<30), 0 (30-49), 1 (50-69), 2 (70+).
+	 * Used to throttle nudges — only nudge when crossing into a higher band.
+	 */
+	lastWatchdogBand: number | null;
+
 }
 
 /** Create a fresh state instance. Call reset() on /new. */
@@ -81,6 +95,9 @@ export function createState(): AgenticodingState {
 		childSessions,
 		liveChildSessions,
 		childSessionEpoch: 0,
+		readonlyEnabled: false,
+		readonlyNudgePending: false,
+		lastWatchdogBand: null,
 	};
 	// Prevent replacement — spawn lifecycle code and renderer ownership checks
 	// depend on stable map identity. Only .clear() and .delete() are valid —
@@ -111,6 +128,9 @@ export function resetState(state: AgenticodingState): void {
 	state.lastContextPercent = null;
 	state.pendingHandoff = null;
 	state.pendingRequestedHandoff = null;
+	state.readonlyEnabled = false;
+	state.readonlyNudgePending = false;
+	state.lastWatchdogBand = null;
 	abortAndClearChildSessions(state);
 }
 

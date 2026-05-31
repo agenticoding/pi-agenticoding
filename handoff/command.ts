@@ -21,6 +21,15 @@ export function registerHandoffCommand(pi: ExtensionAPI, state: AgenticodingStat
 				if (ctx.hasUI) ctx.ui.notify("Usage: /handoff <direction>", "error");
 				return;
 			}
+			if (state.readonlyEnabled) {
+				if (ctx.hasUI) {
+					ctx.ui.notify(
+						"Readonly mode blocks /handoff. Use spawn only for same-topic delegation, or disable readonly with /readonly before a real handoff.",
+						"warning",
+					);
+				}
+				return;
+			}
 
 			state.pendingRequestedHandoff = {
 				direction,

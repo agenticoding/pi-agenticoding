@@ -25,6 +25,9 @@ export const STATUS_KEY_NOTEBOOK = "agenticoding-notebook";
 /** Status bar key for the active notebook topic. */
 export const STATUS_KEY_TOPIC = "agenticoding-topic";
 
+/** Status bar key for the readonly mode indicator. */
+export const STATUS_KEY_READONLY = "agenticoding-readonly";
+
 /** Update TUI indicators: context usage, notebook count, topic, warning widget. */
 export function updateIndicators(ctx: ExtensionContext, state: AgenticodingState): void {
 	if (!ctx.hasUI) return;
@@ -48,6 +51,12 @@ export function updateIndicators(ctx: ExtensionContext, state: AgenticodingState
 		: theme.fg("dim", "\u{1F4D2} 0"),
 	);
 
+	// Readonly mode indicator
+	ctx.ui.setStatus(
+		STATUS_KEY_READONLY,
+		state.readonlyEnabled ? theme.fg("warning", "\u{1F512} readonly") : undefined,
+	);
+
 	// Active notebook topic — show a dim placeholder when unset so the frame is discoverable
 	ctx.ui.setStatus(
 		STATUS_KEY_TOPIC,
@@ -58,9 +67,12 @@ export function updateIndicators(ctx: ExtensionContext, state: AgenticodingState
 
 	// High-context warning widget (above editor)
 	if (usage && usage.percent !== null && usage.percent >= 70) {
-		const warning = state.activeNotebookTopic
-			? `Context at ${Math.round(usage.percent)}% — use topic fit: same topic → spawn, different topic → handoff`
-			: `Context at ${Math.round(usage.percent)}% — no active topic; handoff soon unless you can assign one cleanly`;
+		const pct = Math.round(usage.percent);
+		const warning = state.readonlyEnabled
+			? `Context at ${pct}% — readonly: same topic → spawn; different topic → disable readonly, then handoff`
+			: state.activeNotebookTopic
+				? `Context at ${pct}% — use topic fit: same topic → spawn, different topic → handoff`
+				: `Context at ${pct}% — no active topic; handoff soon unless you can assign one cleanly`;
 		ctx.ui.setWidget(WIDGET_KEY_WARNING, [
 			theme.fg("error", "\u26A0 ") + theme.fg("warning", warning),
 		]);
