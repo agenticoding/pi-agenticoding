@@ -1,5 +1,3 @@
-/// <reference types="node" />
-
 /**
  * Config file write validator — IDE config poisoning defense.
  *
@@ -16,12 +14,16 @@
  */
 
 import path from "node:path";
+import { resolveRealPath } from "./resolve-path.js";
 
 // ── Types ────────────────────────────────────────────────────────────
 
 export type ConfigValidationResult =
 	| { allow: true }
 	| { allow: false; reason: string };
+
+/** Prefix for all block reasons emitted by validators. */
+const BLOCK_PREFIX = "blocked: ";
 
 /** Internal categorisation of config file types. */
 type ConfigFileType =
@@ -34,7 +36,15 @@ type ConfigFileType =
 
 // ── URL helpers ──────────────────────────────────────────────────
 
-/** True if the URL points to a local (loopback) address. */
+/**
+ * True if the URL points to a local (loopback) address.
+ *
+ * Rejects subdomain-prefix bypass attempts like localhost.evil.com by
+ * requiring an exact loopback hostname match. DNS rebinding variants such as
+ * 127.0.0.1.nip.io remain undetected at this string level — resolving DNS
+ * would introduce latency and SSRF risk. This stays a best-effort guardrail,
+ * not a security boundary.
+ */
 function isLocalhost(url: string): boolean {
 	// Unix socket paths (unix:// or /var/run/...) are always local
 	if (url.startsWith("unix:") || url.startsWith("/")) return true;
@@ -42,16 +52,20 @@ function isLocalhost(url: string): boolean {
 	try {
 		const parsed = new URL(url);
 		const hostname = parsed.hostname.toLowerCase();
-		return (
-			hostname === "localhost" ||
-			hostname === "127.0.0.1" ||
-			hostname === "::1" ||
-			hostname === "::ffff:127.0.0.1" ||
-			hostname === "::ffff:7f00:1" ||
-			hostname === "[::ffff:127.0.0.1]" ||
-			hostname === "[::ffff:7f00:1]" ||
-			hostname === "0.0.0.0"
-		);
+		// Exact loopback hostnames only — never allow hostname prefixes.
+		const LOCALHOST_VALUES = [
+			"localhost",
+			"127.0.0.1",
+			"::1",
+			"::ffff:127.0.0.1",
+			"::ffff:7f00:1",
+			"[::ffff:127.0.0.1]",
+			"[::ffff:7f00:1]",
+			// 0.0.0.0 accepts all interfaces — semantically broad but commonly used for
+		// local-only servers that bind to loopback via OS firewall rules.
+		"0.0.0.0",
+		];
+		return LOCALHOST_VALUES.includes(hostname);
 	} catch {
 		// Not a valid URL — treat as non-local
 		return false;
@@ -60,30 +74,39 @@ function isLocalhost(url: string): boolean {
 
 // ── Path classification ─────────────────────────────────────────────
 
-/** Classify a file path into a config file type, or null if not protected. */
+/**
+ * Classify a file path into a protected config file type, or null if not protected.
+ *
+ * Uses path matching (not regex on content) so it runs before reading the file.
+ * Matches: .cursorrules, .github/copilot-instructions.md, .vscode/settings.json,
+ * .vscode/*.code-workspace, .mcp*.json (any prefix), .idea/workspace.xml.
+ */
 function classifyConfigPath(filePath: string): ConfigFileType | null {
-	// Normalise separators so checks work cross-platform (macOS/Linux use /,
-	// Windows uses \).
-	const normalized = path.normalize(filePath).replace(/\\/g, "/");
-	const basename = path.basename(normalized);
+	const resolvedPath = resolveRealPath(path.resolve(filePath));
+	// Normalise both the requested path and its real target so symlinked aliases
+	// to protected config files inherit the same validation.
+	const candidates = [filePath, resolvedPath].map((candidate) =>
+		path.normalize(candidate).replace(/\\/g, "/").toLowerCase(),
+	);
+	const basenameSet = new Set(candidates.map((candidate) => path.basename(candidate)));
 
 	// .cursorrules — plaintext, entire file is the attack vector (AIShellJack)
-	if (basename === ".cursorrules") return "cursorrules";
+	if (basenameSet.has(".cursorrules")) return "cursorrules";
 
 	// .github/copilot-instructions.md — embedded instructions
-	if (normalized.includes(".github/copilot-instructions.md")) return "copilot-instructions";
+	if (candidates.some((candidate) => candidate.includes(".github/copilot-instructions.md"))) return "copilot-instructions";
 
 	// .vscode/settings.json — structured JSON settings
-	if (normalized.includes(".vscode/settings.json")) return "vscode-settings";
+	if (candidates.some((candidate) => candidate.includes(".vscode/settings.json"))) return "vscode-settings";
 
 	// .vscode/*.code-workspace — multi-root workspace
-	if (basename.endsWith(".code-workspace") && normalized.includes(".vscode/")) return "vscode-workspace";
+	if (candidates.some((candidate) => path.basename(candidate).endsWith(".code-workspace") && candidate.includes(".vscode/"))) return "vscode-workspace";
 
 	// MCP config: .mcp.json, mcp.json, mcp.servers.json, etc.
-	if (/^\.?mcp[\w.-]*\.json$/i.test(basename)) return "mcp";
+	if ([...basenameSet].some((basename) => /^\.?mcp[\w.-]*\.json$/i.test(basename))) return "mcp";
 
 	// .idea/workspace.xml — IntelliJ IDEA workspace
-	if (normalized.includes(".idea/workspace.xml")) return "idea-workspace";
+	if (candidates.some((candidate) => candidate.includes(".idea/workspace.xml"))) return "idea-workspace";
 
 	return null;
 }
@@ -102,12 +125,25 @@ function tryParseJSON(content: string): ParseResult {
 	try {
 		const parsed = JSON.parse(content);
 		if (typeof parsed !== "object" || parsed === null) {
+			// Non-object JSON (primitives) can't contain dangerous settings.
+			// Map to empty object so validators produce a clean allow result.
 			return { ok: true, value: {} };
 		}
 		return { ok: true, value: parsed as Record<string, unknown> };
 	} catch {
 		return { ok: false, reason: "blocked: invalid JSON in protected config file — cannot validate" };
 	}
+}
+
+// ── Case-insensitive key lookup ────────────────────────────────────
+
+/** Find a key in config matching `target` case-insensitively. */
+function findKeyCI(config: Record<string, unknown>, target: string): string | null {
+	const lower = target.toLowerCase();
+	for (const key of Object.keys(config)) {
+		if (key.toLowerCase() === lower) return key;
+	}
+	return null;
 }
 
 // ── Individual validators ────────────────────────────────────────────
@@ -127,21 +163,26 @@ function validateVSCodeSettings(content: string): ConfigValidationResult {
 	const config = parseResult.value;
 
 	// ── 1. chat.tools.autoApprove ──────────────────────────────────────
-	if (
-		config["chat.tools.autoApprove"] === true ||
-		config["chat.tools.autoApprove"] === "on"
-	) {
-		return {
-			allow: false,
-			reason:
-				'blocked: chat.tools.autoApprove enables automatic tool approval without human review (CVE-2025-53773)',
-		};
+	// VS Code normalises keys case-insensitively, so "Chat.Tools.AutoApprove" bypasses
+	// an exact-key check. Scan all keys case-insensitively instead.
+	const autoApproveKey = findKeyCI(config, "chat.tools.autoApprove");
+	if (autoApproveKey !== null) {
+		const val = config[autoApproveKey];
+		if (val === true || (typeof val === "string" && val.toLowerCase() === "on")) {
+			return {
+				allow: false,
+				reason:
+					'blocked: chat.tools.autoApprove enables automatic tool approval without human review (CVE-2025-53773)',
+			};
+		}
 	}
 
 	// ── 2. *validate.executablePath — custom validation executable ─────
+	// VS Code normalises keys case-insensitively; use .toLowerCase() for consistency
+	// with the terminal.integrated.shell.* check below.
 	for (const key of Object.keys(config)) {
 		if (
-			key.includes("validate.executablePath") &&
+			key.toLowerCase().includes("validate.executablepath") &&
 			config[key] !== null &&
 			config[key] !== undefined
 		) {
@@ -153,9 +194,11 @@ function validateVSCodeSettings(content: string): ConfigValidationResult {
 	}
 
 	// ── 3. git.path — git executable hijacking ─────────────────────────
+	const gitPathKey = findKeyCI(config, "git.path");
 	if (
-		typeof config["git.path"] === "string" &&
-		config["git.path"].length > 0
+		gitPathKey !== null &&
+		typeof config[gitPathKey] === "string" &&
+		(config[gitPathKey] as string).length > 0
 	) {
 		return {
 			allow: false,
@@ -165,7 +208,7 @@ function validateVSCodeSettings(content: string): ConfigValidationResult {
 
 	// ── 4. terminal.integrated.shell.* — shell executable hijacking ────
 	for (const key of Object.keys(config)) {
-		if (key.startsWith("terminal.integrated.shell.")) {
+		if (key.toLowerCase().startsWith("terminal.integrated.shell.")) {
 			return {
 				allow: false,
 				reason: `blocked: ${key} sets custom shell path (executable hijacking)`,
@@ -174,7 +217,9 @@ function validateVSCodeSettings(content: string): ConfigValidationResult {
 	}
 
 	// ── 5. files.associations — script extension → executable handler ──
-	const associations = config["files.associations"];
+	// VS Code normalises keys case-insensitively; use findKeyCI for consistency.
+	const associationsKey = findKeyCI(config, "files.associations");
+	const associations = associationsKey ? config[associationsKey] : undefined;
 	if (typeof associations === "object" && associations !== null) {
 		for (const [glob, handler] of Object.entries(
 			associations as Record<string, string>,
@@ -211,7 +256,7 @@ function validateVSCodeWorkspace(content: string): ConfigValidationResult {
 		if (!settingsResult.allow) {
 			return {
 				allow: false,
-				reason: `blocked: workspace settings override — ${settingsResult.reason.slice("blocked: ".length)}`,
+				reason: `blocked: workspace settings override — ${settingsResult.reason.slice(BLOCK_PREFIX.length)}`,
 			};
 		}
 	}
@@ -269,6 +314,29 @@ function validateMCPConfig(content: string): ConfigValidationResult {
 			};
 		}
 
+		// ── command field → stdio transport code execution vector ──────────
+		// Arbitrary launchers or inline-exec flags can run attacker code.
+		const MCP_COMMAND_ALLOWLIST = new Set(["node", "python", "python3"]);
+		// Only interpreters whose behavior is determined by args, not by downloading
+		// arbitrary packages. Intentionally excludes npx, uvx, and other package runners.
+		const MCP_BLOCKED_ARG_FLAGS = new Set(["-e", "--eval", "-c", "-m"]);
+		const cmd = sc["command"];
+		if (typeof cmd === "string" && cmd.length > 0) {
+			if (!MCP_COMMAND_ALLOWLIST.has(cmd)) {
+				return {
+					allow: false,
+					reason: `blocked: server "${serverName}" uses command "${cmd}" (unknown command in MCP server config — only ${[...MCP_COMMAND_ALLOWLIST].join(", ")} are allowed)`,
+				};
+			}
+			const args = sc["args"];
+			if (Array.isArray(args) && args.some((arg) => typeof arg === "string" && MCP_BLOCKED_ARG_FLAGS.has(arg))) {
+				return {
+					allow: false,
+					reason: `blocked: server "${serverName}" uses inline execution args for command "${cmd}"`,
+				};
+			}
+		}
+
 		// ── disabled: false → re-enabling a disabled server ──────────────
 		if (sc["disabled"] === false) {
 			return {
@@ -302,7 +370,8 @@ function validateIdeaWorkspaceXML(content: string): ConfigValidationResult {
 	// ── dynamic.classpath = true → code execution via dynamic loading ──
 	// Matches XML like: <property name="dynamic.classpath" value="true"/>
 	// where dynamic.classpath and "true" appear within the same XML element.
-	if (/\bdynamic\.classpath\b[^>]*?"true"/i.test(content)) {
+	// Matches both orders: name="dynamic.classpath" value="true" and value="true" name="dynamic.classpath"
+	if (/(?:\bdynamic\.classpath\b[^>]*?value\s*=\s*"true")|(?:value\s*=\s*"true"[^>]*?\bdynamic\.classpath\b)/i.test(content)) {
 		return {
 			allow: false,
 			reason: "blocked: dynamic.classpath=true enables dynamic classpath loading (code execution vector)",
@@ -325,8 +394,10 @@ function validateIdeaWorkspaceXML(content: string): ConfigValidationResult {
 	if (pcMatch) {
 		const pcBody = pcMatch[1];
 		// Check for non-localhost URLs being set as properties (tool/schema redirection)
+		// Negative lookahead also rejects subdomain-prefix bypass: localhost.evil.com
+		// starts with "localhost." so the (?:\.|:|/|$) suffix catches it.
 		const urlProps = pcBody.match(
-			/\b(?:url|endpoint|server|host|schema)\s*=\s*"https?:\/\/(?!localhost|127\.0\.0\.1|::1)[^"]+"/gi,
+			/\b(?:url|endpoint|server|host|schema)\s*=\s*"(?:https?|wss?):\/\/(?!localhost(?:\.|:|\/|$)|127\.0\.0\.1(?:\.|:|\/|$)|::1(?:\.|:|\/|$))[^"]+"/gi,
 		);
 		if (urlProps && urlProps.length > 0) {
 			return {
