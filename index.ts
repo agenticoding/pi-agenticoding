@@ -135,7 +135,6 @@ export default function (pi: ExtensionAPI): void {
 		if (!state.readonlyEnabled) return;
 
 		if (event.toolName === "write" || event.toolName === "edit" || event.toolName === "handoff") {
-			console.debug(`[readonly] Blocked ${event.toolName} — readonly mode active`);
 			return {
 				block: true as const,
 				reason:
@@ -146,10 +145,8 @@ export default function (pi: ExtensionAPI): void {
 
 		if (isToolCallEventType("bash", event)) {
 			const cmd = event.input.command;
-
 			const result = applyReadonlyBashGuard(cmd, ctx.cwd);
 			if (result.action === "block") {
-				console.debug("[readonly] Blocked bash — %s", result.reason);
 				return { block: true as const, reason: result.reason };
 			}
 			if (result.action === "sandbox") {

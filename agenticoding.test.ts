@@ -1139,44 +1139,31 @@ test("spawn execute marks stats unavailable when stats collection throws", async
 	pi.setActiveTools(["read", "bash", "spawn"]);
 	const state = createState();
 
-	const warnings: any[] = [];
-	const originalWarn = console.warn;
-	console.warn = (...args: any[]) => {
-		warnings.push(args);
+	const mockFactory = async () => {
+		const session = {
+			messages: [] as any[],
+			prompt: async () => {
+				session.messages = [{ role: "assistant", content: [{ type: "text", text: "child result" }] }];
+			},
+			abort: async () => {},
+			getSessionStats: () => {
+				throw new Error("stats failed");
+			},
+		};
+		return { session: session as any };
 	};
 
-	try {
-		const mockFactory = async () => {
-			const session = {
-				messages: [] as any[],
-				prompt: async () => {
-					session.messages = [{ role: "assistant", content: [{ type: "text", text: "child result" }] }];
-				},
-				abort: async () => {},
-				getSessionStats: () => {
-					throw new Error("stats failed");
-				},
-			};
-			return { session: session as any };
-		};
+	registerSpawnTool(pi as any, state, mockFactory as any);
+	const result = await pi.tools.get("spawn").execute(
+		"spawn-1",
+		{ prompt: "Do the task" },
+		undefined,
+		undefined,
+		{ model: { id: "mock-model" }, cwd: "/tmp" },
+	);
 
-		registerSpawnTool(pi as any, state, mockFactory as any);
-		const result = await pi.tools.get("spawn").execute(
-			"spawn-1",
-			{ prompt: "Do the task" },
-			undefined,
-			undefined,
-			{ model: { id: "mock-model" }, cwd: "/tmp" },
-		);
-
-		assert.equal(result.details.stats, undefined);
-		assert.equal(result.details.statsUnavailable, true);
-		assert.equal(warnings.length, 1);
-		assert.match(String(warnings[0][1]), /stats failed/);
-		assert.equal(warnings[0][2], "spawn-1");
-	} finally {
-		console.warn = originalWarn;
-	}
+	assert.equal(result.details.stats, undefined);
+	assert.equal(result.details.statsUnavailable, true);
 });
 
 test("spawn execute throws when child produces no output", async () => {
@@ -1483,41 +1470,32 @@ test("nested spawn live action tracks tool execution events", () => {
 	state.childSessions.set("tool-call-1", session);
 	state.liveChildSessions.set("tool-call-1", session);
 
-	// Mock console.warn to suppress any expected-but-harmless warnings
-	// (e.g., streaming component errors in headless test env).
-	const originalWarn = console.warn;
-	console.warn = () => {};
+	const component = childSpawnTool.renderResult(
+		{ content: [{ type: "text", text: "ignored" }], details: { model: "m", thinking: "low", truncated: false } },
+		{ expanded: false },
+		theme,
+		createRenderContext(),
+	) as any;
 
-	try {
-		const component = childSpawnTool.renderResult(
-			{ content: [{ type: "text", text: "ignored" }], details: { model: "m", thinking: "low", truncated: false } },
-			{ expanded: false },
-			theme,
-			createRenderContext(),
-		) as any;
+	// message_start → thinking
+	emit({ type: "message_start", message: { role: "assistant", content: [] } });
+	let lines = component.render(120);
+	assert.ok(lines.some((l: string) => l.includes("thinking")), `expected thinking, got: ${lines.join("\n")}`);
 
-		// message_start → thinking
-		emit({ type: "message_start", message: { role: "assistant", content: [] } });
-		let lines = component.render(120);
-		assert.ok(lines.some((l: string) => l.includes("thinking")), `expected thinking, got: ${lines.join("\n")}`);
+	// message_update with text → live preview
+	emit({ type: "message_update", message: { role: "assistant", content: [{ type: "text", text: "writing code now" }] } });
+	lines = component.render(120);
+	assert.ok(lines.some((l: string) => l.includes("writing code now")), `expected live text preview, got: ${lines.join("\n")}`);
 
-		// message_update with text → live preview
-		emit({ type: "message_update", message: { role: "assistant", content: [{ type: "text", text: "writing code now" }] } });
-		lines = component.render(120);
-		assert.ok(lines.some((l: string) => l.includes("writing code now")), `expected live text preview, got: ${lines.join("\n")}`);
+	// message_end → success marker in identity line
+	emit({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "summary" }], stopReason: "end_turn" } });
+	lines = component.render(120);
+	assert.ok(lines.some((l: string) => l.includes("✅")), `expected success marker, got: ${lines.join("\n")}`);
 
-		// message_end → success marker in identity line
-		emit({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "summary" }], stopReason: "end_turn" } });
-		lines = component.render(120);
-		assert.ok(lines.some((l: string) => l.includes("✅")), `expected success marker, got: ${lines.join("\n")}`);
-
-		// Tool events degrade gracefully in minimal test env and still update live action
-		emit({ type: "tool_execution_start", toolCallId: "tc-1", toolName: "bash", args: { command: "ls" } });
-		lines = component.render(120);
-		assert.ok(lines.some((l: string) => l.includes("[bash]")), `expected tool live action, got: ${lines.join("\n")}`);
-	} finally {
-		console.warn = originalWarn;
-	}
+	// Tool events degrade gracefully in minimal test env and still update live action
+	emit({ type: "tool_execution_start", toolCallId: "tc-1", toolName: "bash", args: { command: "ls" } });
+	lines = component.render(120);
+	assert.ok(lines.some((l: string) => l.includes("[bash]")), `expected tool live action, got: ${lines.join("\n")}`);
 });
 
 test("nested spawn handleEvent recovers from malformed events", () => {
@@ -1527,30 +1505,20 @@ test("nested spawn handleEvent recovers from malformed events", () => {
 	state.childSessions.set("tool-call-1", session);
 	state.liveChildSessions.set("tool-call-1", session);
 
-	const warnings: any[] = [];
-	const originalWarn = console.warn;
-	console.warn = (...args: any[]) => warnings.push(args);
+	const component = childSpawnTool.renderResult(
+		{ content: [{ type: "text", text: "ignored" }], details: { model: "m", thinking: "low", truncated: false } },
+		{ expanded: false },
+		theme,
+		createRenderContext(),
+	) as any;
 
-	try {
-		const component = childSpawnTool.renderResult(
-			{ content: [{ type: "text", text: "ignored" }], details: { model: "m", thinking: "low", truncated: false } },
-			{ expanded: false },
-			theme,
-			createRenderContext(),
-		) as any;
+	// Emit a malformed event that will throw inside handleEvent
+	emit({ type: "message_start", message: null });
 
-		// Emit a malformed event that will throw inside handleEvent
-		emit({ type: "message_start", message: null });
-		assert.equal(warnings.length, 1);
-		assert.match(String(warnings[0][1]), /message_start/);
-
-		// Subsequent valid events still process
-		emit({ type: "message_start", message: { role: "assistant", content: [] } });
-		const lines = component.render(120);
-		assert.ok(lines.some((l: string) => l.includes("thinking")), `expected thinking after recovery, got: ${lines.join("\n")}`);
-	} finally {
-		console.warn = originalWarn;
-	}
+	// Subsequent valid events still process
+	emit({ type: "message_start", message: { role: "assistant", content: [] } });
+	const lines = component.render(120);
+	assert.ok(lines.some((l: string) => l.includes("thinking")), `expected thinking after recovery, got: ${lines.join("\n")}`);
 });
 
 test("nested spawn message_end with aborted stopReason clears pending tools", () => {
@@ -2582,26 +2550,17 @@ test("nested spawn rebuildFromSession quietly tolerates missing tool definitions
 	} as any;
 	state.childSessions.set("tool-call-1", session);
 
-	const warnings: any[] = [];
-	const originalWarn = console.warn;
-	console.warn = (...args: any[]) => warnings.push(args);
+	const component = childSpawnTool.renderResult(
+		{ content: [], details: { model: "m", thinking: "low", truncated: false, outcome: "error" } },
+		{ expanded: false },
+		theme,
+		createRenderContext(),
+	) as any;
 
-	try {
-		const component = childSpawnTool.renderResult(
-			{ content: [], details: { model: "m", thinking: "low", truncated: false, outcome: "error" } },
-			{ expanded: false },
-			theme,
-			createRenderContext(),
-		) as any;
-
-		const lines = component.render(120);
-		assert.ok(lines.some((l: string) => l.includes("⚠ m • low")));
-		assert.ok(lines.some((l: string) => l.includes("error")));
-		assert.equal(state.childSessions.has("tool-call-1"), false);
-		assert.deepEqual(warnings, []);
-	} finally {
-		console.warn = originalWarn;
-	}
+	const lines = component.render(120);
+	assert.ok(lines.some((l: string) => l.includes("⚠ m • low")));
+	assert.ok(lines.some((l: string) => l.includes("error")));
+	assert.equal(state.childSessions.has("tool-call-1"), false);
 });
 
 test("nested spawn attachSession recovers from subscribe throwing", () => {
@@ -2618,29 +2577,19 @@ test("nested spawn attachSession recovers from subscribe throwing", () => {
 	} as any;
 	state.childSessions.set("tool-call-1", throwingSession);
 
-	const warnings: any[] = [];
-	const originalWarn = console.warn;
-	console.warn = (...args: any[]) => warnings.push(args);
+	const component = childSpawnTool.renderResult(
+		{ content: [], details: { model: "m", thinking: "low", truncated: false } },
+		{ expanded: false },
+		theme,
+		createRenderContext(),
+	) as any;
 
-	try {
-		const component = childSpawnTool.renderResult(
-			{ content: [], details: { model: "m", thinking: "low", truncated: false } },
-			{ expanded: false },
-			theme,
-			createRenderContext(),
-		) as any;
+	// Should not crash, session attached, ownership transferred
+	assert.equal(state.childSessions.has("tool-call-1"), false);
 
-		// Should not crash, session attached, ownership transferred
-		assert.equal(state.childSessions.has("tool-call-1"), false);
-		assert.equal(warnings.length, 1);
-		assert.match(String(warnings[0][0]), /Failed to subscribe/);
-
-		// Should still render from session messages despite subscribe failure
-		const lines = component.render(120);
-		assert.ok(lines.some((l: string) => l.includes("hello")));
-	} finally {
-		console.warn = originalWarn;
-	}
+	// Should still render from session messages despite subscribe failure
+	const lines = component.render(120);
+	assert.ok(lines.some((l: string) => l.includes("hello")));
 });
 
 test("nested spawn rapid events collapse to last state", () => {
@@ -2963,25 +2912,16 @@ test("nested spawn recovers batching state after event handler error", async () 
 		createRenderContext(),
 	) as any;
 
-	const warnings: any[] = [];
-	const originalWarn = console.warn;
-	console.warn = (...args: any[]) => warnings.push(args);
-	try {
-		// Bad event triggers an error in handleMessageStart (null message)
-		// catch block must call resetRenderBatching() so the flag resets
-		emit({ type: "message_start", message: null } as any);
+	// Bad event triggers an error in handleMessageStart (null message)
+	// catch block must call resetRenderBatching() so the flag resets
+	emit({ type: "message_start", message: null } as any);
 
-		// Good event after error — should still schedule and render
-		emit({ type: "message_start", message: { role: "assistant", content: [] } });
-		flushSpawnFrameScheduler();
-		const lines = component.render(120);
-		assert.ok(lines.some((l: string) => l.includes("thinking")),
-			"error recovery should allow subsequent events to render");
-		assert.equal(warnings.length, 1);
-		assert.match(String(warnings[0][0]), /Event handler error/);
-	} finally {
-		console.warn = originalWarn;
-	}
+	// Good event after error — should still schedule and render
+	emit({ type: "message_start", message: { role: "assistant", content: [] } });
+	flushSpawnFrameScheduler();
+	const lines = component.render(120);
+	assert.ok(lines.some((l: string) => l.includes("thinking")),
+		"error recovery should allow subsequent events to render");
 });
 
 test("nested spawn processes stale-state events without invalidating the parent", async () => {

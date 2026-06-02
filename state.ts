@@ -143,6 +143,6 @@ export function abortAndClearChildSessions(state: AgenticodingState): void {
 	state.childSessions.clear();
 	state.liveChildSessions.clear();
 	for (const [session, id] of seen) {
-		session.abort().catch((e: unknown) => console.warn("[spawn] abort failed:", id, e));
+		session.abort().catch(() => {});
 	}
 }

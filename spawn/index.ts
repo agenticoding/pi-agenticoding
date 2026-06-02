@@ -327,7 +327,7 @@ export async function executeSpawn(
 	let wasAborted = false;
 	const abortChild = () => {
 		wasAborted = true;
-		session.abort().catch(e => console.error("[spawn] abort failed:", toolCallId, e));
+		session.abort().catch(() => {});
 	};
 	const clearChildSession = () => {
 		if (state.childSessions.get(toolCallId) === session) {
@@ -339,7 +339,7 @@ export async function executeSpawn(
 	};
 	const abortAndInvalidate = async () => {
 		clearChildSession();
-		await session.abort().catch(e => console.error("[spawn] abort failed:", toolCallId, e));
+		await session.abort().catch(() => {});
 		throw invalidatedError;
 	};
 
@@ -423,7 +423,6 @@ export async function executeSpawn(
 		}
 	} catch (error: unknown) {
 		statsUnavailable = true;
-		console.warn("[spawn] Failed to collect child session stats:", error, toolCallId);
 	}
 
 	if (isStale()) {

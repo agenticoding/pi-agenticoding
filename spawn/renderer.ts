@@ -505,7 +505,6 @@ class NestedAgentSessionComponent extends Container implements SpawnFrameTarget 
 				: undefined;
 		} catch (error) {
 			this.unsubscribe = undefined;
-			console.warn("[spawn] Failed to subscribe to child session events:", this.ownedToolCallId, error);
 		}
 	}
 
@@ -575,7 +574,7 @@ class NestedAgentSessionComponent extends Container implements SpawnFrameTarget 
 		this.state = undefined;
 		this.attachedChildSessionEpoch = undefined;
 		if (session && ownedToolCallId && liveChildSessions?.get(ownedToolCallId) === session) {
-			session.abort().catch(e => console.error("[spawn] abort failed:", ownedToolCallId, e));
+			session.abort().catch(() => {});
 			liveChildSessions.delete(ownedToolCallId);
 		}
 	}
@@ -664,11 +663,6 @@ class NestedAgentSessionComponent extends Container implements SpawnFrameTarget 
 		} catch (error) {
 			if (isExpectedToolComponentFailure(error)) {
 				return undefined;
-			}
-			const failureKey = `${toolCallId}:${toolName}`;
-			if (!this.toolComponentFailures.has(failureKey)) {
-				this.toolComponentFailures.add(failureKey);
-				console.warn("[spawn] Failed to create tool component:", toolCallId, toolName, error);
 			}
 			return undefined;
 		}
@@ -896,7 +890,6 @@ class NestedAgentSessionComponent extends Container implements SpawnFrameTarget 
 		if (isExpectedToolComponentFailure(error)) {
 			return;
 		}
-		console.warn(`[spawn] streaming component error (${eventType}):`, this.ownedToolCallId, error);
 	}
 
 	// ── Event handlers ───────────────────────────────────────────────
@@ -1111,7 +1104,6 @@ class NestedAgentSessionComponent extends Container implements SpawnFrameTarget 
 			this.resetRenderBatching();
 			// Prevent a single bad event from killing the subscription.
 			// The TUI degrades gracefully — stale content until next successful event.
-			console.warn("[spawn] Event handler error:", event.type, this.ownedToolCallId, error);
 		}
 	}
 }
