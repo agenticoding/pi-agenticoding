@@ -314,7 +314,7 @@ function getMutationTargets(command: string, tokens: string[]): string[] | null 
 				// -i may have a separate backup extension value (macOS: sed -i '' 's/.../.../' file).
 				// When present, it becomes the first non-option arg before the sed expression.
 				// Skip the extension (if present) then the expression, returning remaining as targets.
-				if (args.length > 0 && (args[0] === "" || /^[a-zA-Z0-9._-]{1,10}$/.test(args[0]))) {
+				if (args.length > 0 && (args[0] === "" || args[0] === "''" || args[0] === '""' || /^[a-zA-Z0-9._-]{1,10}$/.test(args[0]))) {
 					return args.slice(2);
 				}
 				return args.slice(1);

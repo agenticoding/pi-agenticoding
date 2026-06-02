@@ -4809,6 +4809,8 @@ test("classifyBashCommand allows sudo with safe interpreter -c inline script", (
 
 test("classifyBashCommand blocks sed -i in-place mutation", () => {
 	assert.equal(isBlocked("sed -i 's/a/b/g' file.txt"), true, "sed -i is blocked outside temp");
+	assert.equal(isBlocked("sed -i '' 's/a/b/g' /etc/config"), true, "sed -i '' (macOS) is blocked outside temp");
+	assert.equal(isBlocked("sed -i \"\" 's/a/b/g' /etc/config"), true, 'sed -i "" (macOS) is blocked outside temp');
 	assert.equal(isBlocked("sed -i.bak 's/a/b/' /etc/config"), true, "sed -i.bak is blocked");
 });
 
