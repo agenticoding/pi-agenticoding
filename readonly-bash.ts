@@ -319,11 +319,28 @@ function getMutationTargets(command: string, tokens: string[]): string[] | null 
 			return getFindMutationTargets(tokens.slice(1));
 		case "wget": {
 			const wArgs = tokens.slice(1);
+			let outputTarget: string | null = null;
 			for (let i = 0; i < wArgs.length; i++) {
-				if (wArgs[i] === "-O" && wArgs[i + 1]) return [wArgs[i + 1]];
-				if (wArgs[i].startsWith("-O") && wArgs[i].length > 2) return [wArgs[i].slice(2)];
-				if (wArgs[i] === "--output-document" && wArgs[i + 1]) return [wArgs[i + 1]];
-				if (wArgs[i].startsWith("--output-document=")) return [wArgs[i].slice("--output-document=".length)];
+				if (wArgs[i] === "-O" && wArgs[i + 1]) {
+					outputTarget = wArgs[i + 1];
+					i++;
+					continue;
+				}
+				if (wArgs[i].startsWith("-O") && wArgs[i].length > 2) {
+					outputTarget = wArgs[i].slice(2);
+					continue;
+				}
+				if (wArgs[i] === "--output-document" && wArgs[i + 1]) {
+					outputTarget = wArgs[i + 1];
+					i++;
+					continue;
+				}
+				if (wArgs[i].startsWith("--output-document=")) {
+					outputTarget = wArgs[i].slice("--output-document=".length);
+				}
+			}
+			if (outputTarget !== null) {
+				return stripMatchingQuotes(outputTarget) === "-" ? ["/dev/null"] : [outputTarget];
 			}
 			// wget without -O/--output-document writes to disk (URL basename in cwd) —
 			// this path is unreachable when called via getFilesystemMutationReason (which

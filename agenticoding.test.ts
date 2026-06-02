@@ -5023,6 +5023,22 @@ test("classifyBashCommand allows curl without output flags", () => {
 	assert.equal(isDirect("curl http://example.com"), true, "curl without -o outputs to stdout");
 });
 
+// ── classifyBashCommand: wget -O- stdout ────────────────────────────
+
+test("classifyBashCommand allows wget -O- stdout output", () => {
+	assert.equal(isDirect("wget -O- http://example.com"), true, "-O- combined token writes to stdout");
+	assert.equal(isDirect("wget -O - http://example.com"), true, "-O separate token writes to stdout");
+	assert.equal(isDirect("wget --output-document=- http://example.com"), true, "--output-document=- writes to stdout");
+});
+
+test("classifyBashCommand uses the last wget output flag", () => {
+	const tmp = os.tmpdir();
+	assert.equal(isBlocked("wget -O- -O /etc/passwd http://example.com"), true, "later file output should win over stdout");
+	assert.equal(isBlocked("wget --output-document=- --output-document=/etc/passwd http://example.com"), true, "later long output flag should win over stdout");
+	assert.equal(isDirect(`wget -O /etc/passwd -O ${tmp}/out.html http://example.com`), true, "later temp output should win over earlier unsafe path");
+	assert.equal(isDirect(`wget -O ${tmp}/out.html -O- http://example.com`), true, "later stdout output should win over earlier temp path");
+});
+
 // ── N4: xargs command classification ───────────────────────────────
 
 test("classifyBashCommand blocks xargs with mutation command", () => {
