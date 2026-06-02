@@ -4802,6 +4802,22 @@ test("classifyBashCommand blocks path traversal attacks", () => {
 	assert.equal(isBlocked("rm /private/var/tmp/../../../etc/passwd"), true, "relative traversal outside temp is blocked");
 });
 
+// ── classifyBashCommand: fd redirect passthrough ─────────────────────
+
+test("classifyBashCommand allows fd redirect passthrough", () => {
+	assert.equal(isDirect("echo hi 2>&1"), true, "fd redirect 2>&1 is passthrough");
+	assert.equal(isDirect("echo hi 2>/dev/null"), true, "fd redirect to /dev/null is safe");
+	assert.equal(isDirect("exec 3>&1"), true, "exec fd redirect is safe");
+});
+
+// ── classifyBashCommand: empty/bare commands ─────────────────────────
+
+test("classifyBashCommand handles empty and bare commands", () => {
+	assert.equal(isDirect(""), true, "empty string should be allowed");
+	assert.equal(isDirect("   "), true, "whitespace should be allowed");
+	assert.equal(isBlocked("git"), true, "bare git without subcommand should be blocked");
+});
+
 // ── classifyBashCommand: exact-string contract tests ─────────────────
 
 test("classifyBashCommand exact reason: git mutable block", () => {
