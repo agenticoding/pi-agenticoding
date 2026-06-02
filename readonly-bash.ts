@@ -211,6 +211,19 @@ function getFilesystemMutationReason(segment: string, cwd: string, depth: number
 	const packageManagerReason = getPackageManagerMutationReason(segment);
 	if (packageManagerReason) return packageManagerReason;
 
+	// wget without -O/--output-document writes to disk (URL basename in cwd) — block
+	// Must be checked before getMutationTargets since there is no explicit target path
+	// to feed into the generic path check.
+	if (command === "wget") {
+		const wArgs = tokens.slice(1);
+		const hasOutputFlag = wArgs.some(
+			(a) => a === "-O" || a.startsWith("-O") || a === "--output-document" || a.startsWith("--output-document="),
+		);
+		if (!hasOutputFlag) {
+			return "wget blocked outside temp dir: current directory (use -O /tmp/... to write to temp)";
+		}
+	}
+
 	// xargs: classify the command xargs would run.
 	// xargs feeds stdin as args, so any mutation command is blocked even
 	// without explicit targets — the targets come from the pipe.
@@ -321,8 +334,14 @@ function getMutationTargets(command: string, tokens: string[]): string[] | null 
 			for (let i = 0; i < wArgs.length; i++) {
 				if (wArgs[i] === "-O" && wArgs[i + 1]) return [wArgs[i + 1]];
 				if (wArgs[i].startsWith("-O") && wArgs[i].length > 2) return [wArgs[i].slice(2)];
+				if (wArgs[i] === "--output-document" && wArgs[i + 1]) return [wArgs[i + 1]];
+				if (wArgs[i].startsWith("--output-document=")) return [wArgs[i].slice("--output-document=".length)];
 			}
-			return null;
+			// wget without -O/--output-document writes to disk (URL basename in cwd) —
+			// this path is unreachable when called via getFilesystemMutationReason (which
+			// handles the no-flag case before calling getMutationTargets), but kept as a
+			// safety net for any other callers.
+			return ["."];
 		}
 		case "curl": {
 			const cArgs = tokens.slice(1);

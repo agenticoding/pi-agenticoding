@@ -5037,6 +5037,7 @@ test("classifyBashCommand allows subshell parens with safe command", () => {
 	assert.equal(isDirect("(echo hi)"), true);
 });
 
+test("classifyBashCommand blocks curl -o outside temp", () => {
 	assert.equal(isBlocked("curl -o /etc/passwd http://example.com"), true);
 });
 
@@ -5054,9 +5055,25 @@ test("classifyBashCommand allows wget -O inside temp", () => {
 	assert.equal(isDirect(`wget -O ${tmp}/out.html http://example.com`), true);
 });
 
-test("classifyBashCommand allows wget and curl without output flags", () => {
-	assert.equal(isDirect("wget http://example.com"), true);
-	assert.equal(isDirect("curl http://example.com"), true);
+test("classifyBashCommand blocks wget -O outside temp", () => {
+	assert.equal(isBlocked("wget -O /etc/passwd http://example.com"), true);
+});
+
+test("classifyBashCommand allows wget --output-document inside temp", () => {
+	const tmp = os.tmpdir();
+	assert.equal(isDirect(`wget --output-document ${tmp}/out.html http://example.com`), true);
+});
+
+test("classifyBashCommand blocks wget --output-document outside temp", () => {
+	assert.equal(isBlocked("wget --output-document /etc/passwd http://example.com"), true);
+});
+
+test("classifyBashCommand blocks wget without output flags", () => {
+	assert.equal(isBlocked("wget http://example.com"), true, "wget without -O writes to disk by default");
+});
+
+test("classifyBashCommand allows curl without output flags", () => {
+	assert.equal(isDirect("curl http://example.com"), true, "curl without -o outputs to stdout");
 });
 
 // ── N4: xargs command classification ───────────────────────────────
