@@ -3942,6 +3942,10 @@ test("readonly tool_call blocks non-temp bash writes when readonly is on", async
 	const safeInput = { command: "ls -la" };
 	const safeResult = await toolCallHandler({ toolName: "bash", input: safeInput }, { cwd: "/workspace" });
 	assert.equal(safeResult, undefined);
+
+	const blankInput = { command: "   " };
+	const blankResult = await toolCallHandler({ toolName: "bash", input: blankInput }, { cwd: "/workspace" });
+	assert.equal(blankResult, undefined);
 });
 
 // ── Readonly mode: spawn child filtering ───────────────────────────
@@ -4033,6 +4037,10 @@ test("spawn adds a readonly bash override that mirrors parent readonly bash poli
 	// Also verify that a safe command is ALLOWED through the child bash tool
 	await assert.doesNotReject(
 		bashTool.execute("bash-2", { command: "ls -la" }, undefined, undefined, {}),
+		/Readonly mode: command blocked/,
+	);
+	await assert.doesNotReject(
+		bashTool.execute("bash-3", { command: "   " }, undefined, undefined, {}),
 		/Readonly mode: command blocked/,
 	);
 });

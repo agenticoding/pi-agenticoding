@@ -156,6 +156,7 @@ export function wrapWithSandboxExec(command: string): string {
 	const delim = generateDelimiter();
 	return `sandbox-exec -p '${profile}' /bin/bash << '${delim}'
 output=\$({
+:
 ${command}
 } 2>&1)
 rc=\$?
@@ -204,6 +205,7 @@ export function wrapWithBwrap(command: string): string {
 	];
 	return `bwrap ${flags.join(" ")} /bin/sh << '${delim}'
 output=\$({
+:
 ${command}
 } 2>&1)
 rc=\$?
