@@ -16,7 +16,7 @@ import crypto from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 
-import { TEMP_DIR } from "./readonly-bash.js";
+import { TEMP_DIR } from "./temp-dir.js";
 import { resolveRealPath } from "./resolve-path.js";
 
 // ── Temp dir canonicalization ────────────────────────────────────

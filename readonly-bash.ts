@@ -1,8 +1,7 @@
-import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { canUseOsSandbox, wrapCommandWithOsSandbox } from "./os-sandbox.js";
 import { resolveRealPath } from "./resolve-path.js";
+import { TEMP_DIR } from "./temp-dir.js";
 
 /**
  * Readonly bash guard.
@@ -24,19 +23,8 @@ type Verdict =
 	| { ok: true }
 	| { ok: false; reason: string };
 
-// Resolve TEMP_DIR via realpathSync so symlinked temp dirs match
-// the resolved paths produced by isTempPath().
-// TEMP_DIR is resolved at module import time; it won't reflect runtime OS
-// reconfiguration (e.g., TMPDIR env var changes after process start).
-//
-// Ownership: readonly-bash owns TEMP_DIR (canonical source). os-sandbox imports
-// it here and re-resolves via resolveRealPath for its own canonical temp dir
-// cache. Both modules must agree on the same temp dir — do not create a second
-// independent temp dir constant.
-export const TEMP_DIR = (() => {
-	const resolved = path.resolve(os.tmpdir());
-	try { return fs.realpathSync(resolved); } catch { return resolved; }
-})();
+// TEMP_DIR is resolved in temp-dir.ts — imported above so both
+// readonly-bash and os-sandbox use the same canonical temp dir.
 
 const GIT_IMMUTABLE = new Set([
 	"diff", "log", "show", "status", "blame", "grep",
