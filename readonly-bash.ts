@@ -15,7 +15,7 @@ import { resolveRealPath } from "./resolve-path.js";
  * Package-manager mutations (npm install, pip install, etc.) are blocked
  * unconditionally regardless of target path — they write outside any single
  * directory (node_modules, site-packages, etc.) making temp-dir checking
- * meaningless. See inline comment at the PACKAGE_MANAGERS declaration.
+ * meaningless.
  *
  * This is a best-effort command inspection layer, not a security sandbox.
  */
@@ -81,8 +81,11 @@ const INTERPRETER_EXEC_FLAGS: Record<string, string[]> = {
 
 const INTERPRETERS = new Set(Object.keys(INTERPRETER_EXEC_FLAGS));
 
-// Package managers — mutations blocked unconditionally regardless of target path.
+// Package managers are blocked unconditionally — they mutate system state
+// outside any single directory (npm install writes to node_modules, pip
+// installs to site-packages, etc.). Temp-dir path checking is not meaningful.
 const PACKAGE_MANAGERS = new Set(["npm", "yarn", "pnpm", "pip", "apt", "apt-get", "brew", "cargo", "gem", "yum", "dnf", "pacman", "choco"]);
+
 
 /**
  * Classify a bash command string for readonly mode.
@@ -98,28 +101,6 @@ const PACKAGE_MANAGERS = new Set(["npm", "yarn", "pnpm", "pip", "apt", "apt-get"
  * @param cwd - Working directory for relative path resolution (defaults to process.cwd())
  * @returns {ok: true} if allowed, or {ok: false, reason} with explanation
  */
-/**
- * Check whether a bash command contains a package-manager mutation subcommand.
- *
- * Scans all shell-operator-separated segments for package manager invocations
- * (npm, pip, brew, etc.) that perform mutations (install, update, remove, etc.).
- * Read-only subcommands (view, show, list, info) are allowed.
- *
- * @returns A human-readable reason string if a mutation is found, or null if clean.
- */
-export function getPackageManagerMutationReason(cmd: string): string | null {
-	for (const rawSegment of splitUnquotedShellSegments(cmd)) {
-		const segment = rawSegment.trim();
-		if (!segment) continue;
-		const tokens = getCommandTokens(segment);
-		const command = tokens[0]?.toLowerCase();
-		if (command && PACKAGE_MANAGERS.has(command) && isPackageMutation(tokens.slice(1))) {
-			const args = tokens.slice(1).join(" ");
-			return `${command} ${args} is blocked in readonly mode`;
-		}
-	}
-	return null;
-}
 
 export function classifyBashCommand(cmd: string, cwd: string = process.cwd(), depth: number = 0): Verdict {
 	if (depth > 10) return { ok: false, reason: "recursion depth exceeded in command classification" };
@@ -227,9 +208,6 @@ function getFilesystemMutationReason(segment: string, cwd: string, depth: number
 		return `dd output blocked outside temp dir: ${stripMatchingQuotes(ddMatch[1])}`;
 	}
 
-	// Package managers are blocked unconditionally — they mutate system state
-	// outside any single directory (npm install writes to node_modules, pip
-	// installs to site-packages, etc.). Temp-dir path checking is not meaningful.
 	const packageManagerReason = getPackageManagerMutationReason(segment);
 	if (packageManagerReason) return packageManagerReason;
 
@@ -260,6 +238,20 @@ function getFilesystemMutationReason(segment: string, cwd: string, depth: number
 	for (const target of paths) {
 		if (!isTempPath(target, cwd)) {
 			return `${command} blocked outside temp dir: ${stripMatchingQuotes(target)}`;
+		}
+	}
+	return null;
+}
+
+function getPackageManagerMutationReason(cmd: string): string | null {
+	for (const rawSegment of splitUnquotedShellSegments(cmd)) {
+		const segment = rawSegment.trim();
+		if (!segment) continue;
+		const tokens = getCommandTokens(segment);
+		const command = tokens[0]?.toLowerCase();
+		if (command && PACKAGE_MANAGERS.has(command) && isPackageMutation(tokens.slice(1))) {
+			const args = tokens.slice(1).join(" ");
+			return `${command} ${args} is blocked in readonly mode`;
 		}
 	}
 	return null;
@@ -671,38 +663,29 @@ export type ReadonlyBashGuardResult =
 	| { action: "sandbox"; sandboxedCommand: string };
 
 /**
- * Apply the three-layer readonly bash guard to a command.
+ * Apply the readonly bash guard to a command.
  *
- * 1. Package-manager check — blocks mutations unconditionally.
- * 2. OS-level sandboxing — wraps command if available (sandbox-exec / bwrap).
- * 3. Command-pattern inspection — blocks if OS sandbox unavailable.
+ * L1: OS-level sandboxing — wraps command if available (sandbox-exec / bwrap).
+ * L2: Command-pattern inspection — blocks if OS sandbox unavailable.
  *
  * @param cmd - Raw bash command string
  * @param cwd - Working directory for path resolution
  * @returns Structured result: allow, block (with reason), or sandbox (with wrapped command)
  */
 export function applyReadonlyBashGuard(cmd: string, cwd: string): ReadonlyBashGuardResult {
-	const packageManagerReason = getPackageManagerMutationReason(cmd);
-	if (packageManagerReason) {
-		return {
-			action: "block",
-			reason: `Readonly mode: command blocked.\nReason: ${packageManagerReason}\nCommand: ${cmd}`,
-		};
-	}
-
+	// L1: OS sandbox (primary enforcement when available)
 	if (canUseOsSandbox()) {
-		console.debug("[readonly] OS sandbox available — wrapping command");
+		const verdict = classifyBashCommand(cmd, cwd);
+		if (verdict.ok === false) {
+			return { action: "block", reason: `Readonly mode: command blocked.\nReason: ${verdict.reason}\nCommand: ${cmd}` };
+		}
 		return { action: "sandbox", sandboxedCommand: wrapCommandWithOsSandbox(cmd) };
 	}
 
-	console.debug("[readonly] OS sandbox unavailable — using command-pattern inspection");
+	// L2: Pattern inspection fallback (no sandbox available)
 	const verdict = classifyBashCommand(cmd, cwd);
 	if (verdict.ok === false) {
-		return {
-			action: "block",
-			reason: `Readonly mode: command blocked.\nReason: ${verdict.reason}\nCommand: ${cmd}`,
-		};
+		return { action: "block", reason: `Readonly mode: command blocked.\nReason: ${verdict.reason}\nCommand: ${cmd}` };
 	}
-
 	return { action: "allow" };
 }

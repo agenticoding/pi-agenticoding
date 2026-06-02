@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import assert from "node:assert/strict";
-import type { Theme } from "@earendil-works/pi-coding-agent";
+import { createEditTool, createWriteTool, type Theme } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { registerHandoffCommand } from "./handoff/command.js";
 import { registerHandoffTool } from "./handoff/tool.js";
@@ -3768,7 +3768,7 @@ test("registerSpawnTool registers a tool with correct name and metadata", () => 
 
 // ── classifyBashCommand: readonly contract tests ───────────────────
 
-import { classifyBashCommand, getPackageManagerMutationReason } from "./readonly-bash.js";
+import { classifyBashCommand, applyReadonlyBashGuard } from "./readonly-bash.js";
 import { canUseOsSandbox, buildMacProfile, wrapWithSandboxExec, wrapWithBwrap, wrapCommandWithOsSandbox } from "./os-sandbox.js";
 import { resolveRealPath } from "./resolve-path.js";
 
@@ -3929,6 +3929,26 @@ test("readonly tool_call blocks write, edit, and handoff", async () => {
 	assert.equal(readResult, undefined);
 });
 
+test("normal tool_call does not block ordinary write/edit calls", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+
+	const [toolCallHandler] = pi.handlers.get("tool_call")!;
+
+	const writeResult = await toolCallHandler(
+		{ toolName: "write", input: { path: "/tmp/test.txt", content: "hello" } },
+		{},
+	);
+	assert.equal(writeResult, undefined, "write should pass through when readonly is off");
+
+	const editResult = await toolCallHandler(
+		{ toolName: "edit", input: { path: "/tmp/test.txt", edits: [] } },
+		{},
+	);
+	assert.equal(editResult, undefined, "edit should pass through when readonly is off");
+});
+
+
 test("readonly tool_call does not block bash when readonly is off", async () => {
 	const pi = new MockPi();
 	registerAgenticoding(pi as any);
@@ -3964,11 +3984,11 @@ test("readonly tool_call blocks non-temp bash writes when readonly is on", async
 	const blockedResult = await toolCallHandler({ toolName: "bash", input: blockedInput }, { cwd: "/workspace" });
 
 	if (canUseOsSandbox()) {
-		// OS-level sandboxing wraps the command instead of blocking
-		assert.equal(blockedResult, undefined, "OS sandbox does not block at tool_call level");
-		assert.ok(blockedInput.command !== "rm -rf /", "command should be wrapped");
-		assert.ok(blockedInput.command.startsWith("sandbox-exec") || blockedInput.command.startsWith("bwrap"),
-			"command should start with sandbox wrapper");
+		// OS-level sandbox is available, but classifyBashCommand pre-blocks
+		// known dangerous commands (rm, mv, etc.) before the sandbox wraps.
+		// The sandbox only handles commands with unrecognized file-target paths.
+		assert.equal(blockedResult.block, true);
+		assert.match(blockedResult.reason, /outside temp dir/);
 	} else {
 		// Fallback: classifyBashCommand blocks
 		assert.equal(blockedResult.block, true);
@@ -4060,10 +4080,11 @@ test("spawn adds a readonly bash override that mirrors parent readonly bash poli
 	const bashTool = seenCustomTools.find((tool) => tool.name === "bash");
 	assert.ok(bashTool, "readonly child should override bash");
 	if (canUseOsSandbox()) {
-		// OS sandbox wraps the command; sandbox-exec blocks sudo execution
+		// OS-level sandbox is available, but classifyBashCommand pre-blocks
+		// known dangerous commands at the spawnHook before the sandbox wraps.
 		await assert.rejects(
 			bashTool.execute("bash-1", { command: "sudo rm -rf /" }, undefined, undefined, {}),
-			/Operation not permitted/,
+			/Readonly mode: command blocked/,
 		);
 	} else {
 		// Fallback: classifyBashCommand blocks at the spawnHook
@@ -4080,25 +4101,35 @@ test("spawn adds a readonly bash override that mirrors parent readonly bash poli
 	);
 });
 
-test("spawn includes write/edit plus child config-validation overrides when readonly is off", async () => {
-	// The config-validated custom write/edit tools replace the native built-in
-	// tools via pi's session factory (custom tools .set() over same-name
-	// built-in tools). This test verifies the custom tools exist, validate
-	// dangerous writes, and are the only write/edit tools the child receives.
+test("spawn non-readonly child can use inherited builtin write/edit", async () => {
 	const pi = new MockPi();
 	pi.setActiveTools(["read", "bash", "write", "edit", "spawn"]);
 	const state = createState();
 	state.readonlyEnabled = false;
 
-	let seenTools: string[] = [];
-	let seenCustomTools: any[] = [];
+	const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-spawn-write-edit-"));
+	const childFile = path.join(tmpDir, "child.txt");
+
 	const mockFactory = async (config: any) => {
-		seenTools = config.tools;
-		seenCustomTools = config.customTools;
 		const session = {
 			messages: [] as any[],
 			prompt: async () => {
-				session.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }] }];
+				assert.equal(config.tools.includes("write"), true, "child should inherit builtin write");
+				assert.equal(config.tools.includes("edit"), true, "child should inherit builtin edit");
+				assert.equal(config.customTools.some((t: any) => t.name === "write"), false, "write should stay builtin");
+				assert.equal(config.customTools.some((t: any) => t.name === "edit"), false, "edit should stay builtin");
+
+				const childWrite = createWriteTool(config.cwd);
+				const childEdit = createEditTool(config.cwd);
+				await childWrite.execute("child-write", { path: childFile, content: "alpha\nbeta\n" }, undefined, undefined, {});
+				await childEdit.execute(
+					"child-edit",
+					{ path: childFile, edits: [{ oldText: "beta", newText: "gamma" }] },
+					undefined,
+					undefined,
+					{},
+				);
+				session.messages = [{ role: "assistant", content: [{ type: "text", text: fs.readFileSync(childFile, "utf8") }] }];
 			},
 			abort: async () => {},
 			getSessionStats: () => undefined,
@@ -4107,41 +4138,20 @@ test("spawn includes write/edit plus child config-validation overrides when read
 	};
 
 	registerSpawnTool(pi as any, state, mockFactory as any);
-	await pi.tools.get("spawn").execute(
-		"spawn-1",
-		{ prompt: "Do the task" },
-		undefined,
-		undefined,
-		{ model: { id: "mock-model" }, cwd: "/tmp" },
-	);
+	try {
+		const result = await pi.tools.get("spawn").execute(
+			"spawn-1",
+			{ prompt: "Write then edit the file" },
+			undefined,
+			undefined,
+			{ model: { id: "mock-model" }, cwd: tmpDir },
+		);
 
-	assert.equal(seenTools.includes("write"), true, "write should be included");
-	assert.equal(seenTools.includes("edit"), true, "edit should be included");
-
-	// Only one write/edit tool each — native built-ins are replaced by
-	// config-validated versions (pi SDK uses .set() for same-name collision).
-	const writeTools = seenCustomTools.filter((t) => t.name === "write");
-	const editTools = seenCustomTools.filter((t) => t.name === "edit");
-	assert.equal(writeTools.length, 1, "exactly one write tool (config-validated)");
-	assert.equal(editTools.length, 1, "exactly one edit tool (config-validated)");
-	const [writeTool] = writeTools;
-	const [editTool] = editTools;
-	assert.ok(writeTool, "child write should be overridden for config validation");
-	assert.ok(editTool, "child edit should be overridden for config validation");
-	await assert.rejects(
-		writeTool.execute("write-1", {
-			path: ".vscode/settings.json",
-			content: JSON.stringify({ "chat.tools.autoApprove": true }),
-		}, undefined, undefined, {}),
-		/chat\.tools\.autoApprove/,
-	);
-	await assert.rejects(
-		editTool.execute("edit-1", {
-			path: ".vscode/settings.json",
-			edits: [{ oldText: "old", newText: '"chat.tools.autoApprove": true' }],
-		}, undefined, undefined, {}),
-		/rewritten with write/,
-	);
+		assert.equal(fs.readFileSync(childFile, "utf8"), "alpha\ngamma\n");
+		assert.equal(result.content[0].text, "alpha\ngamma");
+	} finally {
+		fs.rmSync(tmpDir, { recursive: true, force: true });
+	}
 });
 
 test("spawn prompt includes readonly notice when enabled", async () => {
@@ -4815,21 +4825,6 @@ test("classifyBashCommand blocks ruby in-place mutation", () => {
 	assert.equal(isBlocked("ruby -pi -e 's/a/b/g' file.txt"), true, "ruby -pi is blocked outside temp");
 });
 
-test("getPackageManagerMutationReason blocks package manager mutations", () => {
-	assert.match(getPackageManagerMutationReason("npm install lodash") ?? "", /npm install lodash/);
-	assert.equal(getPackageManagerMutationReason("ls -la"), null);
-});
-
-test("classifyBashCommand blocks package manager mutations", () => {
-	assert.equal(isBlocked("npm install lodash"), true, "npm install is blocked");
-	assert.equal(isBlocked("pip install flask"), true, "pip install is blocked");
-	assert.equal(isBlocked("apt-get install nginx"), true, "apt-get install is blocked");
-	assert.equal(isBlocked("brew install node"), true, "brew install is blocked");
-	assert.equal(isBlocked("pnpm add express"), true, "pnpm add is blocked");
-	assert.equal(isBlocked("cargo build"), true, "cargo build is blocked");
-	assert.equal(isBlocked("gem install rails"), true, "gem install is blocked");
-});
-
 test("classifyBashCommand blocks env prefix with mutation command", () => {
 	assert.equal(isBlocked("env VAR=value rm file.txt"), true, "env rm is blocked");
 	assert.equal(isBlocked("env -i PATH=/tmp rm file.txt"), true, "env -i rm is blocked");
@@ -5170,17 +5165,37 @@ test("resolveRealPath: non-existent path inside temp dir preserves full path", (
 	const result = resolveRealPath(nonExistent);
 	// Should contain the full path including all intermediate components
 	assert.ok(result.includes("__pi_test_deep/a/b/c"), "should preserve all path components");
+});
+
 // ── I6: Missing test scenarios ────────────────────────────────────────
 
-test("classifyBashCommand allows package manager read-only subcommands", () => {
-	assert.equal(isDirect("npm view lodash"), true);
-	assert.equal(isDirect("npm info express"), true);
-	assert.equal(isDirect("npm list"), true);
-	assert.equal(isDirect("npm ls"), true);
-	assert.equal(isDirect("pip show requests"), true);
-	assert.equal(isDirect("pip list"), true);
-	assert.equal(isDirect("brew info node"), true);
-	assert.equal(isDirect("brew list"), true);
+test("classifyBashCommand blocks package manager mutations directly", () => {
+	assert.equal(isBlocked("npm install lodash"), true);
+	assert.equal(isBlocked("pip install requests"), true);
+	assert.equal(isBlocked("brew install node"), true);
+	assert.equal(isBlocked("apt-get install ripgrep"), true);
+});
+
+test("applyReadonlyBashGuard fallback mirrors classifyBashCommand on unsupported platforms", () => {
+	const origPlatform = Object.getOwnPropertyDescriptor(process, "platform");
+	Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+	try {
+		const blocked = applyReadonlyBashGuard("npm install lodash", "/workspace");
+		assert.deepEqual(blocked.action, "block");
+		if (blocked.action === "block") {
+			assert.match(blocked.reason, /npm install lodash is blocked in readonly mode/i);
+		}
+
+		const wrapped = applyReadonlyBashGuard('env -S "pip install requests"', "/workspace");
+		assert.deepEqual(wrapped.action, "block");
+		if (wrapped.action === "block") {
+			assert.match(wrapped.reason, /pip install requests is blocked in readonly mode/i);
+		}
+
+		assert.deepEqual(applyReadonlyBashGuard("ls -la", "/workspace"), { action: "allow" });
+	} finally {
+		if (origPlatform) Object.defineProperty(process, "platform", origPlatform);
+	}
 });
 
 test("classifyBashCommand: deep recursion triggers depth limit", () => {

@@ -203,7 +203,6 @@ const SPAWN_PARAMETERS = Type.Object({
 });
 
 
-
 /**
  * Build the custom tool set for child agent sessions.
  *
@@ -220,7 +219,6 @@ export function createChildTools(
 ): ToolDefinition[] {
 	return createNotebookToolDefinitions(pi, state, { isStale: options?.isStale });
 }
-
 
 
 // ── Shared spawn execution logic ──────────────────────────────────────
