@@ -40,16 +40,12 @@ function getCanonicalTempDir(): string {
 export function canUseOsSandbox(): boolean {
 	const platform = process.platform;
 	if (platform === "darwin") {
-		const result = _hasSandboxExec();
-		console.debug(`[readonly] macOS sandbox-exec: ${result ? "available" : "unavailable"}`);
-		return result;
+		return _hasSandboxExec();
 	}
 	if (platform === "linux") {
-		const result = _hasBwrap();
-		console.debug(`[readonly] Linux bwrap: ${result ? "available" : "unavailable"}`);
-		return result;
+		return _hasBwrap();
 	}
-	console.debug(`[readonly] OS sandbox: unsupported platform ${platform}`);
+
 	return false;
 }
 
