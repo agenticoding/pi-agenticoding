@@ -4953,6 +4953,7 @@ test("classifyBashCommand blocks git stash mutable subcommands", () => {
 });
 
 test("classifyBashCommand allows git tag read-only subcommands", () => {
+	assert.equal(isDirect("git tag"), true, "bare git tag is allowed");
 	assert.equal(isDirect("git tag --list"), true, "git tag --list is allowed");
 	assert.equal(isDirect("git tag -l"), true, "git tag -l is allowed");
 });

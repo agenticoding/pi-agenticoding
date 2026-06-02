@@ -57,7 +57,7 @@ const GIT_MIXED: Record<string, (sub: string) => boolean> = {
 	branch: (sub) =>
 		sub === "" || sub === "-l" || sub === "--show-current" ||
 		/^--?[a-zA-Z-]*list(?:[=\s]|$)/.test(sub),
-	tag: (sub) => sub === "-l" || /^--?[a-zA-Z-]*list(?:[=\s]|$)/.test(sub),
+	tag: (sub) => sub === "" || sub === "-l" || /^--?[a-zA-Z-]*list(?:[=\s]|$)/.test(sub),
 	remote: (sub) => sub === "" || sub === "-v" || sub === "show" || sub === "get-url",
 	config: (sub) =>
 		sub === "" || sub === "-l" || sub === "--list" ||
