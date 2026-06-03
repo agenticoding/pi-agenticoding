@@ -1,7 +1,9 @@
 import test, { after } from "node:test";
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
-import type { Theme } from "@earendil-works/pi-coding-agent";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { AuthStorage, ModelRegistry, type Theme } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { registerHandoffCommand } from "./handoff/command.js";
 import { registerHandoffTool } from "./handoff/tool.js";
@@ -173,6 +175,43 @@ class MockPi {
 	appendEntry(customType: string, data: any) {
 		this.appendedEntries.push({ customType, data });
 	}
+}
+
+const EMPTY_USAGE = {
+	input: 0,
+	output: 0,
+	cacheRead: 0,
+	cacheWrite: 0,
+	totalTokens: 0,
+	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+};
+
+function createTestAssistantMessage(model: any, content: any[], stopReason = "stop") {
+	return {
+		role: "assistant",
+		content,
+		api: model.api,
+		provider: model.provider,
+		model: model.id,
+		usage: EMPTY_USAGE,
+		stopReason,
+		timestamp: Date.now(),
+	};
+}
+
+function createTestAssistantStream(message: any): any {
+	return {
+		async *[Symbol.asyncIterator]() {
+			yield { type: "done", reason: message.stopReason, message };
+		},
+		result: async () => message,
+	};
+}
+
+function messageText(message: any): string {
+	return (message.content ?? [])
+		.map((block: any) => block.type === "text" ? block.text : JSON.stringify(block))
+		.join("\n");
 }
 
 // ── TUI indicator tests ───────────────────────────────────────────────
@@ -895,39 +934,117 @@ test("nested spawn rerenders when stats become unavailable", () => {
 });
 
 test("agentic e2e spawn child can use active registered non-builtin tool", async () => {
-	const pi = new MockPi();
-	pi.setToolSource("agentic_e2e_probe", "project");
-	pi.setActiveTools(["read", "agentic_e2e_probe", "spawn"]);
-	const state = createState();
+	const tempRoot = await mkdtemp(join(tmpdir(), "pi-agenticoding-a10-"));
+	const tempCwd = join(tempRoot, "project");
+	const tempAgentDir = join(tempRoot, "agent");
+	const extensionDir = join(tempCwd, ".pi", "extensions");
 	const sentinel = "AGENTIC_E2E_PROBE_OK";
-	const childPrompt = `Use the agentic_e2e_probe tool and return ${sentinel}.`;
+	const oldAgentDir = process.env.PI_CODING_AGENT_DIR;
+	const oldOpenAiApiKey = process.env.OPENAI_API_KEY;
+	const parentRegistry = ModelRegistry.inMemory(AuthStorage.inMemory());
+	let streamCallCount = 0;
 
-	const mockFactory = async (config: any) => {
-		const session = {
-			messages: [] as any[],
-			prompt: async (prompt: string) => {
-				assert.match(prompt, /agentic_e2e_probe/);
-				if (!config.tools.includes("agentic_e2e_probe")) {
-					throw new Error("Child could not find tool agentic_e2e_probe");
+	try {
+		await mkdir(extensionDir, { recursive: true });
+		await mkdir(tempAgentDir, { recursive: true });
+		await writeFile(join(tempCwd, "package.json"), JSON.stringify({ type: "module" }));
+		await writeFile(
+			join(extensionDir, "agentic-e2e-probe.js"),
+			`
+export default function(pi) {
+	pi.registerTool({
+		name: "agentic_e2e_probe",
+		label: "Agentic E2E Probe",
+		description: "Return the deterministic Story 04 A10 sentinel.",
+		promptSnippet: "Call agentic_e2e_probe to return the Story 04 A10 sentinel.",
+		parameters: { type: "object", properties: {}, additionalProperties: false },
+		async execute() {
+			globalThis.__agenticE2eProbeCalls = (globalThis.__agenticE2eProbeCalls ?? 0) + 1;
+			return {
+				content: [{ type: "text", text: "${sentinel}" }],
+				details: { sentinel: "${sentinel}" },
+			};
+		},
+	});
+}
+`,
+		);
+
+		process.env.PI_CODING_AGENT_DIR = tempAgentDir;
+		process.env.OPENAI_API_KEY = "test-openai-key";
+		(globalThis as any).__agenticE2eProbeCalls = 0;
+
+		parentRegistry.registerProvider("openai", {
+			name: "Agentic E2E OpenAI-compatible provider",
+			api: "agentic-e2e-api",
+			apiKey: "test-openai-key",
+			baseUrl: "http://localhost:0",
+			streamSimple: (model: any, context: any) => {
+				streamCallCount += 1;
+				if (streamCallCount === 1) {
+					const promptText = context.messages.map(messageText).join("\n");
+					assert.match(promptText, /agentic_e2e_probe/);
+					assert.match(promptText, new RegExp(sentinel));
+					return createTestAssistantStream(createTestAssistantMessage(model, [
+						{ type: "toolCall", id: "probe-call-1", name: "agentic_e2e_probe", arguments: {} },
+					], "tool_calls"));
 				}
-				session.messages = [{ role: "assistant", content: [{ type: "text", text: sentinel }] }];
+
+				const probeResult = context.messages.find((message: any) =>
+					message.role === "toolResult" &&
+					message.toolName === "agentic_e2e_probe" &&
+					messageText(message).includes(sentinel)
+				);
+				const text = probeResult ? sentinel : "AGENTIC_E2E_PROBE_MISSING";
+				return createTestAssistantStream(createTestAssistantMessage(model, [{ type: "text", text }]));
 			},
-			abort: async () => {},
-			getSessionStats: () => undefined,
-		};
-		return { session: session as any };
-	};
+			models: [{
+				id: "agentic-e2e-model",
+				name: "Agentic E2E Model",
+				reasoning: false,
+				input: ["text"],
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 128000,
+				maxTokens: 1024,
+			}],
+		});
+		const model = parentRegistry.find("openai", "agentic-e2e-model");
+		assert.ok(model);
 
-	registerSpawnTool(pi as any, state, mockFactory as any);
-	const result = await pi.tools.get("spawn").execute(
-		"spawn-e2e",
-		{ prompt: childPrompt, thinking: "medium" },
-		undefined,
-		undefined,
-		{ model: { id: "mock-model" }, cwd: "/tmp" },
-	);
+		const pi = new MockPi();
+		pi.setToolSource("agentic_e2e_probe", "project");
+		pi.setActiveTools(["read", "agentic_e2e_probe", "spawn"]);
+		pi.setAllTools(["read", "agentic_e2e_probe", "spawn"]);
+		const state = createState();
+		const childPrompt = `Use the agentic_e2e_probe tool and return ${sentinel}.`;
 
-	assert.equal(result.content[0].text, sentinel);
+		registerSpawnTool(pi as any, state);
+		const result = await pi.tools.get("spawn").execute(
+			"spawn-e2e",
+			{ prompt: childPrompt, thinking: "medium" },
+			undefined,
+			undefined,
+			{ model, cwd: tempCwd },
+		);
+
+		assert.equal(result.content[0].text, sentinel);
+		assert.equal((globalThis as any).__agenticE2eProbeCalls, 1);
+		assert.equal(streamCallCount, 2);
+	} finally {
+		parentRegistry.unregisterProvider("openai");
+		if (oldAgentDir === undefined) {
+			delete process.env.PI_CODING_AGENT_DIR;
+		} else {
+			process.env.PI_CODING_AGENT_DIR = oldAgentDir;
+		}
+		if (oldOpenAiApiKey === undefined) {
+			delete process.env.OPENAI_API_KEY;
+		} else {
+			process.env.OPENAI_API_KEY = oldOpenAiApiKey;
+		}
+		delete (globalThis as any).__agenticE2eProbeCalls;
+		await rm(tempRoot, { recursive: true, force: true });
+	}
 });
 
 test("spawn execute passes broad active registered tool formula to child session", async () => {
