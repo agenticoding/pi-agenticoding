@@ -226,7 +226,7 @@ export function wrapWithBwrap(command: string): string {
 		"--die-with-parent",
 		"--new-session",
 	];
-	return `bwrap ${flags.join(" ")} /bin/sh << '${delim}'
+	return `bwrap ${flags.join(" ")} /bin/bash << '${delim}'
 output=\$({
 :
 ${command}

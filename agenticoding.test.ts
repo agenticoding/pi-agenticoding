@@ -5399,7 +5399,7 @@ test("os-sandbox: wrapWithBwrap includes ro-bind and tmpfs", () => {
 	assert.ok(result.includes("--ro-bind / /"), "should include ro-bind root");
 	assert.ok(result.includes("--tmpfs /tmp"), "should include tmpfs /tmp");
 	assert.ok(result.includes(cmd), "should contain original command");
-	assert.ok(result.includes("/bin/sh << '"), "should use heredoc with sh");
+	assert.ok(result.includes("/bin/bash << '"), "should use heredoc with bash");
 });
 
 test("os-sandbox: wrapCommandWithOsSandbox returns sandbox-exec on darwin", () => {
