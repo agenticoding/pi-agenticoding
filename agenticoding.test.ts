@@ -3769,6 +3769,16 @@ test("classifyBashCommand blocks rm -r outside temp (no -r value-skip bypass)", 
 	assert.equal(isDirect(`rm -rf ${tmp}/x`), true, "rm -rf inside temp");
 });
 
+test("classifyBashCommand blocks truncate --no-create outside temp", () => {
+	// Fix: --no-create is boolean, not value-consuming — must not skip the target
+	assert.equal(isBlocked("truncate -s 0 --no-create /etc/config"), true, "truncate --no-create outside temp");
+	const tmp = os.tmpdir();
+	assert.equal(isDirect(`truncate -s 0 --no-create ${tmp}/config`), true, "truncate --no-create inside temp");
+	// touch --no-create must also be correctly classified
+	assert.equal(isBlocked("touch --no-create /etc/config"), true, "touch --no-create outside temp");
+	assert.equal(isDirect(`touch --no-create ${tmp}/config`), true, "touch --no-create inside temp");
+});
+
 test("classifyBashCommand blocks mutable git commands and allows readonly git", () => {
 	assert.equal(isDirect("git status"), true);
 	assert.equal(isDirect("git log --oneline"), true);

@@ -280,8 +280,9 @@ function getMutationTargets(command: string, tokens: string[]): string[] | null 
 		case "mkdir":
 			return nonOptionArgs(skipFlagValues(tokens.slice(1), new Set(["-s", "-o", "--io-size"])));
 		case "truncate":
+			return nonOptionArgs(skipFlagValues(tokens.slice(1), new Set(["-s", "-r", "--reference", "-o", "--io-size"])));
 		case "touch":
-			return nonOptionArgs(skipFlagValues(tokens.slice(1), new Set(["-s", "-o", "--io-size", "--no-create", "-t", "-d", "-r"])));
+			return nonOptionArgs(skipFlagValues(tokens.slice(1), new Set(["-t", "-d", "-r"])));
 		case "chmod":
 		case "chown":
 		case "chgrp": {
