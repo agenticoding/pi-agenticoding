@@ -97,19 +97,23 @@ export default function (pi: ExtensionAPI): void {
 		const branch = ctx.sessionManager?.getBranch?.() ?? [];
 		state.readonlyEnabled = false;
 		for (let i = branch.length - 1; i >= 0; i--) {
-			const entry = branch[i] as Record<string, unknown>;
-			if (
-				entry.type === "custom" &&
-				entry.customType === "agenticoding-readonly"
-			) {
-				state.readonlyEnabled = (entry.data as Record<string, unknown>)?.enabled === true;
-				break;
-			}
+			const entry = branch[i] as unknown;
+			if (!entry || typeof entry !== "object") continue;
+			const e = entry as Record<string, unknown>;
+			if (e.type !== "custom" || e.customType !== "agenticoding-readonly") continue;
+			const d = e.data as Record<string, unknown> | undefined;
+			state.readonlyEnabled = d?.enabled === true;
+			break;
 		}
 		// CLI flag sets initial default, but branch state takes precedence after any toggle.
 		if (pi.getFlag("readonly") === true) {
 			const hasBranchEntry = branch.some(
-				(e) => (e as Record<string, unknown>).customType === "agenticoding-readonly"
+				(e) => {
+					const entry = e as unknown;
+					return entry !== null && typeof entry === "object" &&
+						(entry as Record<string, unknown>).type === "custom" &&
+						(entry as Record<string, unknown>).customType === "agenticoding-readonly";
+				}
 			);
 			if (!hasBranchEntry) {
 				state.readonlyEnabled = true;

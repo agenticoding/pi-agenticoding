@@ -4311,6 +4311,91 @@ test("session_start rehydrates readonly from branch entries", async () => {
 	assert.ok(s?.includes("readonly"), "readonly indicator should be shown after rehydrating true");
 });
 
+test("session_start rehydrate handles null entries in branch", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+
+	const statuses = new Map<string, string | undefined>();
+	// null entries between valid entries should not crash or affect rehydration
+	const branch = [
+		null,
+		undefined,
+		{ type: "custom", customType: "agenticoding-readonly", data: { enabled: true } },
+		null,
+	];
+
+	const sessionStartHandlers = pi.handlers.get("session_start")!;
+	for (const handler of sessionStartHandlers) {
+		await handler({ reason: "resume" }, {
+			hasUI: true,
+			ui: {
+				theme: { fg: (_n: string, t: string) => t },
+				setStatus: (key: string, val: string | undefined) => statuses.set(key, val),
+				setWidget: () => {},
+			},
+			sessionManager: { getBranch: () => branch },
+			getContextUsage: () => null,
+		});
+	}
+
+	const s = statuses.get("agenticoding-readonly");
+	assert.ok(s?.includes("readonly"), "readonly should be rehydrated past null entries");
+});
+
+test("session_start rehydrate handles string entries in branch", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+
+	const statuses = new Map<string, string | undefined>();
+	const branch = ["bad-entry", { type: "custom", customType: "agenticoding-readonly", data: { enabled: true } }];
+
+	const sessionStartHandlers = pi.handlers.get("session_start")!;
+	for (const handler of sessionStartHandlers) {
+		await handler({ reason: "resume" }, {
+			hasUI: true,
+			ui: {
+				theme: { fg: (_n: string, t: string) => t },
+				setStatus: (key: string, val: string | undefined) => statuses.set(key, val),
+				setWidget: () => {},
+			},
+			sessionManager: { getBranch: () => branch },
+			getContextUsage: () => null,
+		});
+	}
+
+	const s = statuses.get("agenticoding-readonly");
+	assert.ok(s?.includes("readonly"), "readonly should be rehydrated past string entries");
+});
+
+test("--readonly CLI flag takes precedence when branch has only malformed entries", async () => {
+	const pi = new MockPi();
+	pi.flags.set("readonly", true);
+	registerAgenticoding(pi as any);
+
+	const statuses = new Map<string, string | undefined>();
+	// Entry has customType but missing type:"custom" — should not count as a valid branch entry
+	const branch = [
+		{ customType: "agenticoding-readonly" },
+	];
+
+	const sessionStartHandlers = pi.handlers.get("session_start")!;
+	for (const handler of sessionStartHandlers) {
+		await handler({ reason: "resume" }, {
+			hasUI: true,
+			ui: {
+				theme: { fg: (_n: string, t: string) => t },
+				setStatus: (key: string, val: string | undefined) => statuses.set(key, val),
+				setWidget: () => {},
+			},
+			sessionManager: { getBranch: () => branch },
+			getContextUsage: () => null,
+		});
+	}
+
+	const s = statuses.get("agenticoding-readonly");
+	assert.ok(s?.includes("readonly"), "CLI flag should win when branch has only malformed entries");
+});
+
 test("session_start clears readonly indicator on /new", async () => {
 	const pi = new MockPi();
 	registerAgenticoding(pi as any);
