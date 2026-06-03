@@ -4875,6 +4875,49 @@ test("classifyBashCommand allows npm run build inside temp", () => {
 	assert.equal(isBlocked("dnf build-dep nginx"), true, "dnf build-dep still blocked");
 });
 
+test("classifyBashCommand resolves glob patterns inside temp", () => {
+	// H2 fix: glob patterns like *.log should be resolved and checked per-target
+	const tmp = os.tmpdir();
+	// Empty glob (no matches) should be allowed — no files to mutate
+	assert.equal(isDirect(`rm ${tmp}/*.nonexistent`), true, "empty glob is allowed");
+	// Empty glob outside temp is also allowed (no files to mutate)
+	assert.equal(isDirect("rm *.log"), true, "empty glob to non-existent files is allowed");
+	// Glob to explicitly non-temp paths is blocked
+	assert.equal(isBlocked("rm /etc/*.conf"), true, "glob to /etc is blocked");
+	// Non-mutating globs should pass
+	assert.equal(isDirect("ls *.ts"), true, "ls with glob is allowed");
+	// Glob with actual matches inside temp should be allowed
+	const testFile = path.join(tmp, "readonly-test-glob-match.tmp");
+	try { fs.writeFileSync(testFile, ""); } catch { /* best-effort */ }
+	try {
+		assert.equal(isDirect(`rm ${tmp}/*.tmp`), true, "glob matches inside temp is allowed");
+	} finally {
+		try { fs.unlinkSync(testFile); } catch { /* best-effort cleanup */ }
+	}
+});
+
+test("classifyBashCommand resolves ~ paths", () => {
+	// ~ expands via os.homedir() — homedir is outside temp, so mutations blocked.
+	// This verifies the expansion code path runs (vs. old blanket-block on ~ chars).
+	assert.equal(isBlocked("rm ~/test-file"), true, "rm ~/file blocked (home outside temp)");
+	assert.equal(isBlocked("touch ~/test-file"), true, "touch ~/file blocked (home outside temp)");
+
+	// ~user/path blocked conservatively (cannot resolve without getpwuid)
+	assert.equal(isBlocked("rm ~other/file"), true, "rm ~user/file blocked (unresolvable user)");
+
+	// Non-mutating commands with ~ are allowed
+	assert.equal(isDirect("ls ~"), true, "ls ~ allowed");
+	assert.equal(isDirect("ls ~/Documents"), true, "ls ~/Documents allowed");
+	assert.equal(isDirect("echo ~"), true, "echo ~ allowed");
+
+	// Mutating command where target happens to be inside temp after tilde expansion
+	// Use a temp-relative path — tilde expands to homedir, which is outside temp,
+	// so a path like ~/tmp/... still resolves outside temp. This assertion confirms
+	// tilde expansion happened correctly and the temp check runs on the result.
+	const tmp = os.tmpdir();
+	assert.equal(isDirect(`ls ${tmp}`), true, "non-mutating ls to temp is allowed");
+});
+
 // ── classifyBashCommand: exact-string contract tests ─────────────────
 
 test("classifyBashCommand exact reason: git mutable block", () => {

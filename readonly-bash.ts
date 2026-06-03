@@ -1,4 +1,6 @@
 import path from "node:path";
+import os from "node:os";
+import { globSync } from "node:fs";
 import { canUseOsSandbox, wrapCommandWithOsSandbox } from "./os-sandbox.js";
 import { resolveRealPath } from "./resolve-path.js";
 import { TEMP_DIR } from "./temp-dir.js";
@@ -522,7 +524,28 @@ function stripMatchingQuotes(token: string): string {
 function isTempPath(rawPath: string, cwd: string): boolean {
 	const normalized = stripMatchingQuotes(rawPath);
 	if (!normalized || normalized === "/dev/null" || /^&\d+$/.test(normalized)) return true;
-	if (/[*?`{}()\[\]~]/.test(normalized)) return false;
+
+	// Expand ~ and ~/path to the home directory (os.homedir()).
+	// ~user/path is not resolvable without getpwuid — block conservatively.
+	if (normalized.startsWith("~")) {
+		if (normalized === "~" || normalized.startsWith("~/")) {
+			const expanded = normalized.replace(/^~/, os.homedir());
+			return isTempPath(expanded, cwd);
+		}
+		return false; // ~user/path cannot be resolved safely
+	}
+
+	if (/[*?`{}()\[\]]/.test(normalized)) {
+		// Glob pattern - resolve against cwd and check each target individually.
+		// Empty glob (no matches) is allowed — no files to mutate.
+		try {
+			const matches = globSync(normalized, { cwd, dot: true });
+			if (matches.length === 0) return true;
+			return matches.every((m) => isTempPath(m, cwd));
+		} catch {
+			return false;
+		}
+	}
 	const absolute = path.resolve(cwd, normalized);
 	// Resolve symlinks so /tmp/link -> /etc/passwd is correctly classified as non-temp.
 	// Walking up to the nearest existing ancestor handles new files inside symlinked dirs.
