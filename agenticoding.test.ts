@@ -5125,8 +5125,8 @@ test("classifyBashCommand exact reason: write redirect block", () => {
 // ── classifyBashCommand: sudo -h fix (F1) ────────────────────────────
 
 test("classifyBashCommand blocks sudo -h with mutating command", () => {
-	assert.equal(isBlocked("sudo -h rm /etc/passwd"), true, "sudo -h rm should be blocked");
-	assert.equal(isBlocked("sudo -h apt-get install nginx"), true, "sudo -h apt-get should be blocked");
+	assert.equal(isBlocked("sudo -h localhost rm /etc/passwd"), true, "sudo -h localhost rm should be blocked");
+	assert.equal(isBlocked("sudo -h host apt-get install nginx"), true, "sudo -h host apt-get should be blocked");
 });
 
 // ── classifyBashCommand: env -u fix (F2) ─────────────────────────────
@@ -5171,10 +5171,29 @@ test("classifyBashCommand allows non-mutating env -S inline commands", () => {
 	assert.equal(isDirect('env -S "echo hi"'), true, "env -S with echo is allowed");
 });
 
+test("classifyBashCommand blocks env --split-string bypass for mutating commands", () => {
+	assert.equal(isBlocked('env --split-string "rm -rf /"'), true, "env --split-string rm blocked");
+	assert.equal(isBlocked('env -u HOME --split-string "touch /etc/passwd"'), true, "env -u HOME --split-string touch blocked");
+	assert.equal(isBlocked('env --split-string "git add ."'), true, "env --split-string git add blocked");
+	assert.equal(isBlocked('env --split-string "echo hi > /etc/config"'), true, "env --split-string redirect blocked");
+});
+
+test("classifyBashCommand allows non-mutating env --split-string inline commands", () => {
+	assert.equal(isDirect('env --split-string "echo hi"'), true, "env --split-string echo allowed");
+});
+
 test("classifyBashCommand blocks env without -S with mutating direct commands", () => {
 	assert.equal(isBlocked('env rm /etc/passwd'), true, "env rm is blocked");
 	assert.equal(isBlocked('env -i rm /etc/passwd'), true, "env -i rm is blocked");
 	assert.equal(isDirect('env - PATH=/tmp ls'), true, "env - PATH=/tmp ls is allowed");
+});
+
+test("classifyBashCommand extracts and classifies process substitution <()", () => {
+	assert.equal(isBlocked("cat <(rm /etc/passwd)"), true, "<() rm outside temp blocked");
+	assert.equal(isBlocked("cat <(git add .)"), true, "<() git add blocked");
+	assert.equal(isBlocked("cat <(bash -c 'rm /etc/passwd')"), true, "<() bash -c rm blocked");
+	assert.equal(isDirect("cat <(echo hi)"), true, "<() echo allowed");
+	assert.equal(isDirect("diff <(git diff) <(git status)"), true, "<() git immutable in diff allowed");
 });
 
 // ── classifyBashCommand: git readonly subcommand regressions ─────────
@@ -5334,8 +5353,11 @@ test("classifyBashCommand uses the last wget output flag", () => {
 
 // ── N4: xargs command classification ───────────────────────────────
 
-test("classifyBashCommand blocks xargs with mutation command", () => {
-	assert.equal(isBlocked("echo file.txt | xargs rm"), true);
+test("classifyBashCommand blocks xargs with mutation command and concrete target", () => {
+	assert.equal(isBlocked("echo /etc/passwd | xargs rm"), true, "xargs rm outside temp blocked");
+	assert.equal(isBlocked("echo . | xargs git add"), true, "xargs git add blocked");
+	assert.equal(isBlocked("echo '/etc/passwd' | xargs bash -c 'rm /etc/passwd'"), true, "xargs bash -c rm blocked");
+	assert.equal(isBlocked("echo install | xargs npm install"), true, "xargs npm install blocked");
 });
 
 test("classifyBashCommand allows xargs with safe command", () => {
@@ -5343,7 +5365,7 @@ test("classifyBashCommand allows xargs with safe command", () => {
 });
 
 test("classifyBashCommand blocks xargs with flags and mutation", () => {
-	assert.equal(isBlocked("echo file.txt | xargs -I {} rm {}"), true);
+	assert.equal(isBlocked("echo /etc/passwd | xargs -I {} rm {}"), true);
 });
 
 test("classifyBashCommand allows xargs with flags and safe command", () => {

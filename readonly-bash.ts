@@ -160,7 +160,7 @@ function getFilesystemMutationReason(segment: string, cwd: string, depth: number
 			return nested.ok ? null : nested.reason;
 		}
 		// env with only flags (e.g., env -S "cmd") — extract -S value
-		const sMatch = segment.match(/\benv\b.*?-S\s+/);
+		const sMatch = segment.match(/\benv\b.*?(?:-S|--split-string)\s+/);
 		if (sMatch) {
 			const afterS = segment.slice(sMatch.index! + sMatch[0].length).trim();
 			const stripped = stripMatchingQuotes(afterS);
@@ -228,10 +228,18 @@ function getFilesystemMutationReason(segment: string, cwd: string, depth: number
 		}
 		if (cmdStart < xArgs.length) {
 			const xTokens = xArgs.slice(cmdStart);
+			// L1: Full classifier check (catches git, interpreters, package managers, etc.)
+			const inner = xTokens.join(" ");
+			const nested = classifyBashCommand(inner, cwd, depth + 1);
+			if (!nested.ok) return nested.reason;
+			// L2: xargs feeds stdin as arguments, so even targetless mutation commands
+			// (rm, mv, rm, sed -i, etc.) are dangerous — the targets come from the pipe.
+			// Block if getMutationTargets recognizes the command (returns non-null).
 			const xCmd = xTokens[0]?.toLowerCase();
 			if (xCmd && getMutationTargets(xCmd, xTokens) !== null) {
 				return `xargs ${xCmd} blocked: mutation command via xargs`;
 			}
+			return null;
 		}
 		return null;
 	}
@@ -419,7 +427,7 @@ function isPackageMutation(args: string[]): boolean {
 }
 
 function findSudoCommandIndex(tokens: string[]): number {
-	const FLAGS_WITH_VALUE = new Set(["-u", "-g", "-p", "-C", "-T"]);
+	const FLAGS_WITH_VALUE = new Set(["-u", "-g", "-p", "-C", "-T", "-h"]);
 	let i = 1;
 	while (i < tokens.length) {
 		const token = tokens[i];
@@ -733,6 +741,14 @@ function extractCommandSubstitutions(line: string): string[] {
 		}
 		if (cmd.trim()) commands.push(cmd.trim());
 		i = j;
+	}
+
+	// <() process substitutions: extract inner command for recursive classification.
+	// Handles one level of nesting inside <().
+	const procSubRe = /<\(([^()]*(?:\([^()]*\)[^()]*)*)\)/g;
+	let procMatch: RegExpExecArray | null;
+	while ((procMatch = procSubRe.exec(line)) !== null) {
+		if (procMatch[1].trim()) commands.push(procMatch[1].trim());
 	}
 
 	return commands;
