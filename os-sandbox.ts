@@ -115,14 +115,6 @@ function _hasSandboxExec(): boolean {
  */
 export function buildMacProfile(tempDir: string): string {
 	const canon = resolveRealPath(tempDir);
-	// Seatbelt profiles don't support single-quote escaping — the profile string
-	// is injected into a single-quoted shell argument. Reject any path containing
-	// single quotes to prevent profile injection.
-	for (const p of [canon]) {
-		if (p.includes("'")) {
-			throw new Error(`[readonly] Sandbox profile path contains single quote — cannot safely escape: ${p}`);
-		}
-	}
 	const original = path.resolve(os.tmpdir()); // may have symlinks (e.g., /var -> /private/var)
 
 	// Collect unique paths — both canonical and unresolved (symlink) forms.
@@ -134,6 +126,15 @@ export function buildMacProfile(tempDir: string): string {
 	if (original !== canon) writePaths.add(original);
 	writePaths.add("/private/tmp");
 	writePaths.add("/tmp");
+
+	// Two distinct injection risks in the profile string:
+	//  - Single quotes (') break out of the outer shell wrapper: sandbox-exec -p '${profile}'
+	//  - Double quotes (") break Seatbelt (subpath "...") literal syntax
+	for (const p of writePaths) {
+		if (p.includes("'") || p.includes('"')) {
+			throw new Error(`[readonly] Sandbox profile path contains quote — cannot safely escape: ${p}`);
+		}
+	}
 
 	const parts = [
 		"(version 1)",

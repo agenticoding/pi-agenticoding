@@ -5383,6 +5383,19 @@ test("os-sandbox: buildMacProfile includes deny file-write* and allow /dev/null"
 	assert.ok(profile.includes('(allow file-write* (subpath'), "profile should allow subpath writes");
 });
 
+test("os-sandbox: buildMacProfile rejects paths containing single or double quotes", () => {
+	assert.throws(
+		() => buildMacProfile("/tmp/evil'path"),
+		/quote/,
+		"should reject single quote in path",
+	);
+	assert.throws(
+		() => buildMacProfile('/tmp/evil"path'),
+		/quote/,
+		"should reject double quote in path",
+	);
+});
+
 test("os-sandbox: wrapWithSandboxExec uses heredoc", () => {
 	const cmd = "echo hello";
 	const result = wrapWithSandboxExec(cmd);
