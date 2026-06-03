@@ -42,15 +42,17 @@ export function registerNotebookRehydration(
 
 		for (let i = branch.length - 1; i >= 0; i--) {
 			const entry = branch[i];
+			if (!entry || typeof entry !== "object") continue;
+			const e = entry as unknown as Record<string, unknown>;
 
 			if (
-				entry.type !== "custom" ||
-				!ENTRY_TYPES.has((entry as Record<string, unknown>).customType as string)
+				e.type !== "custom" ||
+				!ENTRY_TYPES.has(e.customType as string)
 			) {
 				continue;
 			}
 
-			const data = (entry as Record<string, unknown>).data as NotebookEntryData | undefined;
+			const data = e.data as NotebookEntryData | undefined;
 			if (!data?.name || typeof data.content !== "string") continue;
 
 			// Skip if we already have a newer version of this name

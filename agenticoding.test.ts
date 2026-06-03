@@ -1982,6 +1982,32 @@ test("notebook rehydration clears stale in-memory notebook state when persisted 
 });
 
 
+test("notebook rehydration handles null and malformed entries in branch", async () => {
+	const pi = new MockPi();
+	const state = createState();
+	registerNotebookRehydration(pi as any, state);
+	const [handler] = pi.handlers.get("session_start")!;
+
+	await handler(
+		{},
+		{
+			sessionManager: {
+				getBranch: () => [
+					null,
+					undefined,
+					"bad-string",
+					{ type: "custom", customType: "notebook-entry", data: { epoch: 1, name: "keep", content: "valid" } },
+					null,
+					{ customType: "notebook-entry" }, // missing type: "custom"
+				],
+			},
+		},
+	);
+
+	assert.equal(state.epoch, 1);
+	assert.deepEqual(Array.from(state.notebookPages.entries()), [["keep", "valid"]]);
+});
+
 test("session_start rehydrates the latest persisted notebook state through the full hook chain", async () => {
 	resetNotebookWriteLock();
 	const pi = new MockPi();
