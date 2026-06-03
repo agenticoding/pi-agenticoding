@@ -300,14 +300,45 @@ function getMutationTargets(command: string, tokens: string[]): string[] | null 
 			return nonOptionArgs(tokens.slice(1));
 		case "sed":
 			if (tokens.slice(1).some((arg) => arg === "-i" || arg.startsWith("-i"))) {
-				const args = nonOptionArgs(tokens.slice(1));
+				const sedTokens = tokens.slice(1);
+				// Strip -e/--expression flag-value pairs so their expression values
+				// don't appear as false non-option targets. Track whether any -e was
+				// used — this changes how we skip the expression slot later.
+				let hasExpressionFlag = false;
+				const filteredTokens: string[] = [];
+				let ti = 0;
+				while (ti < sedTokens.length) {
+					if (sedTokens[ti] === "-e" || sedTokens[ti] === "--expression") {
+						ti += 2;
+						hasExpressionFlag = true;
+					} else if (sedTokens[ti].startsWith("-e")) {
+						// -e'expr' concatenated form (GNU sed) — token IS flag + value, skip 1
+						ti += 1;
+						hasExpressionFlag = true;
+					} else if (sedTokens[ti].startsWith("--expression=")) {
+						ti += 1;
+						hasExpressionFlag = true;
+					} else {
+						filteredTokens.push(sedTokens[ti]);
+						ti++;
+					}
+				}
+				const args = nonOptionArgs(filteredTokens);
 				// -i may have a separate backup extension value (macOS: sed -i '' 's/.../.../' file).
 				// When present, it becomes the first non-option arg before the sed expression.
-				// Skip the extension (if present) then the expression, returning remaining as targets.
-				if (args.length > 0 && (args[0] === "" || args[0] === "''" || args[0] === '""' || /^[a-zA-Z0-9._-]{1,10}$/.test(args[0]))) {
-					return args.slice(2);
+				// Skip the extension (if present), then the expression.
+				// When expressions came via -e flags, there's no expression in non-option args.
+				const extArg = args.length > 0 ? stripMatchingQuotes(args[0]) : "";
+				if (args.length > 0 && (extArg === "" || /^[a-zA-Z0-9._-]{1,10}$/.test(extArg))) {
+					// First arg is the backup extension — skip it.
+					// If -e was used, expression is not in non-option args (already consumed by -e skip).
+					// Remaining args after the extension are targets.
+					return hasExpressionFlag ? args.slice(1) : args.slice(2);
 				}
-				return args.slice(1);
+				// No backup extension.
+				// If -e was used, all non-option args are targets.
+				// Otherwise, first non-option arg is the expression, remaining are targets.
+				return hasExpressionFlag ? args : args.slice(1);
 			}
 			return null;
 		case "perl":

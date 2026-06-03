@@ -4792,6 +4792,24 @@ test("classifyBashCommand blocks ruby in-place mutation", () => {
 	assert.equal(isBlocked("ruby -pi -e 's/a/b/g' file.txt"), true, "ruby -pi is blocked outside temp");
 });
 
+test("classifyBashCommand blocks sed -i with multiple -e expressions outside temp", () => {
+	// H3 fix: expression values from -e flags should not leak as false targets
+	assert.equal(isBlocked("sed -i '' -e 's/foo/g' -e 's/bar/g' /etc/config"), true, "multi -e outside temp");
+	const tmp = os.tmpdir();
+	assert.equal(isDirect(`sed -i '' -e 's/foo/g' -e 's/bar/g' ${tmp}/config`), true, "multi -e inside temp");
+	assert.equal(isDirect(`sed -i.bak -e 's/foo/g' ${tmp}/config`), true, "sed -i with backup ext inside temp");
+	assert.equal(isBlocked("sed -i 's/foo/g' /etc/config"), true, "single expression outside temp");
+	// --expression combined form (--expression=SCRIPT) must be detected
+	assert.equal(isBlocked("sed -i '' --expression='s/foo/g' /etc/config"), true, "--expression= combined form outside temp");
+	assert.equal(isDirect(`sed -i '' --expression='s/foo/g' ${tmp}/config`), true, "--expression= combined form inside temp");
+	// --expression long form (separate arg)
+	assert.equal(isBlocked("sed -i '' --expression 's/foo/g' /etc/config"), true, "--expression long form outside temp");
+	assert.equal(isDirect(`sed -i '' --expression 's/foo/g' ${tmp}/config`), true, "--expression long form inside temp");
+	// --expression combined form without backup extension
+	assert.equal(isBlocked("sed -i --expression='s/foo/g' /etc/config"), true, "--expression= no backup ext outside temp");
+	assert.equal(isDirect(`sed -i --expression='s/foo/g' ${tmp}/config`), true, "--expression= no backup ext inside temp");
+});
+
 test("classifyBashCommand blocks env prefix with mutation command", () => {
 	assert.equal(isBlocked("env VAR=value rm file.txt"), true, "env rm is blocked");
 	assert.equal(isBlocked("env -i PATH=/tmp rm file.txt"), true, "env -i rm is blocked");
