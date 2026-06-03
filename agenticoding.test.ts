@@ -3758,6 +3758,17 @@ test("classifyBashCommand allows explicit filesystem mutation inside temp", () =
 	assert.equal(isDirect(`mv ${tmp}/a ${tmp}/b`), true);
 });
 
+test("classifyBashCommand blocks rm -r outside temp (no -r value-skip bypass)", () => {
+	// Critical fix: rm -r <target> must not be treated as "-r consumes target as value"
+	assert.equal(isBlocked("rm -rf /etc/passwd"), true, "rm -rf outside temp");
+	assert.equal(isBlocked("rm -r /etc/passwd"), true, "rm -r with standalone -r");
+	assert.equal(isBlocked("rm -fr /etc/passwd"), true, "rm -fr combined flags");
+	// Inside temp, rm -r should be allowed
+	const tmp = os.tmpdir();
+	assert.equal(isDirect(`rm -r ${tmp}/x`), true, "rm -r inside temp");
+	assert.equal(isDirect(`rm -rf ${tmp}/x`), true, "rm -rf inside temp");
+});
+
 test("classifyBashCommand blocks mutable git commands and allows readonly git", () => {
 	assert.equal(isDirect("git status"), true);
 	assert.equal(isDirect("git log --oneline"), true);

@@ -278,6 +278,7 @@ function getMutationTargets(command: string, tokens: string[]): string[] | null 
 		case "rmdir":
 		case "unlink":
 		case "mkdir":
+			return nonOptionArgs(skipFlagValues(tokens.slice(1), new Set(["-s", "-o", "--io-size"])));
 		case "truncate":
 		case "touch":
 			return nonOptionArgs(skipFlagValues(tokens.slice(1), new Set(["-s", "-o", "--io-size", "--no-create", "-t", "-d", "-r"])));
