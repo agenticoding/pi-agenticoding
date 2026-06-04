@@ -70,7 +70,6 @@ function _hasBwrap(): boolean {
 				_bwrapResult = true;
 			} catch (e) {
 				_bwrapResult = false;
-				process.stderr.write(`[readonly] bwrap found but functional probe failed — falling back to pattern classification. ${String(e?.constructor?.name ?? e)}\n`);
 			}
 		} else {
 			_bwrapResult = false;
@@ -89,7 +88,6 @@ function _hasSandboxExec(): boolean {
 				_sandboxExecResult = true;
 			} catch (e) {
 				_sandboxExecResult = false;
-				process.stderr.write(`[readonly] sandbox-exec found but functional probe failed — falling back to pattern classification. ${String(e?.constructor?.name ?? e)}\n`);
 			}
 		} else {
 			_sandboxExecResult = false;
