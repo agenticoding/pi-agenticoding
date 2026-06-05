@@ -19,6 +19,24 @@ import { TEMP_DIR } from "./temp-dir.js";
  * meaningless.
  *
  * This is a best-effort command inspection layer, not a security sandbox.
+ *
+ * ## Known L2 limitations (no OS sandbox available)
+ *
+ * These bypasses are mitigated by L1 (OS sandbox) on macOS and Linux but
+ * are effective on Windows or when sandbox tools are missing:
+ *
+ *   - **Interpreters with programmatic code** — `node -e`, `python3 -c`, etc.
+ *     running code like `require('fs').writeFileSync(...)` are not checked.
+ *     The classifier only parses shell command tokens, not JS/Python/Perl code.
+ *   - **xargs with stdin-fed package managers** — `printf install | xargs npm`
+ *     bypasses because `xargs npm` alone has no verb args. The pipe feeds
+ *     `install` at runtime via stdin; only the OS sandbox blocks the writes.
+ *   - **curl combined-flag permutations** — `-JO`, `-sJO` (where `-O` is not
+ *     the first character after `-`) pass through undetected because the
+ *     classifier only checks `startsWith("-O")`, not substring presence.
+ *     The natural form `-OJ` (now detected) should be used, or separate flags.
+ *   - **curl --remote-name-all** — implicitly applies `-O` to every URL but
+ *     has no `-O` token for the classifier to detect.
  */
 
 type Verdict =
@@ -214,6 +232,16 @@ function getFilesystemMutationReason(segment: string, cwd: string, depth: number
 		}
 	}
 
+	// curl -O/--remote-name writes to disk (URL basename in cwd). Allow it only
+	// when cwd itself is inside temp; when -o and -O are combined, both writes
+	// remain cumulative and must be allowed.
+	if (command === "curl") {
+		const { hasRemoteName } = getCurlWriteTargets(tokens);
+		if (hasRemoteName && !isTempPath(".", cwd)) {
+			return "curl blocked outside temp dir: current directory (use -o /tmp/... to write to temp)";
+		}
+	}
+
 	// xargs: classify the command xargs would run.
 	// xargs feeds stdin as args, so any mutation command is blocked even
 	// without explicit targets — the targets come from the pipe.
@@ -280,6 +308,37 @@ function skipFlagValues(args: string[], flagsWithValues: Set<string>): string[] 
 		}
 	}
 	return result;
+}
+
+function getCurlWriteTargets(tokens: string[]): { hasRemoteName: boolean; outputs: string[] } {
+	const cArgs = tokens.slice(1);
+	const outputs: string[] = [];
+	let hasRemoteName = false;
+	for (let i = 0; i < cArgs.length; i++) {
+		if (cArgs[i] === "--") break; // end of options; remaining args are URLs
+		if ((cArgs[i] === "-o" || cArgs[i] === "--output") && cArgs[i + 1]) {
+			outputs.push(cArgs[i + 1]);
+			i++;
+			continue;
+		}
+		if (cArgs[i].startsWith("--output=")) {
+			outputs.push(cArgs[i].slice("--output=".length));
+			continue;
+		}
+		if (cArgs[i].startsWith("-o") && cArgs[i].length > 2 && !cArgs[i].startsWith("--")) {
+			outputs.push(cArgs[i].slice(2));
+			continue;
+		}
+		if (cArgs[i] === "-O" || cArgs[i] === "--remote-name") {
+			hasRemoteName = true;
+			continue;
+		}
+		if (cArgs[i].startsWith("-O") && cArgs[i].length > 2 && !cArgs[i].startsWith("--")) {
+			hasRemoteName = true;
+			continue;
+		}
+	}
+	return { hasRemoteName, outputs };
 }
 
 function getMutationTargets(command: string, tokens: string[]): string[] | null {
@@ -392,10 +451,13 @@ function getMutationTargets(command: string, tokens: string[]): string[] | null 
 			return ["."];
 		}
 		case "curl": {
-			const cArgs = tokens.slice(1);
-			for (let i = 0; i < cArgs.length; i++) {
-				if ((cArgs[i] === "-o" || cArgs[i] === "--output") && cArgs[i + 1]) return [cArgs[i + 1]];
+			const { hasRemoteName, outputs } = getCurlWriteTargets(tokens);
+			// -o - and --output - write to stdout, not a file — map to /dev/null (safe)
+			const mapped = outputs.map((o) => stripMatchingQuotes(o) === "-" ? "/dev/null" : o);
+			if (mapped.length > 0) {
+				return hasRemoteName ? [...mapped, "."] : mapped;
 			}
+			if (hasRemoteName) return ["."];
 			return null;
 		}
 		default:

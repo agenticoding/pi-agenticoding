@@ -5309,6 +5309,98 @@ test("classifyBashCommand blocks curl --output outside temp", () => {
 	assert.equal(isBlocked("curl --output /tmp/../outside.txt http://example.com"), true);
 });
 
+test("classifyBashCommand blocks curl -O (remote-name) outside temp", () => {
+	assert.equal(isBlocked("curl -O http://example.com/evil.sh"), true, "-O writes to cwd");
+	assert.equal(isBlocked("curl --remote-name http://example.com/evil.sh"), true, "--remote-name writes to cwd");
+	assert.equal(isBlocked("curl -OJ http://example.com/evil.sh"), true, "-OJ combined form");
+});
+
+test("classifyBashCommand allows curl -O (remote-name) inside temp cwd", () => {
+	const tmp = os.tmpdir();
+	assert.equal(isDirect("curl -O http://example.com/evil.sh", tmp), true, "-O allowed when cwd is temp");
+	assert.equal(isDirect("curl --remote-name http://example.com/evil.sh", tmp), true, "--remote-name allowed when cwd is temp");
+});
+
+test("classifyBashCommand documents current curl L2 limitation forms", () => {
+	const tmp = os.tmpdir();
+	assert.equal(isDirect("curl -JO http://example.com/evil.sh"), true, "-JO currently slips past L2");
+	assert.equal(isDirect("curl -sJO http://example.com/evil.sh"), true, "-sJO currently slips past L2");
+	assert.equal(isDirect("curl --remote-name-all http://example.com/evil.sh"), true, "--remote-name-all currently slips past L2");
+	assert.equal(isDirect("curl -JO http://example.com/evil.sh", tmp), true, "limitation also remains allowed in temp cwd");
+});
+
+test("classifyBashCommand blocks curl -O even with explicit -o temp path", () => {
+	const tmp = os.tmpdir();
+	// -O still writes URL basename to cwd, even when -o targets temp dir
+	assert.equal(isBlocked("curl -O -o " + tmp + "/out.html http://example.com"), true, "-O cwd write still blocked despite -o temp");
+	assert.equal(isBlocked("curl -o " + tmp + "/out.html -O http://example.com"), true, "-O cwd write still blocked when -o before -O");
+});
+
+test("classifyBashCommand blocks curl -O combined with -o outside temp", () => {
+	// -O writes URL basename to cwd even when -o is present — curl uses both cumulatively
+	assert.equal(isBlocked("curl -o /etc/passwd -O http://example.com"), true, "-O cwd write blocked despite -o outside temp");
+	assert.equal(isBlocked("curl -O -o /etc/passwd http://example.com"), true, "-O cwd write blocked when -o is before -O");
+});
+
+test("classifyBashCommand blocks curl -O combined with -o inside temp", () => {
+	const tmp = os.tmpdir();
+	// -o points to temp dir, but -O still writes to cwd — must be blocked
+	assert.equal(isBlocked("curl -o " + tmp + "/out -O http://example.com"), true, "-O cwd write blocked even when -o targets temp");
+	assert.equal(isBlocked("curl -O -o " + tmp + "/out http://example.com"), true, "-O cwd write blocked regardless of flag order");
+});
+
+test("classifyBashCommand allows curl -O combined with -o when cwd and output are both temp", () => {
+	const tmp = os.tmpdir();
+	assert.equal(isDirect("curl -o " + tmp + "/out -O http://example.com", tmp), true, "-O and -o both allowed when both writes stay in temp");
+	assert.equal(isDirect("curl -O -o " + tmp + "/out http://example.com", tmp), true, "flag order does not matter when both writes stay in temp");
+});
+
+test("classifyBashCommand blocks curl --output=VALUE outside temp", () => {
+	assert.equal(isBlocked("curl --output=/etc/passwd http://example.com"), true, "--output=/etc/passwd writes to disk");
+});
+
+test("classifyBashCommand allows curl --output=VALUE inside temp", () => {
+	const tmp = os.tmpdir();
+	assert.equal(isDirect(`curl --output=${tmp}/out http://example.com`), true, "--output=/tmp/... writes to temp");
+});
+
+test("classifyBashCommand blocks curl -o/path combined form outside temp", () => {
+	assert.equal(isBlocked("curl -o/etc/passwd http://example.com"), true, "-o/etc/passwd combined short form writes to disk");
+});
+
+test("classifyBashCommand allows curl -o/path combined form inside temp", () => {
+	const tmp = os.tmpdir();
+	assert.equal(isDirect(`curl -o${tmp}/out http://example.com`), true, "-o/tmp/out combined short form writes to temp");
+});
+
+test("classifyBashCommand blocks curl -O (remote-name) outside temp (error message)", () => {
+	const verdict = classifyBashCommand("curl -O http://example.com/evil.sh");
+	assert.equal(verdict.ok, false);
+	assert.match(verdict.reason, /curl blocked/, "error message mentions curl");
+});
+
+test("classifyBashCommand allows curl -- -O (-- ends options, -O is a URL arg)", () => {
+	assert.equal(isDirect("curl -- -O"), true, "-O after -- is a URL, not a flag");
+});
+
+test("classifyBashCommand blocks curl -O before -- (flag before end-of-options)", () => {
+	assert.equal(isBlocked("curl -O -- http://example.com/evil.sh"), true, "-O before -- is still a flag");
+});
+
+test("classifyBashCommand blocks curl with multiple -o flags where first is unsafe", () => {
+	assert.equal(isBlocked("curl -o /etc/passwd -o /tmp/f http://example.com"), true, "first -o outside temp blocked");
+});
+
+test("classifyBashCommand allows curl with multiple -o flags both inside temp", () => {
+	const tmp = os.tmpdir();
+	assert.equal(isDirect(`curl -o ${tmp}/f1 -o ${tmp}/f2 http://example.com`, tmp), true, "both -o in temp allowed");
+});
+
+test("classifyBashCommand allows curl -o - (stdout)", () => {
+	assert.equal(isDirect("curl -o - http://example.com"), true, "-o - writes to stdout");
+	assert.equal(isDirect("curl --output - http://example.com"), true, "--output - writes to stdout");
+});
+
 test("classifyBashCommand allows wget -O inside temp", () => {
 	const tmp = os.tmpdir();
 	assert.equal(isDirect(`wget -O ${tmp}/out.html http://example.com`), true);
