@@ -614,32 +614,50 @@ test("handoff automatic setting invalid JSON fails closed with diagnostic", asyn
 	assert.match(projectResult.notifications[0].message, /automatic handoff disabled/);
 });
 
-test("handoff automatic setting non-ENOENT read errors are treated as invalid source with warning", async () => {
+test("handoff automatic setting non-ENOENT read errors are distinguished from invalid JSON", async () => {
 	await withIsolatedSettings(async ({ home, cwd }) => {
 		const globalPath = join(home, ".pi", "agent", "settings.json");
-		await writeSettingsFile(globalPath, {});
-		await chmod(globalPath, 0o000);
+		await mkdir(globalPath, { recursive: true });
 
-		try {
-			const state = await readHandoffSettingsState(cwd);
-			assert.equal(state.global.invalid, true);
-			assert.equal(state.global.exists, true);
-			assert.equal(state.project.invalid, false);
+		const state = await readHandoffSettingsState(cwd);
+		assert.equal(state.global.invalid, true);
+		assert.equal(state.global.invalidReason, "read-error");
+		assert.equal(state.global.readErrorCode, "EISDIR");
+		assert.equal(state.global.exists, true);
+		assert.equal(state.project.invalid, false);
 
-			const notifications: Array<{ message: string; level: string }> = [];
-			const ctx = {
-				cwd,
-				hasUI: true,
-				ui: { notify: (msg: string, level: string) => notifications.push({ message: msg, level }) },
-			} as any;
-			const availability = await resolveHandoffAutomaticAvailability(ctx);
-			assert.equal(availability.automaticEnabled, false);
-			assert.equal(notifications.length, 1);
-			assert.equal(notifications[0].level, "warning");
-			assert.match(notifications[0].message, /Invalid global settings JSON/);
-		} finally {
-			await chmod(globalPath, 0o600);
-		}
+		const notifications: Array<{ message: string; level: string }> = [];
+		const ctx = {
+			cwd,
+			hasUI: true,
+			ui: { notify: (msg: string, level: string) => notifications.push({ message: msg, level }) },
+		} as any;
+		const availability = await resolveHandoffAutomaticAvailability(ctx);
+		assert.equal(availability.automaticEnabled, false);
+		assert.equal(notifications.length, 1);
+		assert.equal(notifications[0].level, "warning");
+		assert.match(notifications[0].message, /Unable to read global settings/);
+		assert.match(notifications[0].message, /EISDIR/);
+		assert.doesNotMatch(notifications[0].message, /Invalid global settings JSON/);
+	});
+
+	await withIsolatedSettings(async ({ home, cwd }) => {
+		await writeSettingsFile(join(home, ".pi", "agent", "settings.json"), { handoff: { automaticEnabled: true } });
+		const projectPath = join(cwd, ".pi", "settings.json");
+		await mkdir(projectPath, { recursive: true });
+
+		const notifications: Array<{ message: string; level: string }> = [];
+		const model = await buildAgenticodingSettingsModel({
+			cwd,
+			hasUI: true,
+			ui: { notify: (msg: string, level: string) => notifications.push({ message: msg, level }) },
+		} as any);
+		assert.equal(model.state.project.invalidReason, "read-error");
+		assert.equal(model.effectiveAutomaticEnabled, false);
+		assert.match(model.messages.join("\n"), /Unable to read project settings/);
+		assert.match(model.messages.join("\n"), /EISDIR/);
+		assert.doesNotMatch(model.messages.join("\n"), /Invalid project settings JSON/);
+		assert.match(getAgenticodingSettingsDisplayLines(model).join("\n"), /Project settings: .*unreadable \(EISDIR\)/);
 	});
 });
 
@@ -685,7 +703,7 @@ test("manual slash handoff permits handoff when automatic handoff is disabled", 
 	});
 });
 
-test("manual slash handoff does not mutate active tools after success error or stale cleanup", async () => {
+test("manual slash handoff preserves retry request after compaction error without mutating active tools", async () => {
 	await withIsolatedSettings(async ({ cwd }) => {
 		await writeSettingsFile(join(cwd, ".pi", "settings.json"), { handoff: { automaticEnabled: false } });
 		const pi = new MockPi();
@@ -716,7 +734,13 @@ test("manual slash handoff does not mutate active tools after success error or s
 		compactOptions.onError({});
 		await new Promise(resolve => setTimeout(resolve, 10));
 		assert.deepEqual(pi.activeTools, []);
-		assert.equal(state.pendingRequestedHandoff, null);
+		assert.deepEqual(state.pendingRequestedHandoff, {
+			direction: "implement auth",
+			enforcementAttempts: 0,
+			toolCalled: false,
+			awaitingAgentTurn: false,
+		});
+		assert.match(state.pendingRequestedHandoffPrompt ?? "", /Handoff direction: implement auth/);
 	});
 
 	await withIsolatedSettings(async ({ cwd }) => {
@@ -1340,10 +1364,11 @@ test("handoff compaction clears the handoff status indicator", async () => {
 	assert.equal(statuses.get(STATUS_KEY_HANDOFF), undefined);
 });
 
-test("handoff compaction error clears pending state and status", async () => {
+test("handoff compaction error preserves active manual request for retry", async () => {
 	const pi = new MockPi();
 	const state = createState();
-	state.pendingRequestedHandoff = { direction: "implement auth", enforcementAttempts: 0, toolCalled: false, awaitingAgentTurn: false };
+	state.pendingRequestedHandoff = { direction: "implement auth", enforcementAttempts: 1, toolCalled: false, awaitingAgentTurn: false };
+	state.pendingRequestedHandoffPrompt = "Handoff direction: implement auth";
 	registerHandoffTool(pi as any, state);
 	let compactOptions: any;
 	const statuses = new Map<string, string | undefined>();
@@ -1362,11 +1387,18 @@ test("handoff compaction error clears pending state and status", async () => {
 	compactOptions.onError({});
 
 	assert.equal(state.pendingHandoff, null);
-	assert.equal(state.pendingRequestedHandoff, null);
+	assert.deepEqual(state.pendingRequestedHandoff, {
+		direction: "implement auth",
+		enforcementAttempts: 1,
+		toolCalled: false,
+		awaitingAgentTurn: false,
+	});
+	assert.equal(state.pendingRequestedHandoffPrompt, "Handoff direction: implement auth");
+	assert.equal(pi.sentUserMessages.length, 0);
 	assert.equal(statuses.get(STATUS_KEY_HANDOFF), undefined);
 });
 
-test("handoff compact synchronous throw clears pending state and status", async () => {
+test("handoff compact synchronous throw preserves active manual request for retry", async () => {
 	const pi = new MockPi();
 	const state = createState();
 	state.pendingRequestedHandoff = { direction: "implement auth", enforcementAttempts: 0, toolCalled: false, awaitingAgentTurn: false };
@@ -1390,8 +1422,13 @@ test("handoff compact synchronous throw clears pending state and status", async 
 	);
 
 	assert.equal(state.pendingHandoff, null);
-	assert.equal(state.pendingRequestedHandoff, null);
-	assert.equal(state.pendingRequestedHandoffPrompt, null);
+	assert.deepEqual(state.pendingRequestedHandoff, {
+		direction: "implement auth",
+		enforcementAttempts: 0,
+		toolCalled: false,
+		awaitingAgentTurn: false,
+	});
+	assert.equal(state.pendingRequestedHandoffPrompt, "Handoff direction: implement auth");
 	assert.equal(statuses.get(STATUS_KEY_HANDOFF), undefined);
 });
 

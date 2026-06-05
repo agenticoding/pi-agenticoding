@@ -13,7 +13,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type { AgenticodingState } from "../state.js";
 import { resolveHandoffAutomaticAvailability } from "../settings.js";
-import { clearPendingHandoffCompaction } from "./cleanup.js";
+import { preserveManualHandoffRequestAfterCompactionError } from "./cleanup.js";
 
 /**
  * Build the enriched task that becomes the compaction summary.
@@ -81,6 +81,10 @@ export function registerHandoffTool(
 			}
 
 			const enrichedTask = buildEnrichedTask(params.task);
+			const retryableManualRequest = activeManualRequest
+				? { ...activeManualRequest, toolCalled: false, awaitingAgentTurn: false }
+				: null;
+			const retryableManualRequestPrompt = activeManualRequest ? state.pendingRequestedHandoffPrompt : null;
 			state.pendingHandoff = { task: enrichedTask, source: "tool" };
 			if (activeManualRequest) {
 				activeManualRequest.toolCalled = true;
@@ -91,11 +95,11 @@ export function registerHandoffTool(
 						pi.sendUserMessage("Proceed.");
 					},
 					onError: () => {
-						clearPendingHandoffCompaction(state, ctx);
+						preserveManualHandoffRequestAfterCompactionError(state, ctx, retryableManualRequest, retryableManualRequestPrompt);
 					},
 				});
 			} catch (error) {
-				clearPendingHandoffCompaction(state, ctx);
+				preserveManualHandoffRequestAfterCompactionError(state, ctx, retryableManualRequest, retryableManualRequestPrompt);
 				throw error;
 			}
 

@@ -16,6 +16,7 @@ export type HandoffAutomaticValue = "true" | "false";
 
 type SettingsObject = Record<string, unknown>;
 type SettingsSourceLabel = "global" | "project";
+type SettingsInvalidReason = "invalid-json" | "non-object" | "read-error";
 type AtomicWriteOperations = {
 	writeFile: typeof writeFile;
 	rename: typeof rename;
@@ -27,6 +28,8 @@ export interface SettingsSourceState {
 	path: string;
 	exists: boolean;
 	invalid: boolean;
+	invalidReason?: SettingsInvalidReason;
+	readErrorCode?: string;
 	settings: SettingsObject;
 	automaticEnabled: unknown;
 }
@@ -173,27 +176,58 @@ function formatSettingValue(value: unknown): string {
 	}
 }
 
+function getErrorCode(error: unknown): string | undefined {
+	return typeof error === "object" && error !== null && "code" in error && typeof (error as { code?: unknown }).code === "string"
+		? (error as { code: string }).code
+		: undefined;
+}
+
+function describeInvalidSource(source: SettingsSourceState, consequence: string): string {
+	const sourceName = source.label === "global" ? "global" : "project";
+	if (source.invalidReason === "read-error") {
+		const code = source.readErrorCode ? ` (${source.readErrorCode})` : "";
+		return `Unable to read ${sourceName} settings at ${source.path}${code}; ${consequence}.`;
+	}
+	if (source.invalidReason === "non-object") {
+		return `Invalid ${sourceName} settings JSON at ${source.path}; root must be an object; ${consequence}.`;
+	}
+	return `Invalid ${sourceName} settings JSON at ${source.path}; ${consequence}.`;
+}
+
+function describeSourceStateForDisplay(source: SettingsSourceState): string {
+	if (!source.invalid) {
+		return describeValue(source.automaticEnabled);
+	}
+	if (source.invalidReason === "read-error") {
+		return source.readErrorCode ? `unreadable (${source.readErrorCode})` : "unreadable";
+	}
+	if (source.invalidReason === "non-object") {
+		return "non-object JSON";
+	}
+	return "invalid JSON";
+}
+
 async function readSettingsSource(label: SettingsSourceLabel, path: string): Promise<SettingsSourceState> {
 	let raw: string;
 	try {
 		raw = await readFile(path, "utf8");
 	} catch (error) {
-		const code = typeof error === "object" && error !== null && "code" in error ? (error as { code?: unknown }).code : undefined;
+		const code = getErrorCode(error);
 		if (code === "ENOENT") {
 			return { label, path, exists: false, invalid: false, settings: createSettingsObject(), automaticEnabled: undefined };
 		}
-		return { label, path, exists: true, invalid: true, settings: createSettingsObject(), automaticEnabled: undefined };
+		return { label, path, exists: true, invalid: true, invalidReason: "read-error", readErrorCode: code, settings: createSettingsObject(), automaticEnabled: undefined };
 	}
 
 	try {
 		const parsed = JSON.parse(raw);
 		if (!isPlainObject(parsed)) {
-			return { label, path, exists: true, invalid: true, settings: createSettingsObject(), automaticEnabled: undefined };
+			return { label, path, exists: true, invalid: true, invalidReason: "non-object", settings: createSettingsObject(), automaticEnabled: undefined };
 		}
 		const settings = cloneSettingsObject(parsed);
 		return { label, path, exists: true, invalid: false, settings, automaticEnabled: extractAutomaticEnabled(settings) };
 	} catch {
-		return { label, path, exists: true, invalid: true, settings: createSettingsObject(), automaticEnabled: undefined };
+		return { label, path, exists: true, invalid: true, invalidReason: "invalid-json", settings: createSettingsObject(), automaticEnabled: undefined };
 	}
 }
 
@@ -226,10 +260,10 @@ export async function resolveHandoffAutomaticAvailability(ctx: ExtensionContext)
 	const state = await readHandoffSettingsState(ctx.cwd);
 
 	if (state.global.invalid) {
-		notify(ctx, `Invalid global settings JSON at ${state.global.path}; falling back to automatic handoff disabled for handoff.automaticEnabled.`, "warning");
+		notify(ctx, describeInvalidSource(state.global, "falling back to automatic handoff disabled for handoff.automaticEnabled"), "warning");
 	}
 	if (state.project.invalid) {
-		notify(ctx, `Invalid project settings JSON at ${state.project.path}; falling back to automatic handoff disabled for handoff.automaticEnabled.`, "warning");
+		notify(ctx, describeInvalidSource(state.project, "falling back to automatic handoff disabled for handoff.automaticEnabled"), "warning");
 	}
 	if (state.global.invalid || state.project.invalid) {
 		return { automaticEnabled: false, source: "fallback" };
@@ -263,7 +297,7 @@ export async function writeGlobalHandoffAutomaticEnabled(
 	try {
 		raw = await readFile(path, "utf8");
 	} catch (error) {
-		const code = typeof error === "object" && error !== null && "code" in error ? (error as { code?: unknown }).code : undefined;
+		const code = getErrorCode(error);
 		if (code !== "ENOENT") {
 			notify(ctx, `Unable to read global settings JSON at ${path}; not writing handoff.automaticEnabled to avoid clobbering it.`, "error");
 			return false;
@@ -301,9 +335,9 @@ export async function buildAgenticodingSettingsModel(ctx: ExtensionContext): Pro
 	let effective = resolveFromState(state);
 
 	if (state.global.invalid) {
-		messages.push(`Invalid global settings JSON at ${state.global.path}; global TUI saves are blocked until it is fixed.`);
+		messages.push(describeInvalidSource(state.global, "global TUI saves are blocked until it is fixed"));
 	} else if (state.project.invalid) {
-		messages.push(`Invalid project settings JSON at ${state.project.path}; runtime falls back to automatic handoff disabled, but global TUI saves are still allowed.`);
+		messages.push(describeInvalidSource(state.project, "runtime falls back to automatic handoff disabled, but global TUI saves are still allowed"));
 	} else {
 		const automatic = getLayeredAutomaticEnabled(state);
 		if (automatic.value !== undefined && typeof automatic.value !== "boolean") {
@@ -348,8 +382,8 @@ export function getAgenticodingSettingsDisplayLines(model: AgenticodingSettingsM
 		`When false, automatic agent-initiated handoff is blocked; explicit /handoff <direction> still works.`,
 		`Prompt guidance updates on future fresh agent turns; direct tool calls are guarded at execution time.`,
 		`After successful handoff compaction, Pi auto-sends Proceed.; this continuation is fixed, not configurable.`,
-		`Global settings: ${model.state.global.path} (${model.state.global.invalid ? "invalid JSON" : describeValue(model.state.global.automaticEnabled)})`,
-		`Project settings: ${model.state.project.path} (${model.state.project.invalid ? "invalid JSON" : describeValue(model.state.project.automaticEnabled)})`,
+		`Global settings: ${model.state.global.path} (${describeSourceStateForDisplay(model.state.global)})`,
+		`Project settings: ${model.state.project.path} (${describeSourceStateForDisplay(model.state.project)})`,
 		`TUI saves are global-only; project settings override global settings at runtime.`,
 	];
 	for (const message of model.messages) {
