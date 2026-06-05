@@ -104,7 +104,7 @@ The agent decided to spawn research children, save reusable findings to the note
 
 ### Spawn — Isolate Noise
 
-Delegate messy work to an isolated child agent with clean context. The child inherits the parent's model and tools, works independently, and returns only the condensed result. Siblings run in parallel; the parent stays focused on orchestration. Children cannot spawn grandchildren (explosive branch prevention).
+Delegate messy work to an isolated child agent with clean context. The child inherits the parent's model, thinking level, cwd, and active registered tools executable in the child session, including MCP/extension tools such as ChunkHound when they are active and registered. Child-local notebook tools remain available, but children cannot spawn grandchildren or handoff. Siblings run in parallel; the parent stays focused on orchestration.
 
 ### Notebook — Continuity Across Cuts
 
