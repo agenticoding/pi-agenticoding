@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -16,7 +16,7 @@ export type HandoffAutomaticValue = "true" | "false";
 
 type SettingsObject = Record<string, unknown>;
 type SettingsSourceLabel = "global" | "project";
-type SettingsInvalidReason = "invalid-json" | "non-object" | "read-error";
+type SettingsInvalidReason = "invalid-json" | "non-object" | "malformed-handoff" | "read-error";
 type AtomicWriteOperations = {
 	writeFile: typeof writeFile;
 	rename: typeof rename;
@@ -80,8 +80,14 @@ function getProjectSettingsPath(cwd: string | undefined): string {
 async function writeFileAtomically(path: string, contents: string): Promise<void> {
 	const directory = dirname(path);
 	const tempPath = join(directory, `.${basename(path)}.${process.pid}.${Date.now()}.${randomUUID()}.tmp`);
+	const existingMode = await stat(path)
+		.then((stats) => stats.mode & 0o7777)
+		.catch((error) => getErrorCode(error) === "ENOENT" ? undefined : Promise.reject(error));
 	try {
 		await atomicWriteOperations.writeFile(tempPath, contents, "utf8");
+		if (existingMode !== undefined) {
+			await chmod(tempPath, existingMode);
+		}
 		await atomicWriteOperations.rename(tempPath, path);
 	} catch (error) {
 		await atomicWriteOperations.rm(tempPath, { force: true }).catch(() => {});
@@ -201,9 +207,9 @@ function unsupportedValueWarningKey(source: SettingsSourceState, value: unknown)
 }
 
 function formatSettingValue(value: unknown): string {
-	if (typeof value === "string") return `"${value}"`;
 	try {
-		return JSON.stringify(value) ?? String(value);
+		const json = JSON.stringify(value);
+		return json === undefined ? String(value) : json;
 	} catch {
 		return String(value);
 	}
@@ -224,6 +230,9 @@ function describeInvalidSource(source: SettingsSourceState, consequence: string)
 	if (source.invalidReason === "non-object") {
 		return `Invalid ${sourceName} settings JSON at ${source.path}; root must be an object; ${consequence}.`;
 	}
+	if (source.invalidReason === "malformed-handoff") {
+		return `Invalid ${sourceName} settings JSON at ${source.path}; handoff must be an object when present; ${consequence}.`;
+	}
 	return `Invalid ${sourceName} settings JSON at ${source.path}; ${consequence}.`;
 }
 
@@ -236,6 +245,9 @@ function describeSourceStateForDisplay(source: SettingsSourceState): string {
 	}
 	if (source.invalidReason === "non-object") {
 		return "non-object JSON";
+	}
+	if (source.invalidReason === "malformed-handoff") {
+		return "malformed handoff";
 	}
 	return "invalid JSON";
 }
@@ -258,6 +270,10 @@ async function readSettingsSource(label: SettingsSourceLabel, path: string): Pro
 			return { label, path, exists: true, invalid: true, invalidReason: "non-object", settings: createSettingsObject(), automaticEnabled: undefined };
 		}
 		const settings = cloneSettingsObject(parsed);
+		const handoff = getOwnSetting(settings, "handoff");
+		if (handoff !== undefined && !isPlainObject(handoff)) {
+			return { label, path, exists: true, invalid: true, invalidReason: "malformed-handoff", settings: createSettingsObject(), automaticEnabled: undefined };
+		}
 		return { label, path, exists: true, invalid: false, settings, automaticEnabled: extractAutomaticEnabled(settings) };
 	} catch {
 		return { label, path, exists: true, invalid: true, invalidReason: "invalid-json", settings: createSettingsObject(), automaticEnabled: undefined };

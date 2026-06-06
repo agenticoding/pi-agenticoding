@@ -127,9 +127,9 @@ To make handoff human-driven only, set `handoff.automaticEnabled` to `false` in 
 }
 ```
 
-Settings are read from `~/.pi/agent/settings.json` and `<project>/.pi/settings.json`, with project settings overriding global settings. When automatic handoff is disabled, handoff-call guidance is removed from normal turns and direct `handoff` tool calls are rejected unless they are satisfying an explicit operator `/handoff <direction>` request. The tool remains registered; the setting is enforced by runtime guards rather than provider-schema removal.
+Settings are read from `~/.pi/agent/settings.json` and `<project>/.pi/settings.json`, with project settings overriding global settings. When automatic handoff is disabled, handoff-call guidance is removed from normal turns and direct `handoff` tool calls are rejected unless they are satisfying an active explicit operator `/handoff <direction>` request in the generated user turn. A queued manual request is only pending delivery; it does not authorize the current turn to call the tool. The tool remains registered; the setting is enforced by runtime guards rather than provider-schema removal.
 
-Run `/agenticoding-settings` to change the global value from the TUI. It saves global-only to `~/.pi/agent/settings.json`, preserves unrelated JSON keys, shows the effective runtime value separately, and warns when a project override masks the global value. Setting changes affect prompt guidance on future fresh agent turns, while direct handoff tool calls are checked against the effective setting at execution time. Edit or remove project overrides manually.
+Run `/agenticoding-settings` to change the global value from the TUI. It saves global-only to `~/.pi/agent/settings.json`, preserves unrelated JSON keys and an existing file's mode bits, shows the effective runtime value separately, and warns when a project override masks the global value. Setting changes affect prompt guidance on future fresh agent turns, while direct handoff tool calls are checked against the effective setting at execution time. Malformed present `handoff` parents such as `{ "handoff": null }` fail closed; edit or remove project overrides manually.
 
 **Rule of thumb:** The notebook holds reusable learned knowledge. Handoff carries the remaining situational context.
 

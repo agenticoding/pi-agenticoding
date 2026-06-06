@@ -70,13 +70,20 @@ function getUserMessageText(message: unknown): string {
 	}
 }
 
-function activatePendingRequestedHandoff(state: AgenticodingState, prompt: string): void {
-	if (
-		state.pendingRequestedHandoff?.awaitingAgentTurn &&
-		state.pendingRequestedHandoffPrompt !== null &&
-		prompt === state.pendingRequestedHandoffPrompt
-	) {
-		state.pendingRequestedHandoff.awaitingAgentTurn = false;
+const MANUAL_HANDOFF_REQUEST_ID_PATTERN = /^Manual handoff request id: ([0-9a-fA-F-]{36})$/m;
+
+function getManualHandoffRequestId(prompt: string): string | null {
+	return MANUAL_HANDOFF_REQUEST_ID_PATTERN.exec(prompt)?.[1] ?? null;
+}
+
+function activatePendingRequestedHandoff(state: AgenticodingState, prompt: string, ctx?: ExtensionContext): void {
+	const request = state.pendingRequestedHandoff;
+	const requestId = getManualHandoffRequestId(prompt);
+	if (request?.awaitingAgentTurn && requestId !== null && requestId === request.requestId) {
+		request.awaitingAgentTurn = false;
+		if (ctx?.hasUI && ctx.ui.theme) {
+			ctx.ui.setStatus?.(STATUS_KEY_HANDOFF, ctx.ui.theme.fg("accent", "\uD83E\uDD1D Handoff active"));
+		}
 	}
 }
 
@@ -205,7 +212,7 @@ export default function (pi: ExtensionAPI): void {
 
 	// ── before_agent_start: inject context primer + notebook ───────
 	pi.on("before_agent_start", async (event, ctx: ExtensionContext) => {
-		activatePendingRequestedHandoff(state, event.prompt);
+		activatePendingRequestedHandoff(state, event.prompt, ctx);
 		const availability = await resolveHandoffAutomaticAvailability(ctx);
 
 		// Update TUI indicators before each user-prompt agent run
@@ -251,8 +258,8 @@ export default function (pi: ExtensionAPI): void {
 		return { systemPrompt: parts.join("\n\n") };
 	});
 
-	pi.on("message_start", async (event) => {
-		activatePendingRequestedHandoff(state, getUserMessageText(event.message));
+	pi.on("message_start", async (event, ctx?: ExtensionContext) => {
+		activatePendingRequestedHandoff(state, getUserMessageText(event.message), ctx);
 	});
 
 	// ── context: inject primacy-zone nudge before each LLM call ────

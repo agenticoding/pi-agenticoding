@@ -5,6 +5,7 @@
  * handoff brief, and lets the handoff tool perform the actual compaction.
  */
 
+import { randomUUID } from "node:crypto";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { AgenticodingState } from "../state.js";
 import { STATUS_KEY_HANDOFF } from "../tui.js";
@@ -43,9 +44,11 @@ export function registerHandoffCommand(pi: ExtensionAPI, state: AgenticodingStat
 				return;
 			}
 
-			const prompt = `Handoff direction: ${direction}\n\nPrepare a handoff in the current session. First, save any durable reusable knowledge that aligns with the direction above to the notebook: findings worth keeping, constraints discovered, decisions made, or other grounding future contexts will need. Then draft a concise but sufficiently detailed handoff brief capturing only the remaining situational context: current state, blockers, unresolved questions, failed paths worth avoiding, and next steps. The next context will read the notebook on demand, so do not duplicate notebook content in the brief. Use any structure that makes the next work unambiguous. Reference notebook pages by name when relevant. After drafting the brief, you must call the \`handoff\` tool with the brief as its task so the session actually compacts. Do not answer with only prose.`;
+			const requestId = randomUUID();
+			const prompt = `Handoff direction: ${direction}\nManual handoff request id: ${requestId}\n\nPrepare a handoff in the current session. First, save any durable reusable knowledge that aligns with the direction above to the notebook: findings worth keeping, constraints discovered, decisions made, or other grounding future contexts will need. Then draft a concise but sufficiently detailed handoff brief capturing only the remaining situational context: current state, blockers, unresolved questions, failed paths worth avoiding, and next steps. The next context will read the notebook on demand, so do not duplicate notebook content in the brief. Use any structure that makes the next work unambiguous. Reference notebook pages by name when relevant. After drafting the brief, you must call the \`handoff\` tool with the brief as its task so the session actually compacts. Do not answer with only prose.`;
 			state.pendingRequestedHandoffGeneration += 1;
 			const pendingRequest: NonNullable<AgenticodingState["pendingRequestedHandoff"]> = {
+				requestId,
 				direction,
 				enforcementAttempts: 0,
 				toolCalled: false,
@@ -59,7 +62,7 @@ export function registerHandoffCommand(pi: ExtensionAPI, state: AgenticodingStat
 			if (ctx.hasUI && ctx.ui.theme) {
 				ctx.ui.setStatus(
 					STATUS_KEY_HANDOFF,
-					ctx.ui.theme.fg("accent", "\uD83E\uDD1D Handoff in progress"),
+					ctx.ui.theme.fg("accent", "\uD83E\uDD1D Handoff queued"),
 				);
 			}
 

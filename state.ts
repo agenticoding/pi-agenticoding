@@ -35,6 +35,8 @@ export interface AgenticodingState {
 
 	/** User-requested handoff that must result in a real tool-driven compaction. */
 	pendingRequestedHandoff: {
+		/** Unique identity for this manual request; prompt text/direction is not identity. */
+		requestId: string;
 		direction: string;
 		enforcementAttempts: number;
 		toolCalled: boolean;

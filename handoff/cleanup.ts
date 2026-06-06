@@ -41,11 +41,9 @@ export function preserveManualHandoffRequestAfterCompactionError(
 
 	if (request) {
 		if (requestGeneration !== state.pendingRequestedHandoffGeneration) {
-			clearHandoffStatus(ctx);
 			return;
 		}
-		if (state.pendingRequestedHandoff !== null && state.pendingRequestedHandoff.direction !== request.direction) {
-			clearHandoffStatus(ctx);
+		if (state.pendingRequestedHandoff !== null && state.pendingRequestedHandoff.requestId !== request.requestId) {
 			return;
 		}
 		state.pendingRequestedHandoff = {
@@ -55,11 +53,12 @@ export function preserveManualHandoffRequestAfterCompactionError(
 		};
 		state.pendingRequestedHandoffPrompt = prompt;
 		state.pendingRequestedHandoffRetryProtected = true;
+		clearHandoffStatus(ctx);
 	} else if (state.pendingRequestedHandoff === null) {
 		state.pendingRequestedHandoffPrompt = null;
 		state.pendingRequestedHandoffRetryProtected = false;
+		clearHandoffStatus(ctx);
 	}
-	clearHandoffStatus(ctx);
 }
 
 export async function clearStaleRequestedHandoff(

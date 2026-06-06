@@ -59,8 +59,11 @@ export function updateIndicators(ctx: ExtensionContext, state: AgenticodingState
 	// High-context warning widget (above editor)
 	if (usage && usage.percent !== null && usage.percent >= 70) {
 		const manualHandoffRequest = state.pendingRequestedHandoff !== null && !state.pendingRequestedHandoff.toolCalled;
+		const manualHandoffQueued = manualHandoffRequest && state.pendingRequestedHandoff!.awaitingAgentTurn;
 		const warning = manualHandoffRequest
-			? `Context at ${Math.round(usage.percent)}% — manual /handoff request is ${state.pendingRequestedHandoff!.awaitingAgentTurn ? "queued" : "active"}; follow the request, save durable findings, draft the brief, and call the handoff tool`
+			? (manualHandoffQueued
+				? `Context at ${Math.round(usage.percent)}% — manual /handoff request is queued for its generated user turn; do not call the handoff tool from the current turn`
+				: `Context at ${Math.round(usage.percent)}% — manual /handoff request is active; follow the request, save durable findings, draft the brief, and call the handoff tool`)
 			: handoffAutomaticEnabled
 				? (state.activeNotebookTopic
 					? `Context at ${Math.round(usage.percent)}% — use topic fit: same topic → spawn, different topic → handoff`
