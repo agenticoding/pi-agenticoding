@@ -9,7 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Added `handoff.automaticEnabled` raw settings support with JSON boolean values. Missing settings default to automatic handoff enabled; `false` suppresses automatic handoff guidance and blocks direct agent-initiated handoff unless an explicit `/handoff <direction>` request is active in its generated agent turn.
+- Added the extension-owned `/agenticoding-settings` TUI panel for automatic handoff availability. TUI saves are global-only to `~/.pi/agent/settings.json`, preserve unrelated settings keys, persist real booleans, and visibly warn when a project override masks the global value.
+- Manual `/handoff <direction>` remains available even when automatic handoff is disabled: it records a unique operator request, queues the generated handoff prompt, and lets the guarded `handoff` tool compact only after that requested turn becomes active.
+- Successful enabled or manual handoff compaction now always resumes with Pi's fixed post-compaction `Proceed.` continuation; this behavior is not configurable.
 - Spawned child agents now inherit active registered parent tools executable in the child session, including MCP/extension tools such as ChunkHound when active and registered, while still excluding spawn and handoff and preserving child-local notebook tools.
+
+### Fixed
+
+- Queued manual `/handoff` follow-up prompts can no longer be preempted by an older agent turn's automatic handoff call before the generated user turn starts, including repeated same-direction requests with identical user directions.
+- Queued manual `/handoff` status/warnings distinguish pending follow-up delivery from the active generated turn, so the current agent is not told to call a tool that will reject until the generated turn starts.
+- Malformed present `handoff` settings parents such as `{ "handoff": null }` now fail closed instead of falling through to defaults.
+- Unsupported `handoff.automaticEnabled` string diagnostics and TUI display values are JSON-escaped to prevent newline/control-character spoofing.
+- Global `handoff.automaticEnabled` saves now write through a same-directory temporary file and rename over the target, preserve the previous settings file if replacement fails, and keep an existing settings file's mode bits when replacing it.
 
 ## [0.3.0] - 2026-05-23
 
@@ -108,6 +120,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Comprehensive test suite** — 50+ tests covering spawn execution and rendering (concurrency, cancellation, truncation, stale detection, ownership lifecycle, microtask batching), ledger tools (add/get/list, staleness, rehydration, empty states, prompt hints), handoff (tool, command, compaction), watchdog (nudge injection, enforcement), and extension lifecycle.
 - **MIT licensed** — open-source permissive license.
 
+[Unreleased]: https://github.com/agenticoding/pi-agenticoding/compare/v0.3.0...HEAD
 [0.3.0]: https://github.com/agenticoding/pi-agenticoding/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/agenticoding/pi-agenticoding/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/agenticoding/pi-agenticoding/releases/tag/v0.1.0

@@ -31,14 +31,30 @@ export interface AgenticodingState {
 	lastContextPercent: number | null;
 
 	/** Handoff task queued by the tool until the compaction hook consumes it. */
-	pendingHandoff: { task: string; source: "tool" } | null;
+	pendingHandoff: { task: string; source: "tool"; manualRequestGeneration?: number | null; manualRequestId?: string | null } | null;
 
 	/** User-requested handoff that must result in a real tool-driven compaction. */
 	pendingRequestedHandoff: {
+		/** Unique identity for this manual request; prompt text/direction is not identity. */
+		requestId: string;
 		direction: string;
 		enforcementAttempts: number;
 		toolCalled: boolean;
+		/** True until the LLM run created by /handoff has actually started. */
+		awaitingAgentTurn: boolean;
 	} | null;
+
+	/** Exact extension-injected user message that should start the pending /handoff run. */
+	pendingRequestedHandoffPrompt: string | null;
+
+	/** Monotonic identity for manual /handoff requests; same direction is not identity. */
+	pendingRequestedHandoffGeneration: number;
+
+	/**
+	 * One-shot grace after compaction onError restores a manual request. Prevents
+	 * same failed turn cleanup from treating the retry-ready request as stale.
+	 */
+	pendingRequestedHandoffRetryProtected: boolean;
 
 	/**
 	 * Published child agent sessions keyed by toolCallId.
@@ -78,6 +94,9 @@ export function createState(): AgenticodingState {
 		lastContextPercent: null,
 		pendingHandoff: null,
 		pendingRequestedHandoff: null,
+		pendingRequestedHandoffPrompt: null,
+		pendingRequestedHandoffGeneration: 0,
+		pendingRequestedHandoffRetryProtected: false,
 		childSessions,
 		liveChildSessions,
 		childSessionEpoch: 0,
@@ -111,6 +130,9 @@ export function resetState(state: AgenticodingState): void {
 	state.lastContextPercent = null;
 	state.pendingHandoff = null;
 	state.pendingRequestedHandoff = null;
+	state.pendingRequestedHandoffPrompt = null;
+	state.pendingRequestedHandoffGeneration = 0;
+	state.pendingRequestedHandoffRetryProtected = false;
 	abortAndClearChildSessions(state);
 }
 

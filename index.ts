@@ -21,8 +21,8 @@ import {
 	Text,
 } from "@earendil-works/pi-tui";
 import { createState, resetState, type AgenticodingState } from "./state.js";
-import { CONTEXT_PRIMER } from "./system-prompt.js";
-import { buildNudge, registerWatchdog } from "./watchdog.js";
+import { getContextPrimer } from "./system-prompt.js";
+import { buildManualHandoffNudge, buildNudge, buildQueuedManualHandoffNudge, registerWatchdog } from "./watchdog.js";
 import { registerNotebookTools } from "./notebook/tools.js";
 import { registerNotebookRehydration } from "./notebook/rehydration.js";
 import { registerNotebookTopicTool } from "./notebook/topic-tool.js";
@@ -30,6 +30,7 @@ import { setActiveNotebookTopic } from "./notebook/topic.js";
 import { registerHandoffTool } from "./handoff/tool.js";
 import { registerHandoffCommand } from "./handoff/command.js";
 import { registerHandoffCompaction } from "./handoff/compact.js";
+import { registerAgenticodingSettingsCommand, resolveHandoffAutomaticAvailability } from "./settings.js";
 import { registerSpawnTool } from "./spawn/index.js";
 import {
 	STATUS_KEY_HANDOFF,
@@ -38,6 +39,53 @@ import {
 	updateIndicators,
 } from "./tui.js";
 import { formatPagePreview } from "./notebook/store.js";
+
+function getUserMessageText(message: unknown): string {
+	try {
+		if (typeof message !== "object" || message === null) {
+			return "";
+		}
+		const candidate = message as { role?: unknown; content?: unknown };
+		if (candidate.role !== "user") {
+			return "";
+		}
+		const content = candidate.content;
+		if (typeof content === "string") {
+			return content;
+		}
+		if (!Array.isArray(content)) {
+			return "";
+		}
+		return content
+			.map((part) => {
+				if (typeof part === "object" && part !== null && (part as { type?: unknown }).type === "text") {
+					const text = (part as { text?: unknown }).text;
+					return typeof text === "string" ? text : "";
+				}
+				return "";
+			})
+			.join("");
+	} catch {
+		return "";
+	}
+}
+
+const MANUAL_HANDOFF_REQUEST_ID_PATTERN = /^Manual handoff request id: ([0-9a-fA-F-]{36})$/m;
+
+function getManualHandoffRequestId(prompt: string): string | null {
+	return MANUAL_HANDOFF_REQUEST_ID_PATTERN.exec(prompt)?.[1] ?? null;
+}
+
+function activatePendingRequestedHandoff(state: AgenticodingState, prompt: string, ctx?: ExtensionContext): void {
+	const request = state.pendingRequestedHandoff;
+	const requestId = getManualHandoffRequestId(prompt);
+	if (request?.awaitingAgentTurn && requestId !== null && requestId === request.requestId) {
+		request.awaitingAgentTurn = false;
+		if (ctx?.hasUI && ctx.ui.theme) {
+			ctx.ui.setStatus?.(STATUS_KEY_HANDOFF, ctx.ui.theme.fg("accent", "\uD83E\uDD1D Handoff active"));
+		}
+	}
+}
 
 export default function (pi: ExtensionAPI): void {
 	const state: AgenticodingState = createState();
@@ -55,6 +103,7 @@ export default function (pi: ExtensionAPI): void {
 
 	// ── Register commands ───────────────────────────────────────────
 	registerHandoffCommand(pi, state);
+	registerAgenticodingSettingsCommand(pi);
 
 	// ── /notebook command — interactive page selector ────────────────
 	pi.registerCommand("notebook", {
@@ -63,13 +112,16 @@ export default function (pi: ExtensionAPI): void {
 			const topicArg = args.trim();
 			if (topicArg) {
 				const result = setActiveNotebookTopic(state, topicArg, "human");
+				const availability = await resolveHandoffAutomaticAvailability(ctx);
 				if (ctx.hasUI) {
 					const message = result.boundaryHint
-						? `Active notebook topic changed: ${result.boundaryHint.from} → ${result.boundaryHint.to}. This is a likely task boundary; handoff is recommended before continuing.`
+						? (availability.automaticEnabled
+							? `Active notebook topic changed: ${result.boundaryHint.from} → ${result.boundaryHint.to}. This is a likely task boundary; handoff is recommended before continuing.`
+							: `Active notebook topic changed: ${result.boundaryHint.from} → ${result.boundaryHint.to}. This is a likely task boundary; save notebook findings and tell the operator if a clean transition is needed.`)
 						: `Active notebook topic: ${result.current}`;
 					ctx.ui.notify(message, result.boundaryHint ? "warning" : "info");
 				}
-				updateIndicators(ctx, state);
+				updateIndicators(ctx, state, availability.automaticEnabled);
 				return;
 			}
 			if (!ctx.hasUI) {
@@ -160,19 +212,29 @@ export default function (pi: ExtensionAPI): void {
 
 	// ── before_agent_start: inject context primer + notebook ───────
 	pi.on("before_agent_start", async (event, ctx: ExtensionContext) => {
+		activatePendingRequestedHandoff(state, event.prompt, ctx);
+		const availability = await resolveHandoffAutomaticAvailability(ctx);
+		const manualHandoffActive = state.pendingRequestedHandoff !== null &&
+			!state.pendingRequestedHandoff.awaitingAgentTurn &&
+			!state.pendingRequestedHandoff.toolCalled;
+
 		// Update TUI indicators before each user-prompt agent run
-		updateIndicators(ctx, state);
+		updateIndicators(ctx, state, availability.automaticEnabled);
 
 		const parts: string[] = [event.systemPrompt];
 
 		// Inject context management primer at the end of the system prompt
-		parts.push("\n" + CONTEXT_PRIMER);
+		parts.push("\n" + getContextPrimer(availability.automaticEnabled, manualHandoffActive));
 
 		if (state.activeNotebookTopic) {
 			parts.push(
 				`\n## Active Notebook Topic\n` +
 				`Current topic: \`${state.activeNotebookTopic}\` (${state.activeNotebookTopicSource ?? "unknown"}-set).\n` +
-				`Treat this as the current semantic frame. If new work fits it, prefer spawn for isolated noisy subtasks. If it does not fit it, prefer handoff over dragging stale context forward.`,
+				(manualHandoffActive
+					? `Treat this as context to preserve while following the active manual /handoff request: save durable notebook findings, draft the brief, and call the handoff tool.`
+					: availability.automaticEnabled
+						? `Treat this as the current semantic frame. If new work fits it, prefer spawn for isolated noisy subtasks. If it does not fit it, prefer handoff over dragging stale context forward.`
+						: `Treat this as the current semantic frame. If new work fits it, prefer spawn for isolated noisy subtasks. If it does not fit it, save durable notebook findings, continue inline only if safe, or tell the operator.`),
 			);
 		} else {
 			parts.push(
@@ -201,6 +263,10 @@ export default function (pi: ExtensionAPI): void {
 		return { systemPrompt: parts.join("\n\n") };
 	});
 
+	pi.on("message_start", async (event, ctx?: ExtensionContext) => {
+		activatePendingRequestedHandoff(state, getUserMessageText(event.message), ctx);
+	});
+
 	// ── context: inject primacy-zone nudge before each LLM call ────
 	pi.on("context", async (event, ctx: ExtensionContext) => {
 		const usage = ctx.getContextUsage();
@@ -212,7 +278,18 @@ export default function (pi: ExtensionAPI): void {
 			return;
 		}
 
-		const nudge = buildNudge(state, percent);
+		const availability = await resolveHandoffAutomaticAvailability(ctx);
+		const manualHandoffActive = state.pendingRequestedHandoff !== null &&
+			!state.pendingRequestedHandoff.awaitingAgentTurn &&
+			!state.pendingRequestedHandoff.toolCalled;
+		const manualHandoffQueued = state.pendingRequestedHandoff !== null &&
+			state.pendingRequestedHandoff.awaitingAgentTurn &&
+			!state.pendingRequestedHandoff.toolCalled;
+		const nudge = manualHandoffActive
+			? buildManualHandoffNudge(state, percent)
+			: manualHandoffQueued
+				? buildQueuedManualHandoffNudge(state, percent)
+				: buildNudge(state, percent, availability.automaticEnabled);
 		state.pendingTopicBoundaryHint = null;
 		return {
 			messages: [
@@ -239,19 +316,25 @@ export default function (pi: ExtensionAPI): void {
 				ctx.ui.setWidget(WIDGET_KEY_WARNING, undefined);
 			}
 		}
-		updateIndicators(ctx, state);
+		const availability = await resolveHandoffAutomaticAvailability(ctx);
+		updateIndicators(ctx, state, availability.automaticEnabled);
 	});
 
-	// ── update TUI indicators after each turn ───────────────────────
+	pi.on("turn_start", async (_event, _ctx: ExtensionContext) => {
+		// Manual /handoff follow-up detection is intentionally handled in
+		// before_agent_start by matching the extension-injected user message.
+		// turn_start fires for every internal LLM/tool turn in an already-running
+		// agent loop, so using it here would prematurely consume queued follow-ups.
+	});
+
+	// ── update TUI indicators after each provider turn ───────────────
 	pi.on("turn_end", async (_event, ctx: ExtensionContext) => {
-		// Fallback: clear handoff indicator if the LLM completed a turn
-		// without calling the handoff tool (ignored the direction)
-		if (state.pendingRequestedHandoff && !state.pendingRequestedHandoff.toolCalled) {
-			state.pendingRequestedHandoff = null;
-			if (ctx.hasUI) {
-				ctx.ui.setStatus(STATUS_KEY_HANDOFF, undefined);
-			}
-		}
-		updateIndicators(ctx, state);
+		// Do not clear pending manual /handoff here: a requested handoff run may
+		// span multiple provider turns while the LLM reads/writes notebook pages
+		// before finally calling the handoff tool. Stale requested handoffs are
+		// cleared at agent_end by the watchdog once the whole requested user run
+		// completes without a handoff tool call.
+		const availability = await resolveHandoffAutomaticAvailability(ctx);
+		updateIndicators(ctx, state, availability.automaticEnabled);
 	});
 }
