@@ -200,7 +200,7 @@ export function createNotebookToolDefinitions(
 			? {
 					promptSnippet: "List pages via notebook index",
 					promptGuidelines: [
-						"Scan the index before new work, after handoff, before replanning, or when stuck.",
+						"Scan the index before new work, before replanning, or when stuck.",
 						"Use the index to find relevant grounding pages, then open only those pages with notebook_read.",
 					],
 				}

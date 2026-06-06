@@ -23,6 +23,7 @@ export function clearPendingHandoffCompaction(state: AgenticodingState, ctx: Ext
 	state.pendingHandoff = null;
 	state.pendingRequestedHandoff = null;
 	state.pendingRequestedHandoffPrompt = null;
+	state.pendingRequestedHandoffRetryProtected = false;
 	clearHandoffStatus(ctx);
 }
 
@@ -44,9 +45,11 @@ export function preserveManualHandoffRequestAfterCompactionError(
 			awaitingAgentTurn: false,
 		};
 		state.pendingRequestedHandoffPrompt = prompt;
+		state.pendingRequestedHandoffRetryProtected = true;
 	} else {
 		state.pendingRequestedHandoff = null;
 		state.pendingRequestedHandoffPrompt = null;
+		state.pendingRequestedHandoffRetryProtected = false;
 	}
 	clearHandoffStatus(ctx);
 }
@@ -62,6 +65,7 @@ export async function clearStaleRequestedHandoff(
 	}
 	state.pendingRequestedHandoff = null;
 	state.pendingRequestedHandoffPrompt = null;
+	state.pendingRequestedHandoffRetryProtected = false;
 	if (ctx.hasUI) {
 		ctx.ui.setStatus?.(STATUS_KEY_HANDOFF, undefined);
 	}

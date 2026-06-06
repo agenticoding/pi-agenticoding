@@ -57,6 +57,8 @@ export interface AgenticodingSettingsModel {
 }
 
 const SUPPORTED_HANDOFF_AUTOMATIC_VALUES: HandoffAutomaticValue[] = ["true", "false"];
+const MAX_DEDUPED_AVAILABILITY_WARNINGS = 100;
+const dedupedAvailabilityWarningKeys = new Set<string>();
 const defaultAtomicWriteOperations: AtomicWriteOperations = { writeFile, rename, rm };
 let atomicWriteOperations: AtomicWriteOperations = defaultAtomicWriteOperations;
 
@@ -167,6 +169,37 @@ function notify(ctx: ExtensionContext | undefined, message: string, level: "info
 	}
 }
 
+function notifyAvailabilityWarningOnce(ctx: ExtensionContext | undefined, key: string, message: string): void {
+	if (!ctx?.hasUI) {
+		return;
+	}
+	if (dedupedAvailabilityWarningKeys.has(key)) {
+		return;
+	}
+	dedupedAvailabilityWarningKeys.add(key);
+	if (dedupedAvailabilityWarningKeys.size > MAX_DEDUPED_AVAILABILITY_WARNINGS) {
+		const oldest = dedupedAvailabilityWarningKeys.values().next().value;
+		if (typeof oldest === "string") {
+			dedupedAvailabilityWarningKeys.delete(oldest);
+		}
+	}
+	ctx.ui.notify(message, "warning");
+}
+
+function invalidSourceWarningKey(source: SettingsSourceState): string {
+	return [
+		"invalid-source",
+		source.label,
+		source.path,
+		source.invalidReason ?? "unknown",
+		source.readErrorCode ?? "",
+	].join("\0");
+}
+
+function unsupportedValueWarningKey(source: SettingsSourceState, value: unknown): string {
+	return ["unsupported-value", source.label, source.path, formatSettingValue(value)].join("\0");
+}
+
 function formatSettingValue(value: unknown): string {
 	if (typeof value === "string") return `"${value}"`;
 	try {
@@ -260,10 +293,18 @@ export async function resolveHandoffAutomaticAvailability(ctx: ExtensionContext)
 	const state = await readHandoffSettingsState(ctx.cwd);
 
 	if (state.global.invalid) {
-		notify(ctx, describeInvalidSource(state.global, "falling back to automatic handoff disabled for handoff.automaticEnabled"), "warning");
+		notifyAvailabilityWarningOnce(
+			ctx,
+			invalidSourceWarningKey(state.global),
+			describeInvalidSource(state.global, "falling back to automatic handoff disabled for handoff.automaticEnabled"),
+		);
 	}
 	if (state.project.invalid) {
-		notify(ctx, describeInvalidSource(state.project, "falling back to automatic handoff disabled for handoff.automaticEnabled"), "warning");
+		notifyAvailabilityWarningOnce(
+			ctx,
+			invalidSourceWarningKey(state.project),
+			describeInvalidSource(state.project, "falling back to automatic handoff disabled for handoff.automaticEnabled"),
+		);
 	}
 	if (state.global.invalid || state.project.invalid) {
 		return { automaticEnabled: false, source: "fallback" };
@@ -277,10 +318,11 @@ export async function resolveHandoffAutomaticAvailability(ctx: ExtensionContext)
 		return { automaticEnabled: automatic.value, source: automatic.source };
 	}
 
-	notify(
+	const automaticSource = automatic.source === "project" ? state.project : state.global;
+	notifyAvailabilityWarningOnce(
 		ctx,
+		unsupportedValueWarningKey(automaticSource, automatic.value),
 		`Unsupported handoff.automaticEnabled value ${formatSettingValue(automatic.value)}; supported values are true or false, falling back to automatic handoff disabled.`,
-		"warning",
 	);
 	return { automaticEnabled: false, source: "fallback" };
 }

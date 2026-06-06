@@ -661,6 +661,35 @@ test("handoff automatic setting invalid JSON fails closed with diagnostic", asyn
 	assert.match(projectResult.notifications[0].message, /automatic handoff disabled/);
 });
 
+test("handoff automatic setting diagnostics are deduplicated across repeated availability resolution", async () => {
+	await withIsolatedSettings(async ({ cwd }) => {
+		const projectSettingsPath = join(cwd, ".pi", "settings.json");
+		const notifications: Array<{ message: string; level: string }> = [];
+		const ctx = {
+			cwd,
+			hasUI: true,
+			ui: { notify: (message: string, level: string) => notifications.push({ message, level }) },
+		} as any;
+
+		await writeSettingsFile(projectSettingsPath, { handoff: { automaticEnabled: "surprise" } });
+		assert.equal((await resolveHandoffAutomaticAvailability({ ...ctx, hasUI: false })).automaticEnabled, false);
+		for (let i = 0; i < 3; i++) {
+			const availability = await resolveHandoffAutomaticAvailability(ctx);
+			assert.equal(availability.automaticEnabled, false);
+		}
+		assert.equal(notifications.filter((n) => /Unsupported handoff\.automaticEnabled/.test(n.message)).length, 1);
+
+		await writeFile(projectSettingsPath, "{", "utf8");
+		for (let i = 0; i < 3; i++) {
+			const availability = await resolveHandoffAutomaticAvailability(ctx);
+			assert.equal(availability.automaticEnabled, false);
+		}
+		assert.equal(notifications.filter((n) => /Invalid project settings JSON/.test(n.message)).length, 1);
+		assert.equal(notifications.length, 2);
+		assert.deepEqual(notifications.map((n) => n.level), ["warning", "warning"]);
+	});
+});
+
 test("handoff automatic setting non-ENOENT read errors are distinguished from invalid JSON", async () => {
 	await withIsolatedSettings(async ({ home, cwd }) => {
 		const globalPath = join(home, ".pi", "agent", "settings.json");
@@ -1437,6 +1466,48 @@ test("handoff compaction error preserves active manual request for retry", async
 	assert.deepEqual(state.pendingRequestedHandoff, {
 		direction: "implement auth",
 		enforcementAttempts: 1,
+		toolCalled: false,
+		awaitingAgentTurn: false,
+	});
+	assert.equal(state.pendingRequestedHandoffPrompt, "Handoff direction: implement auth");
+	assert.equal(pi.sentUserMessages.length, 0);
+	assert.equal(statuses.get(STATUS_KEY_HANDOFF), undefined);
+});
+
+test("manual slash handoff preserves retry-ready request after compaction onError followed by agent_end", async () => {
+	const pi = new MockPi();
+	const state = createState();
+	state.pendingRequestedHandoff = { direction: "implement auth", enforcementAttempts: 1, toolCalled: false, awaitingAgentTurn: false };
+	state.pendingRequestedHandoffPrompt = "Handoff direction: implement auth";
+	registerHandoffTool(pi as any, state);
+	registerWatchdog(pi as any, state);
+	let compactOptions: any;
+	const statuses = new Map<string, string | undefined>();
+
+	await pi.tools.get("handoff").execute(
+		"1",
+		{ task: "Goal: continue" },
+		undefined,
+		undefined,
+		{
+			hasUI: true,
+			ui: { setStatus: (key: string, value: string | undefined) => { statuses.set(key, value); } },
+			compact: (options: any) => { compactOptions = options; },
+		},
+	);
+	compactOptions.onError({});
+
+	const [agentEnd] = pi.handlers.get("agent_end")!;
+	await agentEnd({}, {
+		hasUI: true,
+		ui: { setStatus: (key: string, value: string | undefined) => { statuses.set(key, value); } },
+		getContextUsage: () => null,
+	});
+
+	assert.equal(state.pendingHandoff, null);
+	assert.deepEqual(state.pendingRequestedHandoff, {
+		direction: "implement auth",
+		enforcementAttempts: 2,
 		toolCalled: false,
 		awaitingAgentTurn: false,
 	});
@@ -4610,6 +4681,8 @@ test("handoff automatic setting false suppresses handoff calls in primer and wat
 		assert.doesNotMatch(topicTool.promptGuidelines.join("\n"), /handoff|\/handoff/i);
 		const notebookWrite = pi.tools.get("notebook_write")!;
 		assert.doesNotMatch(notebookWrite.promptGuidelines.join("\n"), /handoff|\/handoff/i);
+		const notebookIndex = pi.tools.get("notebook_index")!;
+		assert.doesNotMatch(notebookIndex.promptGuidelines.join("\n"), /handoff|\/handoff|after handoff/i);
 
 		const record = { statuses: new Map<string, string | undefined>(), widgets: new Map<string, string[] | undefined>() };
 		updateIndicators(makeTUICtx({ percent: 70, record }), { ...createState(), activeNotebookTopic: "oauth" }, false);

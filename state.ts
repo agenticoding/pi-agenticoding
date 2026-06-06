@@ -46,6 +46,12 @@ export interface AgenticodingState {
 	pendingRequestedHandoffPrompt: string | null;
 
 	/**
+	 * One-shot grace after compaction onError restores a manual request. Prevents
+	 * same failed turn cleanup from treating the retry-ready request as stale.
+	 */
+	pendingRequestedHandoffRetryProtected: boolean;
+
+	/**
 	 * Published child agent sessions keyed by toolCallId.
 	 * Lifecycle: executeSpawn publishes → renderSpawnResult claims via get+delete.
 	 * This is only the render handoff queue, not the full live-session registry.
@@ -84,6 +90,7 @@ export function createState(): AgenticodingState {
 		pendingHandoff: null,
 		pendingRequestedHandoff: null,
 		pendingRequestedHandoffPrompt: null,
+		pendingRequestedHandoffRetryProtected: false,
 		childSessions,
 		liveChildSessions,
 		childSessionEpoch: 0,
@@ -118,6 +125,7 @@ export function resetState(state: AgenticodingState): void {
 	state.pendingHandoff = null;
 	state.pendingRequestedHandoff = null;
 	state.pendingRequestedHandoffPrompt = null;
+	state.pendingRequestedHandoffRetryProtected = false;
 	abortAndClearChildSessions(state);
 }
 

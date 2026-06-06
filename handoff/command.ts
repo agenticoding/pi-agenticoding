@@ -20,6 +20,7 @@ function clearPendingManualHandoffStartFailure(
 	}
 	state.pendingRequestedHandoff = null;
 	state.pendingRequestedHandoffPrompt = null;
+	state.pendingRequestedHandoffRetryProtected = false;
 	if (ctx.hasUI) {
 		ctx.ui?.setStatus?.(STATUS_KEY_HANDOFF, undefined);
 		ctx.ui?.notify?.(
@@ -51,6 +52,7 @@ export function registerHandoffCommand(pi: ExtensionAPI, state: AgenticodingStat
 			};
 			state.pendingRequestedHandoff = pendingRequest;
 			state.pendingRequestedHandoffPrompt = prompt;
+			state.pendingRequestedHandoffRetryProtected = false;
 
 			// Show live progress indicator in footer
 			if (ctx.hasUI && ctx.ui.theme) {

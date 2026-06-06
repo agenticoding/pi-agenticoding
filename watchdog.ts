@@ -93,7 +93,11 @@ export function registerWatchdog(pi: ExtensionAPI, state: AgenticodingState): vo
 		if (requestedHandoff) {
 			requestedHandoff.enforcementAttempts += 1;
 			if (!requestedHandoff.toolCalled && !requestedHandoff.awaitingAgentTurn) {
-				await clearStaleRequestedHandoff(pi, state, ctx);
+				if (state.pendingRequestedHandoffRetryProtected) {
+					state.pendingRequestedHandoffRetryProtected = false;
+				} else {
+					await clearStaleRequestedHandoff(pi, state, ctx);
+				}
 			}
 		}
 
