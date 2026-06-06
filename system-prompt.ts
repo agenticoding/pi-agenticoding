@@ -5,9 +5,16 @@
  * Teaches the LLM about spawn, notebook, and handoff primitives.
  */
 
-function buildContextPrimer(handoffAutomaticEnabled: boolean): string {
-	const pivotGuidance = handoffAutomaticEnabled
-		? `### Handoff — distilled next task
+function buildContextPrimer(handoffAutomaticEnabled: boolean, manualHandoffActive = false): string {
+	const pivotGuidance = manualHandoffActive
+		? `### Manual handoff — explicit operator request active
+A manual /handoff request from the operator is active for this generated turn.
+Save any durable reusable knowledge that aligns with the request to the
+notebook first, then draft the handoff brief and call the handoff tool. Do not
+replace the operator-requested handoff with ordinary automatic-disabled
+clean-transition fallback guidance.`
+		: handoffAutomaticEnabled
+			? `### Handoff — distilled next task
 When the job changes, or when context is noisy past the ~30% heuristic, use
 handoff to finish extracting what matters from the current context before the
 cut. Save durable reusable knowledge to the notebook first, then draft a
@@ -21,7 +28,7 @@ The next context should use the notebook for grounding and the handoff brief
 for direction. Reference notebook pages by name; do not duplicate their content
 in the brief. The handoff should help the next context start well without
 re-deriving what you already learned.`
-		: `### Context pivoting when automatic handoff is disabled
+			: `### Context pivoting when automatic handoff is disabled
 Automatic context compaction is guarded in normal agent turns. The handoff
 tool is disabled for normal turns; use it only after an explicit manual
 handoff request. At job boundaries or when context gets noisy, save durable
@@ -29,21 +36,29 @@ reusable knowledge to the notebook first. Then either continue inline if it is
 still safe and clear, or tell the operator that a clean-context transition
 would help and summarize the next direction they should provide.`;
 
-	const topicGuidance = handoffAutomaticEnabled
-		? `If the current work still fits that topic, prefer spawn for isolated noisy
+	const topicGuidance = manualHandoffActive
+		? `A manual /handoff request is active in this generated turn. Use the topic as
+context to preserve, save durable notebook findings, draft the brief, and call
+the handoff tool for the operator-requested transition.`
+		: handoffAutomaticEnabled
+			? `If the current work still fits that topic, prefer spawn for isolated noisy
 subtasks so the parent stays focused. If the work no longer fits that topic,
 prefer handoff over dragging stale context forward. After handoff, assign a
 fresh topic again in the next context.`
-		: `If the current work still fits that topic, prefer spawn for isolated noisy
+			: `If the current work still fits that topic, prefer spawn for isolated noisy
 subtasks so the parent stays focused. If the work no longer fits that topic,
 save durable findings, continue inline only if safe, or tell the operator what
 clean-context direction is needed.`;
 
-	const jobBoundaryRule = handoffAutomaticEnabled
-		? `- Call handoff at job boundaries: research→execution, planning→execution
+	const jobBoundaryRule = manualHandoffActive
+		? `- Complete the active manual /handoff request for this generated turn
+- Save durable findings first, then call handoff with the distilled brief
+- After handoff, fetch only the pages you need and assign a fresh topic again`
+		: handoffAutomaticEnabled
+			? `- Call handoff at job boundaries: research→execution, planning→execution
 - Use handoff to pass the distilled next task and immediate starting state
 - After handoff, fetch only the pages you need and assign a fresh topic again`
-		: `- At job boundaries, save durable findings and avoid dragging stale context forward
+			: `- At job boundaries, save durable findings and avoid dragging stale context forward
 - If continuing inline is unsafe, tell the operator the clean next direction clearly
 - In any fresh context, fetch only the pages you need and assign a fresh topic again`;
 
@@ -51,7 +66,7 @@ clean-context direction is needed.`;
 ## Context management
 
 One context, one job. Research is one job. Planning is one job. Execution
-is one job. ${handoffAutomaticEnabled ? "When the job changes, call the handoff tool." : "When the job changes, save durable findings and keep the next direction explicit."}
+is one job. ${manualHandoffActive ? "For this generated turn, complete the active manual /handoff request." : handoffAutomaticEnabled ? "When the job changes, call the handoff tool." : "When the job changes, save durable findings and keep the next direction explicit."}
 
 ### The primacy-zone heuristic
 You use long context unevenly. Performance can degrade as context grows —
@@ -103,6 +118,6 @@ ${jobBoundaryRule}
 
 export const CONTEXT_PRIMER = buildContextPrimer(true);
 
-export function getContextPrimer(handoffAutomaticEnabled: boolean): string {
-	return buildContextPrimer(handoffAutomaticEnabled);
+export function getContextPrimer(handoffAutomaticEnabled: boolean, manualHandoffActive = false): string {
+	return buildContextPrimer(handoffAutomaticEnabled, manualHandoffActive);
 }

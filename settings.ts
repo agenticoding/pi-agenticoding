@@ -377,6 +377,10 @@ export async function writeGlobalHandoffAutomaticEnabled(
 	}
 
 	const existingHandoff = getOwnSetting(settings, "handoff");
+	if (existingHandoff !== undefined && !isPlainObject(existingHandoff)) {
+		notify(ctx, `Invalid global settings JSON at ${path}; handoff must be an object when present, not writing handoff.automaticEnabled to avoid clobbering it.`, "error");
+		return false;
+	}
 	const handoff = isPlainObject(existingHandoff) ? cloneSettingsObject(existingHandoff) : createSettingsObject();
 	setOwnSetting(handoff, "automaticEnabled", booleanValue);
 	setOwnSetting(settings, "handoff", handoff);

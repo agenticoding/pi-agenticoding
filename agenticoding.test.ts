@@ -1406,6 +1406,33 @@ test("agenticoding settings TUI handles invalid JSON policies for automatic hand
 	});
 });
 
+test("agenticoding settings TUI refuses to clobber malformed global handoff parent on save", async () => {
+	await withIsolatedSettings(async ({ home, cwd }) => {
+		const globalPath = join(home, ".pi", "agent", "settings.json");
+		const original = JSON.stringify({ packages: ["keep"], handoff: null });
+		await writeSettingsFile(globalPath, original);
+		const notifications: Array<{ message: string; level: string }> = [];
+		const ctx = {
+			cwd,
+			hasUI: true,
+			ui: { notify: (message: string, level: string) => notifications.push({ message, level }) },
+		} as any;
+
+		const state = await readHandoffSettingsState(cwd);
+		assert.equal(state.global.invalid, true);
+		assert.equal(state.global.invalidReason, "malformed-handoff");
+		const model = await buildAgenticodingSettingsModel(ctx);
+		assert.equal(model.globalWriteBlocked, true);
+
+		assert.equal(await writeGlobalHandoffAutomaticEnabled("false", ctx), false);
+		assert.equal(await readFile(globalPath, "utf8"), original);
+		assert.equal(notifications.length, 1);
+		assert.equal(notifications[0].level, "error");
+		assert.match(notifications[0].message, /handoff must be an object when present/);
+		assert.match(notifications[0].message, /not writing handoff\.automaticEnabled/);
+	});
+});
+
 test("agenticoding settings write path refuses non-ENOENT read failures without clobbering global settings", async () => {
 	await withIsolatedSettings(async ({ home, cwd }) => {
 		const globalPath = join(home, ".pi", "agent", "settings.json");
@@ -4881,6 +4908,45 @@ test("handoff automatic setting false suppresses handoff calls in primer and wat
 		});
 		assert.doesNotMatch(writeRecord.widgets.get(WIDGET_KEY_WARNING)?.join("\n") ?? "", /handoff|\/handoff/i);
 	});
+});
+
+test("automatic disabled active manual generated turn overrides disabled primer and topic guidance", async () => {
+	await withIsolatedSettings(async ({ cwd }) => {
+		await writeSettingsFile(join(cwd, ".pi", "settings.json"), { handoff: { automaticEnabled: false } });
+		const pi = new MockPi();
+		registerAgenticoding(pi as any);
+		await pi.commands.get("notebook")!.handler("oauth", { cwd, hasUI: false, getContextUsage: () => null });
+		await pi.commands.get("handoff")!.handler("implement auth", { cwd, hasUI: false, isIdle: () => true });
+
+		const [beforeAgentStart] = pi.handlers.get("before_agent_start")!;
+		const result = await beforeAgentStart(
+			{ prompt: pi.sentUserMessages[0].content, systemPrompt: "Base system prompt." },
+			{ cwd, hasUI: false } as any,
+		);
+
+		assert.match(result.systemPrompt, /Manual handoff.*explicit operator request active/i);
+		assert.match(result.systemPrompt, /active manual \/handoff request/i);
+		assert.match(result.systemPrompt, /call the handoff tool/i);
+		assert.match(result.systemPrompt, /Current topic: `oauth`/);
+		assert.doesNotMatch(result.systemPrompt, /continue inline only if safe|tell the operator/i);
+
+		const [contextHandler] = pi.handlers.get("context")!;
+		const lowContext = await contextHandler({ messages: [] }, { cwd, hasUI: false, getContextUsage: () => ({ percent: 20 }) } as any);
+		assert.equal(lowContext, undefined, "low context emits no watchdog nudge, so before_agent_start guidance must carry the manual instruction");
+	});
+});
+
+test("handoff automatic setting false uses disabled topic-boundary watchdog guidance", () => {
+	const nudge = buildNudge({
+		activeNotebookTopic: "billing",
+		pendingTopicBoundaryHint: { from: "oauth", to: "billing", source: "human" },
+	}, 20, false);
+
+	assert.match(nudge, /Notebook topic changed from oauth to billing/);
+	assert.match(nudge, /Save durable findings to the\s+notebook/i);
+	assert.match(nudge, /continue inline/i);
+	assert.match(nudge, /tell the operator/i);
+	assert.doesNotMatch(nudge, /call handoff|call the handoff tool|prefer .*handoff|\/handoff/i);
 });
 
 test("automatic disabled high context warning honors active manual handoff request", () => {

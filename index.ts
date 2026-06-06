@@ -214,6 +214,9 @@ export default function (pi: ExtensionAPI): void {
 	pi.on("before_agent_start", async (event, ctx: ExtensionContext) => {
 		activatePendingRequestedHandoff(state, event.prompt, ctx);
 		const availability = await resolveHandoffAutomaticAvailability(ctx);
+		const manualHandoffActive = state.pendingRequestedHandoff !== null &&
+			!state.pendingRequestedHandoff.awaitingAgentTurn &&
+			!state.pendingRequestedHandoff.toolCalled;
 
 		// Update TUI indicators before each user-prompt agent run
 		updateIndicators(ctx, state, availability.automaticEnabled);
@@ -221,15 +224,17 @@ export default function (pi: ExtensionAPI): void {
 		const parts: string[] = [event.systemPrompt];
 
 		// Inject context management primer at the end of the system prompt
-		parts.push("\n" + getContextPrimer(availability.automaticEnabled));
+		parts.push("\n" + getContextPrimer(availability.automaticEnabled, manualHandoffActive));
 
 		if (state.activeNotebookTopic) {
 			parts.push(
 				`\n## Active Notebook Topic\n` +
 				`Current topic: \`${state.activeNotebookTopic}\` (${state.activeNotebookTopicSource ?? "unknown"}-set).\n` +
-				(availability.automaticEnabled
-					? `Treat this as the current semantic frame. If new work fits it, prefer spawn for isolated noisy subtasks. If it does not fit it, prefer handoff over dragging stale context forward.`
-					: `Treat this as the current semantic frame. If new work fits it, prefer spawn for isolated noisy subtasks. If it does not fit it, save durable notebook findings, continue inline only if safe, or tell the operator.`),
+				(manualHandoffActive
+					? `Treat this as context to preserve while following the active manual /handoff request: save durable notebook findings, draft the brief, and call the handoff tool.`
+					: availability.automaticEnabled
+						? `Treat this as the current semantic frame. If new work fits it, prefer spawn for isolated noisy subtasks. If it does not fit it, prefer handoff over dragging stale context forward.`
+						: `Treat this as the current semantic frame. If new work fits it, prefer spawn for isolated noisy subtasks. If it does not fit it, save durable notebook findings, continue inline only if safe, or tell the operator.`),
 			);
 		} else {
 			parts.push(
