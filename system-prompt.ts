@@ -11,8 +11,8 @@ function buildContextPrimer(handoffAutomaticEnabled: boolean, manualHandoffActiv
 A manual /handoff request from the operator is active for this generated turn.
 Save any durable reusable knowledge that aligns with the request to the
 notebook first, then draft the handoff brief and call the handoff tool. Do not
-replace the operator-requested handoff with ordinary automatic-disabled
-clean-transition fallback guidance.`
+replace the operator-requested handoff with ordinary automatic-disabled inline
+continuation guidance.`
 		: handoffAutomaticEnabled
 			? `### Handoff — distilled next task
 When the job changes, or when context is noisy past the ~30% heuristic, use

@@ -34,7 +34,21 @@ export function buildManualHandoffNudge(state: Pick<AgenticodingState, "activeNo
 	return `${formatContextLead(percent)}
 ${boundaryText}
 ${topicText}
-Follow the user's manual /handoff direction: save durable findings to the notebook, draft the handoff brief, and call the handoff tool. Do not replace this with normal disabled-mode clean-transition guidance.`;
+Follow the user's manual /handoff direction: save durable findings to the notebook, draft the handoff brief, and call the handoff tool. Do not replace this with normal disabled-mode inline continuation guidance.`;
+}
+
+export function buildQueuedManualHandoffNudge(state: Pick<AgenticodingState, "activeNotebookTopic" | "pendingTopicBoundaryHint">, percent: number | null): string {
+	const topic = state.activeNotebookTopic;
+	const boundary = state.pendingTopicBoundaryHint;
+	const boundaryText = boundary
+		? `Notebook topic changed from ${boundary.from ?? "(unset)"} to ${boundary.to}. Preserve useful context for the queued manual handoff, but do not call the handoff tool from this current turn.`
+		: "An explicit manual /handoff request is queued for its generated user turn.";
+	const topicText = topic ? `Active notebook topic: ${topic}.` : "No active notebook topic is set.";
+
+	return `${formatContextLead(percent)}
+${boundaryText}
+${topicText}
+A manual /handoff request is waiting for the generated user turn that carries its request id. The current turn is not authorized to satisfy it: save durable findings if useful, continue only if safe, and do not call the handoff tool until that generated turn starts.`;
 }
 
 export function buildNudge(state: Pick<AgenticodingState, "activeNotebookTopic" | "pendingTopicBoundaryHint">, percent: number | null, handoffAutomaticEnabled = true): string {

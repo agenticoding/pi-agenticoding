@@ -8,7 +8,7 @@ import { Text } from "@earendil-works/pi-tui";
 import { registerHandoffCommand } from "./handoff/command.js";
 import { registerHandoffTool } from "./handoff/tool.js";
 import { registerHandoffCompaction } from "./handoff/compact.js";
-import { buildNudge, registerWatchdog } from "./watchdog.js";
+import { buildNudge, buildQueuedManualHandoffNudge, registerWatchdog } from "./watchdog.js";
 import { createState, resetState } from "./state.js";
 import {
 	buildChildToolNames,
@@ -33,7 +33,7 @@ import {
 	setSettingsAtomicWriteOperationsForTest,
 	writeGlobalHandoffAutomaticEnabled,
 } from "./settings.js";
-import { CONTEXT_PRIMER } from "./system-prompt.js";
+import { CONTEXT_PRIMER, getContextPrimer } from "./system-prompt.js";
 import { STATUS_KEY_HANDOFF, STATUS_KEY_TOPIC, WIDGET_KEY_WARNING, updateIndicators } from "./tui.js";
 
 // Safety net: reset module-level mutable state after all tests.
@@ -710,6 +710,41 @@ test("handoff automatic setting diagnostics are deduplicated across repeated ava
 	});
 });
 
+test("handoff automatic setting diagnostics re-emit after fixed settings break again", async () => {
+	await withIsolatedSettings(async ({ cwd }) => {
+		const projectSettingsPath = join(cwd, ".pi", "settings.json");
+		const notifications: Array<{ message: string; level: string }> = [];
+		const ctx = {
+			cwd,
+			hasUI: true,
+			ui: { notify: (message: string, level: string) => notifications.push({ message, level }) },
+		} as any;
+
+		await writeSettingsFile(projectSettingsPath, { handoff: { automaticEnabled: "surprise" } });
+		assert.equal((await resolveHandoffAutomaticAvailability(ctx)).automaticEnabled, false);
+		assert.equal(notifications.filter((n) => /Unsupported handoff\.automaticEnabled/.test(n.message)).length, 1);
+
+		await writeSettingsFile(projectSettingsPath, { handoff: { automaticEnabled: true } });
+		assert.equal((await resolveHandoffAutomaticAvailability(ctx)).automaticEnabled, true);
+
+		await writeSettingsFile(projectSettingsPath, { handoff: { automaticEnabled: "surprise" } });
+		assert.equal((await resolveHandoffAutomaticAvailability(ctx)).automaticEnabled, false);
+		assert.equal(notifications.filter((n) => /Unsupported handoff\.automaticEnabled/.test(n.message)).length, 2);
+
+		await writeSettingsFile(projectSettingsPath, { handoff: { automaticEnabled: false } });
+		assert.equal((await resolveHandoffAutomaticAvailability(ctx)).automaticEnabled, false);
+		await writeFile(projectSettingsPath, "{", "utf8");
+		assert.equal((await resolveHandoffAutomaticAvailability(ctx)).automaticEnabled, false);
+		assert.equal(notifications.filter((n) => /Invalid project settings JSON/.test(n.message)).length, 1);
+
+		await writeSettingsFile(projectSettingsPath, { handoff: { automaticEnabled: true } });
+		assert.equal((await resolveHandoffAutomaticAvailability(ctx)).automaticEnabled, true);
+		await writeFile(projectSettingsPath, "{", "utf8");
+		assert.equal((await resolveHandoffAutomaticAvailability(ctx)).automaticEnabled, false);
+		assert.equal(notifications.filter((n) => /Invalid project settings JSON/.test(n.message)).length, 2);
+	});
+});
+
 test("handoff automatic setting non-ENOENT read errors are distinguished from invalid JSON", async () => {
 	await withIsolatedSettings(async ({ home, cwd }) => {
 		const globalPath = join(home, ".pi", "agent", "settings.json");
@@ -1102,6 +1137,43 @@ test("stale automatic handoff compaction error does not clear newer queued manua
 		assert.equal(state.pendingRequestedHandoff?.awaitingAgentTurn, true);
 		assert.match(statuses.at(-1) ?? "", /Handoff queued/);
 	});
+});
+
+test("manual slash handoff stale pending compaction does not clear newer queued request", async () => {
+	const pi = new MockPi();
+	const state = createState();
+	state.pendingRequestedHandoffGeneration = 2;
+	state.pendingHandoff = {
+		task: "Goal: old handoff",
+		source: "tool",
+		manualRequestGeneration: 1,
+		manualRequestId: "old-request",
+	};
+	const newerRequest = {
+		requestId: "new-request",
+		direction: "implement auth",
+		enforcementAttempts: 0,
+		toolCalled: false,
+		awaitingAgentTurn: true,
+	};
+	state.pendingRequestedHandoff = newerRequest;
+	state.pendingRequestedHandoffPrompt = "Handoff direction: implement auth";
+	state.pendingRequestedHandoffRetryProtected = true;
+	registerHandoffCompaction(pi as any, state);
+	const statuses: Array<string | undefined> = [];
+
+	const [handler] = pi.handlers.get("session_before_compact")!;
+	const result = await handler(
+		{ preparation: { tokensBefore: 1 }, branchEntries: [{ id: "leaf-1" }] },
+		{ hasUI: true, ui: { setStatus: (_key: string, status: string | undefined) => statuses.push(status) } },
+	);
+
+	assert.equal(state.pendingHandoff, null);
+	assert.strictEqual(state.pendingRequestedHandoff, newerRequest);
+	assert.equal(state.pendingRequestedHandoffPrompt, "Handoff direction: implement auth");
+	assert.equal(state.pendingRequestedHandoffRetryProtected, true);
+	assert.deepEqual(statuses, []);
+	assert.equal(result.compaction.summary, "Goal: old handoff");
 });
 
 test("manual slash handoff compaction error does not overwrite newer same-direction request", async () => {
@@ -1541,6 +1613,31 @@ test("agenticoding settings atomic save preserves original settings when rename 
 		const files = await readdir(dirname(globalPath));
 		assert.equal(files.some(file => file.startsWith(".settings.json.") && file.endsWith(".tmp")), false);
 		assert.deepEqual(notifications, []);
+	});
+});
+
+test("agenticoding settings atomic save writes temp file with preserved restrictive mode", async () => {
+	await withIsolatedSettings(async ({ home, cwd }) => {
+		const globalPath = join(home, ".pi", "agent", "settings.json");
+		const writeModes: number[] = [];
+		const ctx = { cwd, hasUI: false } as any;
+
+		setSettingsAtomicWriteOperationsForTest({
+			writeFile: (async (pathArg: string, contents: string, options: any) => {
+				writeModes.push(options?.mode);
+				await writeFile(pathArg, contents, options);
+			}) as any,
+		});
+		try {
+			await writeGlobalHandoffAutomaticEnabled("false", ctx);
+			await chmod(globalPath, 0o640);
+			await writeGlobalHandoffAutomaticEnabled("true", ctx);
+		} finally {
+			setSettingsAtomicWriteOperationsForTest(null);
+		}
+
+		assert.deepEqual(writeModes.map((mode) => mode & 0o777), [0o600, 0o640]);
+		assert.equal((await stat(globalPath)).mode & 0o777, 0o640);
 	});
 });
 
@@ -4928,12 +5025,20 @@ test("automatic disabled active manual generated turn overrides disabled primer 
 		assert.match(result.systemPrompt, /active manual \/handoff request/i);
 		assert.match(result.systemPrompt, /call the handoff tool/i);
 		assert.match(result.systemPrompt, /Current topic: `oauth`/);
-		assert.doesNotMatch(result.systemPrompt, /continue inline only if safe|tell the operator/i);
+		assert.doesNotMatch(result.systemPrompt, /continue inline only if safe|tell the operator|clean-transition fallback|fallback guidance/i);
 
 		const [contextHandler] = pi.handlers.get("context")!;
 		const lowContext = await contextHandler({ messages: [] }, { cwd, hasUI: false, getContextUsage: () => ({ percent: 20 }) } as any);
 		assert.equal(lowContext, undefined, "low context emits no watchdog nudge, so before_agent_start guidance must carry the manual instruction");
 	});
+});
+
+test("automatic disabled active manual primer has no clean-transition footer contradiction", () => {
+	const primer = getContextPrimer(false, true);
+
+	assert.match(primer, /Manual handoff.*explicit operator request active/i);
+	assert.match(primer, /call the handoff tool/i);
+	assert.doesNotMatch(primer, /continue inline only if safe|tell the operator|clean-transition fallback|fallback guidance/i);
 });
 
 test("handoff automatic setting false uses disabled topic-boundary watchdog guidance", () => {
@@ -4947,6 +5052,34 @@ test("handoff automatic setting false uses disabled topic-boundary watchdog guid
 	assert.match(nudge, /continue inline/i);
 	assert.match(nudge, /tell the operator/i);
 	assert.doesNotMatch(nudge, /call handoff|call the handoff tool|prefer .*handoff|\/handoff/i);
+});
+
+test("automatic enabled watchdog distinguishes queued manual handoff request", async () => {
+	await withIsolatedSettings(async ({ cwd }) => {
+		const pi = new MockPi();
+		registerAgenticoding(pi as any);
+		await pi.commands.get("handoff")!.handler("implement auth", { cwd, hasUI: false, isIdle: () => false });
+		const [contextHandler] = pi.handlers.get("context")!;
+
+		const result = await contextHandler({ messages: [] }, {
+			cwd,
+			hasUI: false,
+			getContextUsage: () => ({ percent: 70 }),
+		} as any);
+		const nudge = result.messages.at(-1).content;
+
+		assert.match(nudge, /manual \/handoff request is waiting/i);
+		assert.match(nudge, /do not call the handoff tool/i);
+		assert.doesNotMatch(nudge, /prefer (?:a deliberate )?handoff|draft .*brief.*call/i);
+	});
+
+	const boundaryNudge = buildQueuedManualHandoffNudge({
+		activeNotebookTopic: "billing",
+		pendingTopicBoundaryHint: { from: "oauth", to: "billing", source: "human" },
+	}, 20);
+	assert.match(boundaryNudge, /queued manual handoff/i);
+	assert.match(boundaryNudge, /do not call the handoff tool/i);
+	assert.doesNotMatch(boundaryNudge, /prefer (?:a deliberate )?handoff|draft .*brief.*call/i);
 });
 
 test("automatic disabled high context warning honors active manual handoff request", () => {

@@ -86,7 +86,13 @@ export function registerHandoffTool(
 				: null;
 			const retryableManualRequestPrompt = activeManualRequest ? state.pendingRequestedHandoffPrompt : null;
 			const retryableManualRequestGeneration = activeManualRequest ? state.pendingRequestedHandoffGeneration : null;
-			state.pendingHandoff = { task: enrichedTask, source: "tool", manualRequestGeneration: retryableManualRequestGeneration };
+			const retryableManualRequestId = activeManualRequest ? activeManualRequest.requestId : null;
+			state.pendingHandoff = {
+				task: enrichedTask,
+				source: "tool",
+				manualRequestGeneration: retryableManualRequestGeneration,
+				manualRequestId: retryableManualRequestId,
+			};
 			if (activeManualRequest) {
 				activeManualRequest.toolCalled = true;
 			}

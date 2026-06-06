@@ -23,13 +23,29 @@ export function registerHandoffCompaction(pi: ExtensionAPI, state: AgenticodingS
 		}
 
 		state.pendingHandoff = null;
-		state.pendingRequestedHandoff = null;
-		state.pendingRequestedHandoffPrompt = null;
-		state.pendingRequestedHandoffRetryProtected = false;
+		const manualRequestGeneration = pending.manualRequestGeneration ?? null;
+		const manualRequestId = pending.manualRequestId ?? null;
+		const ownsPendingManualRequest = state.pendingRequestedHandoff !== null &&
+			manualRequestGeneration !== null &&
+			manualRequestGeneration === state.pendingRequestedHandoffGeneration &&
+			manualRequestId !== null &&
+			manualRequestId === state.pendingRequestedHandoff.requestId;
+		const legacyToolCalledRequest = state.pendingRequestedHandoff !== null &&
+			manualRequestGeneration === null &&
+			manualRequestId === null &&
+			state.pendingRequestedHandoff.toolCalled &&
+			!state.pendingRequestedHandoff.awaitingAgentTurn;
+		const shouldClearManualState = state.pendingRequestedHandoff === null || ownsPendingManualRequest || legacyToolCalledRequest;
+		if (shouldClearManualState) {
+			state.pendingRequestedHandoff = null;
+			state.pendingRequestedHandoffPrompt = null;
+			state.pendingRequestedHandoffRetryProtected = false;
+		}
 		clearActiveNotebookTopic(state);
 
-		// Clear the handoff progress indicator now that compaction is consuming it
-		if (ctx.hasUI) {
+		// Clear the handoff progress indicator only when this compaction owns the
+		// visible manual request state; newer queued requests keep their status.
+		if (shouldClearManualState && ctx.hasUI) {
 			ctx.ui.setStatus(STATUS_KEY_HANDOFF, undefined);
 		}
 

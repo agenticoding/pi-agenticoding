@@ -84,7 +84,10 @@ async function writeFileAtomically(path: string, contents: string): Promise<void
 		.then((stats) => stats.mode & 0o7777)
 		.catch((error) => getErrorCode(error) === "ENOENT" ? undefined : Promise.reject(error));
 	try {
-		await atomicWriteOperations.writeFile(tempPath, contents, "utf8");
+		await atomicWriteOperations.writeFile(tempPath, contents, {
+			encoding: "utf8",
+			mode: existingMode ?? 0o600,
+		});
 		if (existingMode !== undefined) {
 			await chmod(tempPath, existingMode);
 		}
@@ -206,6 +209,23 @@ function unsupportedValueWarningKey(source: SettingsSourceState, value: unknown)
 	return ["unsupported-value", source.label, source.path, formatSettingValue(value)].join("\0");
 }
 
+function forgetAvailabilityWarningKeysForSource(source: SettingsSourceState): void {
+	const prefix = `\0${source.label}\0${source.path}\0`;
+	for (const key of [...dedupedAvailabilityWarningKeys]) {
+		if (key.includes(prefix)) {
+			dedupedAvailabilityWarningKeys.delete(key);
+		}
+	}
+}
+
+function resetAvailabilityWarningDedupeForValidSources(state: HandoffSettingsState): void {
+	for (const source of [state.global, state.project]) {
+		if (!source.invalid && (source.automaticEnabled === undefined || typeof source.automaticEnabled === "boolean")) {
+			forgetAvailabilityWarningKeysForSource(source);
+		}
+	}
+}
+
 function formatSettingValue(value: unknown): string {
 	try {
 		const json = JSON.stringify(value);
@@ -307,6 +327,7 @@ function resolveFromState(state: HandoffSettingsState): HandoffAutomaticAvailabi
 
 export async function resolveHandoffAutomaticAvailability(ctx: ExtensionContext): Promise<HandoffAutomaticAvailability> {
 	const state = await readHandoffSettingsState(ctx.cwd);
+	resetAvailabilityWarningDedupeForValidSources(state);
 
 	if (state.global.invalid) {
 		notifyAvailabilityWarningOnce(

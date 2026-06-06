@@ -31,7 +31,7 @@ export interface AgenticodingState {
 	lastContextPercent: number | null;
 
 	/** Handoff task queued by the tool until the compaction hook consumes it. */
-	pendingHandoff: { task: string; source: "tool"; manualRequestGeneration?: number | null } | null;
+	pendingHandoff: { task: string; source: "tool"; manualRequestGeneration?: number | null; manualRequestId?: string | null } | null;
 
 	/** User-requested handoff that must result in a real tool-driven compaction. */
 	pendingRequestedHandoff: {

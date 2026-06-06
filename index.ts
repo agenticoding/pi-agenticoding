@@ -22,7 +22,7 @@ import {
 } from "@earendil-works/pi-tui";
 import { createState, resetState, type AgenticodingState } from "./state.js";
 import { getContextPrimer } from "./system-prompt.js";
-import { buildManualHandoffNudge, buildNudge, registerWatchdog } from "./watchdog.js";
+import { buildManualHandoffNudge, buildNudge, buildQueuedManualHandoffNudge, registerWatchdog } from "./watchdog.js";
 import { registerNotebookTools } from "./notebook/tools.js";
 import { registerNotebookRehydration } from "./notebook/rehydration.js";
 import { registerNotebookTopicTool } from "./notebook/topic-tool.js";
@@ -282,9 +282,14 @@ export default function (pi: ExtensionAPI): void {
 		const manualHandoffActive = state.pendingRequestedHandoff !== null &&
 			!state.pendingRequestedHandoff.awaitingAgentTurn &&
 			!state.pendingRequestedHandoff.toolCalled;
+		const manualHandoffQueued = state.pendingRequestedHandoff !== null &&
+			state.pendingRequestedHandoff.awaitingAgentTurn &&
+			!state.pendingRequestedHandoff.toolCalled;
 		const nudge = manualHandoffActive
 			? buildManualHandoffNudge(state, percent)
-			: buildNudge(state, percent, availability.automaticEnabled);
+			: manualHandoffQueued
+				? buildQueuedManualHandoffNudge(state, percent)
+				: buildNudge(state, percent, availability.automaticEnabled);
 		state.pendingTopicBoundaryHint = null;
 		return {
 			messages: [
