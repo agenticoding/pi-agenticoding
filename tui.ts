@@ -58,13 +58,16 @@ export function updateIndicators(ctx: ExtensionContext, state: AgenticodingState
 
 	// High-context warning widget (above editor)
 	if (usage && usage.percent !== null && usage.percent >= 70) {
-		const warning = handoffAutomaticEnabled
-			? (state.activeNotebookTopic
-				? `Context at ${Math.round(usage.percent)}% — use topic fit: same topic → spawn, different topic → handoff`
-				: `Context at ${Math.round(usage.percent)}% — no active topic; handoff soon unless you can assign one cleanly`)
-			: (state.activeNotebookTopic
-				? `Context at ${Math.round(usage.percent)}% — use topic fit: same topic → spawn, different topic → save notes and tell operator if a clean transition is needed`
-				: `Context at ${Math.round(usage.percent)}% — no active topic; save notebook findings and continue inline only if safe`);
+		const manualHandoffRequest = state.pendingRequestedHandoff !== null && !state.pendingRequestedHandoff.toolCalled;
+		const warning = manualHandoffRequest
+			? `Context at ${Math.round(usage.percent)}% — manual /handoff request is ${state.pendingRequestedHandoff!.awaitingAgentTurn ? "queued" : "active"}; follow the request, save durable findings, draft the brief, and call the handoff tool`
+			: handoffAutomaticEnabled
+				? (state.activeNotebookTopic
+					? `Context at ${Math.round(usage.percent)}% — use topic fit: same topic → spawn, different topic → handoff`
+					: `Context at ${Math.round(usage.percent)}% — no active topic; handoff soon unless you can assign one cleanly`)
+				: (state.activeNotebookTopic
+					? `Context at ${Math.round(usage.percent)}% — use topic fit: same topic → spawn, different topic → save notes and tell operator if a clean transition is needed`
+					: `Context at ${Math.round(usage.percent)}% — no active topic; save notebook findings and continue inline only if safe`);
 		ctx.ui.setWidget(WIDGET_KEY_WARNING, [
 			theme.fg("error", "\u26A0 ") + theme.fg("warning", warning),
 		]);

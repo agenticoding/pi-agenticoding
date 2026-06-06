@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added `handoff.automaticEnabled` raw settings support with JSON boolean values. Missing settings default to automatic handoff enabled; `false` suppresses automatic handoff guidance and blocks direct agent-initiated handoff unless an explicit `/handoff <direction>` request is pending.
 - Added the extension-owned `/agenticoding-settings` TUI panel for automatic handoff availability. TUI saves are global-only to `~/.pi/agent/settings.json`, preserve unrelated settings keys, persist real booleans, and visibly warn when a project override masks the global value.
 - Manual `/handoff <direction>` remains available even when automatic handoff is disabled: it records the operator request, sends the handoff prompt, and lets the guarded `handoff` tool compact that requested turn.
+- Successful enabled or manual handoff compaction now always resumes with Pi's fixed post-compaction `Proceed.` continuation; this behavior is not configurable.
 - Spawned child agents now inherit active registered parent tools executable in the child session, including MCP/extension tools such as ChunkHound when active and registered, while still excluding spawn and handoff and preserving child-local notebook tools.
 
 ### Fixed

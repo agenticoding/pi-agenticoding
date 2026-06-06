@@ -85,7 +85,8 @@ export function registerHandoffTool(
 				? { ...activeManualRequest, toolCalled: false, awaitingAgentTurn: false }
 				: null;
 			const retryableManualRequestPrompt = activeManualRequest ? state.pendingRequestedHandoffPrompt : null;
-			state.pendingHandoff = { task: enrichedTask, source: "tool" };
+			const retryableManualRequestGeneration = activeManualRequest ? state.pendingRequestedHandoffGeneration : null;
+			state.pendingHandoff = { task: enrichedTask, source: "tool", manualRequestGeneration: retryableManualRequestGeneration };
 			if (activeManualRequest) {
 				activeManualRequest.toolCalled = true;
 			}
@@ -95,11 +96,11 @@ export function registerHandoffTool(
 						pi.sendUserMessage("Proceed.");
 					},
 					onError: () => {
-						preserveManualHandoffRequestAfterCompactionError(state, ctx, retryableManualRequest, retryableManualRequestPrompt);
+						preserveManualHandoffRequestAfterCompactionError(state, ctx, retryableManualRequest, retryableManualRequestPrompt, retryableManualRequestGeneration);
 					},
 				});
 			} catch (error) {
-				preserveManualHandoffRequestAfterCompactionError(state, ctx, retryableManualRequest, retryableManualRequestPrompt);
+				preserveManualHandoffRequestAfterCompactionError(state, ctx, retryableManualRequest, retryableManualRequestPrompt, retryableManualRequestGeneration);
 				throw error;
 			}
 

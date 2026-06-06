@@ -31,7 +31,7 @@ export interface AgenticodingState {
 	lastContextPercent: number | null;
 
 	/** Handoff task queued by the tool until the compaction hook consumes it. */
-	pendingHandoff: { task: string; source: "tool" } | null;
+	pendingHandoff: { task: string; source: "tool"; manualRequestGeneration?: number | null } | null;
 
 	/** User-requested handoff that must result in a real tool-driven compaction. */
 	pendingRequestedHandoff: {
@@ -44,6 +44,9 @@ export interface AgenticodingState {
 
 	/** Exact extension-injected user message that should start the pending /handoff run. */
 	pendingRequestedHandoffPrompt: string | null;
+
+	/** Monotonic identity for manual /handoff requests; same direction is not identity. */
+	pendingRequestedHandoffGeneration: number;
 
 	/**
 	 * One-shot grace after compaction onError restores a manual request. Prevents
@@ -90,6 +93,7 @@ export function createState(): AgenticodingState {
 		pendingHandoff: null,
 		pendingRequestedHandoff: null,
 		pendingRequestedHandoffPrompt: null,
+		pendingRequestedHandoffGeneration: 0,
 		pendingRequestedHandoffRetryProtected: false,
 		childSessions,
 		liveChildSessions,
@@ -125,6 +129,7 @@ export function resetState(state: AgenticodingState): void {
 	state.pendingHandoff = null;
 	state.pendingRequestedHandoff = null;
 	state.pendingRequestedHandoffPrompt = null;
+	state.pendingRequestedHandoffGeneration = 0;
 	state.pendingRequestedHandoffRetryProtected = false;
 	abortAndClearChildSessions(state);
 }

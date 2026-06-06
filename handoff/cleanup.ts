@@ -32,9 +32,18 @@ export function preserveManualHandoffRequestAfterCompactionError(
 	ctx: ExtensionContext,
 	request: NonNullable<AgenticodingState["pendingRequestedHandoff"]> | null,
 	prompt: string | null,
+	requestGeneration: number | null = null,
 ): void {
-	state.pendingHandoff = null;
+	const pendingGeneration = state.pendingHandoff?.manualRequestGeneration ?? null;
+	if (pendingGeneration === requestGeneration) {
+		state.pendingHandoff = null;
+	}
+
 	if (request) {
+		if (requestGeneration !== state.pendingRequestedHandoffGeneration) {
+			clearHandoffStatus(ctx);
+			return;
+		}
 		if (state.pendingRequestedHandoff !== null && state.pendingRequestedHandoff.direction !== request.direction) {
 			clearHandoffStatus(ctx);
 			return;
@@ -46,8 +55,7 @@ export function preserveManualHandoffRequestAfterCompactionError(
 		};
 		state.pendingRequestedHandoffPrompt = prompt;
 		state.pendingRequestedHandoffRetryProtected = true;
-	} else {
-		state.pendingRequestedHandoff = null;
+	} else if (state.pendingRequestedHandoff === null) {
 		state.pendingRequestedHandoffPrompt = null;
 		state.pendingRequestedHandoffRetryProtected = false;
 	}
