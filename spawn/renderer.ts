@@ -33,6 +33,10 @@ import { Container, Spacer, Text, truncateToWidth, visibleWidth } from "@earendi
 import type { TUI } from "@earendil-works/pi-tui";
 import type { AgenticodingState } from "../state.js";
 import {
+	__setSingletons,
+	getSingletons,
+} from "../runtime-singletons.js";
+import {
 	getLastAssistantText,
 	type SpawnOutcome,
 	type SpawnResultDetails,
@@ -249,7 +253,7 @@ interface SpawnFrameTarget {
  * streaming events (50-100+/sec) do not trigger an equal number of heavy
  * component mutations.
  */
-class SpawnFrameScheduler {
+export class SpawnFrameScheduler {
 	private readonly frameMs: number;
 	private dirtyComponents = new Set<SpawnFrameTarget>();
 	private frameTimer: ReturnType<typeof setTimeout> | null = null;
@@ -316,8 +320,20 @@ class SpawnFrameScheduler {
 	}
 }
 
-/** Module-level singleton shared by all NestedAgentSessionComponent instances. */
+/**
+ * Module-level singleton shared by all NestedAgentSessionComponent instances.
+ *
+ * Registered into the RuntimeSingletons container at module evaluation time.
+ * Test harnesses overwrite this with a fresh SpawnFrameScheduler via
+ * createTestHarness().  ESM guarantees all static imports resolve before any
+ * module body runs, so the harness always wins.
+ *
+ * IMPORTANT: never use dynamic import() to load this module *after* a
+ * createTestHarness() call, or the production scheduler will overwrite the
+ * test one.
+ */
 const spawnFrameScheduler = new SpawnFrameScheduler();
+__setSingletons({ ...getSingletons(), frameScheduler: spawnFrameScheduler });
 
 // ── NestedAgentSessionComponent ───────────────────────────────────────
 
@@ -396,7 +412,7 @@ class NestedAgentSessionComponent extends Container implements SpawnFrameTarget 
 		this.renderQueued = false;
 		this.queuedRenderToken = undefined;
 		this.renderScheduleToken++;
-		spawnFrameScheduler.cancelDirty(this);
+		getSingletons().frameScheduler.cancelDirty(this);
 	}
 
 	/**
@@ -409,7 +425,7 @@ class NestedAgentSessionComponent extends Container implements SpawnFrameTarget 
 		if (this.renderQueued) return;
 		this.renderQueued = true;
 		this.queuedRenderToken = ++this.renderScheduleToken;
-		spawnFrameScheduler.markDirty(this);
+		getSingletons().frameScheduler.markDirty(this);
 	}
 
 	/**
@@ -555,7 +571,7 @@ class NestedAgentSessionComponent extends Container implements SpawnFrameTarget 
 	dispose(): void {
 		this.unsubscribe?.();
 		this.unsubscribe = undefined;
-		spawnFrameScheduler.cancelDirty(this);
+		getSingletons().frameScheduler.cancelDirty(this);
 		this.clearPendingState();
 		// Snapshot fields before clearing: if session.abort() triggers re-entrant
 		// dispose, the nulled-out fields prevent double-abort.
@@ -731,7 +747,7 @@ class NestedAgentSessionComponent extends Container implements SpawnFrameTarget 
 		if (!this.session) return;
 
 		// Flush any pending state first so accumulated updates don't double-apply
-		spawnFrameScheduler.cancelDirty(this);
+		getSingletons().frameScheduler.cancelDirty(this);
 		this.clearPendingState();
 
 		this.clear();
@@ -1209,16 +1225,20 @@ export { NestedAgentSessionComponent, renderSpawnCall, renderSpawnResult };
  * Synchronously flush all pending spawn frame work.
  * Exported for tests.  Not needed in production — the frame timer handles
  * everything automatically.
+ *
+ * Delegate through getSingletons() so that test harness swaps are respected.
  */
 export function flushSpawnFrameScheduler(): void {
-	spawnFrameScheduler.flushNow();
+	getSingletons().frameScheduler.flushNow();
 }
 
 /**
  * Reset the frame scheduler, discarding any pending dirty markers.
  * Exported for tests.  In production the scheduler lifecycle is tied to
  * component dispose(), so this is never needed.
+ *
+ * Delegate through getSingletons() so that test harness swaps are respected.
  */
 export function resetSpawnFrameScheduler(): void {
-	spawnFrameScheduler.clear();
+	getSingletons().frameScheduler.clear();
 }

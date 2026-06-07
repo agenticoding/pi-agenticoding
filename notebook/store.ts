@@ -10,39 +10,37 @@ import {
 	DEFAULT_MAX_LINES,
 	truncateHead,
 } from "@earendil-works/pi-coding-agent";
-import { AsyncLocalStorage } from "node:async_hooks";
 import type { AgenticodingState } from "../state.js";
-
-/**
- * Module-level write lock state.
- *
- * Concurrent callers serialize by chaining on the prior promise. Reentrancy is
- * tracked per async call chain so a nested saveNotebookPage fails explicitly
- * without rejecting unrelated concurrent writers that happen to overlap.
- */
-let writeLock: Promise<void> = Promise.resolve();
-const writeContext = new AsyncLocalStorage<true>();
+import { createWriteLock, __setSingletons, getSingletons } from "../runtime-singletons.js";
 
 /** Reset write lock state. Only for test cleanup after concurrent runs. */
 export function resetNotebookWriteLock(): void {
-	writeLock = Promise.resolve();
+	__setSingletons(
+		{ ...getSingletons(), writeLock: createWriteLock() },
+		{ forceWriteLock: true },
+	);
 }
 
 async function withWriteLock<T>(fn: () => Promise<T>): Promise<T> {
-	if (writeContext.getStore()) {
+	const s = getSingletons();
+	const lock = s.writeLock;
+	if (s.writeContext.getStore()) {
 		throw new Error(
 			"Notebook write lock is not reentrant — saveNotebookPage called from within its own critical section.",
 		);
 	}
 	let release: () => void;
-	const prev = writeLock;
-	writeLock = new Promise<void>((resolve) => {
+	const prev = lock.tail;
+	const next = new Promise<void>((resolve) => {
 		release = resolve;
 	});
+	lock.pending += 1;
+	lock.tail = next;
 	await prev;
 	try {
-		return await writeContext.run(true, fn);
+		return await s.writeContext.run(true, fn);
 	} finally {
+		lock.pending -= 1;
 		release!();
 	}
 }
