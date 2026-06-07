@@ -1,0 +1,3 @@
+ ✅ gpt-4o • high                                                               
+ Analysis complete. The optimal solution is to use a cache layer with TTL of... 
+ tok 200/150 · 4t · $0.0450                                                     
