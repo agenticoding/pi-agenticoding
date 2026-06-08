@@ -27,6 +27,7 @@ import {
 	ToolExecutionComponent,
 	UserMessageComponent,
 } from "@earendil-works/pi-coding-agent";
+
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import type { Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
 import { Container, Spacer, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
@@ -153,7 +154,7 @@ function renderPromptPreview(prompt: string, expanded: boolean): { shown: string
  */
 function safeKeyHint(action: string, fallback: string): string {
 	try {
-		return keyHint(action, fallback);
+		return keyHint(action as keyof import("@earendil-works/pi-tui").Keybindings, fallback);
 	} catch {
 		return fallback;
 	}
@@ -618,7 +619,7 @@ class NestedAgentSessionComponent extends Container implements SpawnFrameTarget 
 		// 1. Apply latest streaming message to the assistant component
 		if (this.pendingAssistantMessage && this.streamingComponent) {
 			try {
-				this.streamingComponent.updateContent(this.pendingAssistantMessage);
+				this.streamingComponent.updateContent(this.pendingAssistantMessage as unknown as import("@earendil-works/pi-ai").AssistantMessage);
 			} catch (error) {
 				this.resetStreamingComponent(error, "message_update");
 			}
@@ -693,17 +694,18 @@ class NestedAgentSessionComponent extends Container implements SpawnFrameTarget 
 	private addMessageToChat(message: SpawnChildMessage): void {
 		switch (message.role) {
 			case "bashExecution": {
-				const component = new BashExecutionComponent(message.command, this.fakeUi as unknown as TUI, message.excludeFromContext);
+				const component = new BashExecutionComponent(message.command ?? "", this.fakeUi as unknown as TUI, message.excludeFromContext);
 				if (message.output) {
 					component.appendOutput(message.output);
 				}
-				component.setComplete(message.exitCode, message.cancelled, message.truncated ? { truncated: true } : undefined, message.fullOutputPath);
+				component.setComplete(message.exitCode, message.cancelled ?? false, message.truncated ? { truncated: true } as any : undefined, message.fullOutputPath);
 				this.addChild(component);
 				break;
 			}
 			case "custom": {
 				if (message.display) {
-					const component = new CustomMessageComponent(message, undefined, this.markdownTheme);
+					// CustomMessage type is internal to the SDK; SpawnChildMessage is structurally compatible.
+					const component = new CustomMessageComponent(message as any, undefined, this.markdownTheme);
 					component.setExpanded(this.expanded);
 					this.addChild(component);
 				}
@@ -734,7 +736,7 @@ class NestedAgentSessionComponent extends Container implements SpawnFrameTarget 
 				break;
 			}
 			case "assistant": {
-				this.addChild(new AssistantMessageComponent(message, false, this.markdownTheme, "Thinking..."));
+				this.addChild(new AssistantMessageComponent(message as unknown as import("@earendil-works/pi-ai").AssistantMessage, false, this.markdownTheme, "Thinking..."));
 				break;
 			}
 			case "toolResult": {
@@ -768,7 +770,7 @@ class NestedAgentSessionComponent extends Container implements SpawnFrameTarget 
 				this.addMessageToChat(message);
 				for (const content of message.content ?? []) {
 					if (content.type !== "toolCall") continue;
-					const component = this.createToolComponent(content.name, content.id, content.arguments ?? {});
+					const component = this.createToolComponent(content.name ?? "", content.id ?? "", content.arguments ?? {});
 					this.addToolComponent(component);
 					if (!component) continue;
 					if (stopOutcome) {
@@ -777,17 +779,17 @@ class NestedAgentSessionComponent extends Container implements SpawnFrameTarget 
 							: message.errorMessage || "Error";
 						component.updateResult({ content: [{ type: "text", text: errorMessage }], isError: true });
 					} else {
-						renderedPendingTools.set(content.id, component);
+						renderedPendingTools.set(content.id ?? "", component);
 					}
 				}
 				continue;
 			}
 
 			if (message.role === "toolResult") {
-				const component = renderedPendingTools.get(message.toolCallId);
+				const component = renderedPendingTools.get(message.toolCallId ?? "");
 				if (component) {
-					component.updateResult(message);
-					renderedPendingTools.delete(message.toolCallId);
+					component.updateResult({ ...asToolResult(message), isError: false });
+					renderedPendingTools.delete(message.toolCallId ?? "");
 				}
 				continue;
 			}
@@ -935,7 +937,7 @@ class NestedAgentSessionComponent extends Container implements SpawnFrameTarget 
 
 	private handleMessageStart(event: Extract<AgentSessionEvent, { type: "message_start" }>): void {
 		if (event.message.role === "custom" || event.message.role === "user") {
-			this.addMessageToChat(event.message);
+			this.addMessageToChat(event.message as unknown as SpawnChildMessage);
 			return;
 		}
 		if (event.message.role === "assistant") {
@@ -983,7 +985,7 @@ class NestedAgentSessionComponent extends Container implements SpawnFrameTarget 
 		// Cheap per-event: update the live action text preview
 		const textBlock = event.message.content?.find(
 			(c: any) => c.type === "text" && c.text,
-		);
+		) as { text: string } | undefined;
 		if (textBlock?.text) {
 			const firstLine = textBlock.text.trim().split("\n")[0];
 			if (firstLine) {
