@@ -288,7 +288,8 @@ test("updateIndicators uses readonly-specific high-context guidance", () => {
 	updateIndicators(ctx, state);
 	const w = record.widgets.get("agenticoding-warning");
 	assert.ok(w?.[0]?.includes("readonly: same topic → spawn"));
-	assert.ok(w?.[0]?.includes("disable readonly, then handoff"));
+	assert.ok(w?.[0]?.includes("use /handoff for a real pivot"));
+	assert.ok(w?.[0]?.includes("fresh context resumes readonly"));
 });
 
 test("updateIndicators uses warning tone at 50-69% context", () => {
@@ -378,17 +379,15 @@ test("/handoff sends the direction back through the LLM without opening the edit
 	});
 
 	assert.deepEqual(state.pendingRequestedHandoff, {
-		direction: "implement auth",
-		enforcementAttempts: 0,
 		toolCalled: false,
+		readonlyBypassActive: false,
+		resumeReadonlyAfterHandoff: false,
+		enforcementAttempts: 0,
 	});
-	assert.deepEqual(pi.sentUserMessages, [
-		{
-			content:
-				"Handoff direction: implement auth\n\nPrepare a handoff in the current session. First, save any durable reusable knowledge that aligns with the direction above to the notebook: findings worth keeping, constraints discovered, decisions made, or other grounding future contexts will need. Then draft a concise but sufficiently detailed handoff brief capturing only the remaining situational context: current state, blockers, unresolved questions, failed paths worth avoiding, and next steps. The next context will read the notebook on demand, so do not duplicate notebook content in the brief. Use any structure that makes the next work unambiguous. Reference notebook pages by name when relevant.",
-			options: undefined,
-		},
-	]);
+	assert.equal(pi.sentUserMessages.length, 1);
+	assert.match(pi.sentUserMessages[0].content, /The user explicitly requested \/handoff/);
+	assert.match(pi.sentUserMessages[0].content, /You must perform a real handoff now/);
+	assert.equal(pi.sentUserMessages[0].options, undefined);
 });
 
 test("/handoff requires a direction", async () => {
@@ -407,7 +406,7 @@ test("/handoff requires a direction", async () => {
 	assert.deepEqual(pi.sentUserMessages, []);
 });
 
-test("/handoff is gated at command entry in readonly mode", async () => {
+test("/handoff under readonly creates a required handoff with readonly continuation guidance", async () => {
 	const pi = new MockPi();
 	const state = createState();
 	state.readonlyEnabled = true;
@@ -422,19 +421,26 @@ test("/handoff is gated at command entry in readonly mode", async () => {
 		},
 	});
 
-	assert.deepEqual(pi.sentUserMessages, []);
-	assert.equal(state.pendingRequestedHandoff, null);
+	assert.deepEqual(state.pendingRequestedHandoff, {
+		toolCalled: false,
+		readonlyBypassActive: true,
+		resumeReadonlyAfterHandoff: true,
+		enforcementAttempts: 0,
+	});
 	assert.equal(notifications.length, 1);
-	assert.match(notifications[0].message, /Readonly mode blocks \/handoff/);
-	assert.match(notifications[0].message, /disable readonly with \/readonly/);
-	assert.equal(notifications[0].level, "warning");
+	assert.match(notifications[0].message, /temporary handoff-only exception/i);
+	assert.match(notifications[0].message, /resume in readonly mode/i);
+	assert.equal(notifications[0].level, "info");
+	assert.equal(pi.sentUserMessages.length, 1);
+	assert.match(pi.sentUserMessages[0].content, /temporary exception allows the handoff tool/i);
+	assert.match(pi.sentUserMessages[0].content, /fresh context after compaction will resume in readonly mode/i);
 });
 
 test("handoff tool triggers compaction and resumes with the compacted task", async () => {
 	const pi = new MockPi();
 	const state = createState();
 	state.notebookPages.set("auth-refresh", "sensitive notebook body");
-	state.pendingRequestedHandoff = { direction: "implement auth", enforcementAttempts: 0, toolCalled: false };
+	state.pendingRequestedHandoff = { toolCalled: false, readonlyBypassActive: false, resumeReadonlyAfterHandoff: false, enforcementAttempts: 0 };
 	registerHandoffTool(pi as any, state);
 
 	let compactOptions: any;
@@ -456,6 +462,7 @@ test("handoff tool triggers compaction and resumes with the compacted task", asy
 	assert.match(state.pendingHandoff?.task ?? "", /distilled next task and immediate situational context/);
 	assert.match(state.pendingHandoff?.task ?? "", /Goal: continue auth-refresh/);
 	assert.doesNotMatch(state.pendingHandoff?.task ?? "", /sensitive notebook body/);
+	assert.doesNotMatch(state.pendingHandoff?.task ?? "", /## Execution Constraints/);
 	assert.equal(state.pendingRequestedHandoff?.toolCalled, true);
 	assert.equal(typeof compactOptions?.onComplete, "function");
 	assert.equal(result.content[0].text, "Handoff started.");
@@ -465,11 +472,174 @@ test("handoff tool triggers compaction and resumes with the compacted task", asy
 	assert.deepEqual(pi.sentUserMessages, [{ content: "Proceed.", options: undefined }]);
 });
 
+test("handoff tool readonly enrichment adds Execution Constraints section", async () => {
+	const pi = new MockPi();
+	const state = createState();
+	state.pendingRequestedHandoff = {
+		toolCalled: false,
+		readonlyBypassActive: true,
+		resumeReadonlyAfterHandoff: true,
+		enforcementAttempts: 0,
+	};
+	registerHandoffTool(pi as any, state);
+
+	const result = await pi.tools.get("handoff").execute(
+		"1",
+		{ task: "Goal: continue" },
+		undefined,
+		undefined,
+		{ compact: (_options: any) => {} },
+	);
+
+	assert.match(state.pendingHandoff?.task ?? "", /## Execution Constraints/);
+	assert.match(state.pendingHandoff?.task ?? "", /Fresh context resumes in readonly mode/);
+	assert.match(state.pendingHandoff?.task ?? "", /[Ww]rite, edit, and non-temp bash/);
+	assert.match(state.pendingHandoff?.task ?? "", /temporary handoff-only exception.*no longer active/);
+	assert.match(state.pendingHandoff?.task ?? "", /## Handoff — Continue Previous Work/);
+	assert.match(state.pendingHandoff?.task ?? "", /Goal: continue/);
+	assert.equal(result.content[0].text, "Handoff started.");
+	assert.equal(result.terminate, true);
+});
+
+test("handoff tool success clears pending requested handoff and active notebook topic", async () => {
+	const pi = new MockPi();
+	const state = createState();
+	state.pendingRequestedHandoff = {
+		toolCalled: false,
+		readonlyBypassActive: false,
+		resumeReadonlyAfterHandoff: false,
+		enforcementAttempts: 0,
+	};
+	setActiveNotebookTopic(state, "OAuth Refresh", "human");
+	registerHandoffTool(pi as any, state);
+
+	let compactOptions: any;
+	const statuses = new Map<string, string | undefined>();
+	await pi.tools.get("handoff").execute(
+		"1",
+		{ task: "Goal: continue" },
+		undefined,
+		undefined,
+		{
+			hasUI: true,
+			ui: { setStatus: (key: string, value: string | undefined) => { statuses.set(key, value); } },
+			compact: (options: any) => { compactOptions = options; },
+		},
+	);
+
+	assert.equal(state.pendingRequestedHandoff?.toolCalled, true);
+	assert.equal(state.activeNotebookTopic, "oauth-refresh");
+	compactOptions.onComplete({});
+
+	assert.equal(state.pendingRequestedHandoff, null);
+	assert.equal(state.activeNotebookTopic, null);
+	assert.equal(state.activeNotebookTopicSource, null);
+	assert.equal(state.pendingTopicBoundaryHint, null);
+	assert.equal(statuses.get(STATUS_KEY_HANDOFF), undefined);
+	assert.deepEqual(pi.sentUserMessages, [{ content: "Proceed.", options: undefined }]);
+});
+
+test("readonly requested handoff persists across compaction and rehydrates without the temporary bypass", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+
+	const statuses = new Map<string, string | undefined>();
+	const uiCtx = {
+		hasUI: true,
+		ui: {
+			notify: () => {},
+			theme: { fg: (_name: string, text: string) => text },
+			setStatus: (key: string, value: string | undefined) => { statuses.set(key, value); },
+			setWidget: () => {},
+		},
+		getContextUsage: () => null,
+	};
+	const handoffCommandCtx = {
+		hasUI: true,
+		isIdle: () => true,
+		ui: {
+			notify: () => {},
+			theme: { fg: (_name: string, text: string) => text },
+			setStatus: (key: string, value: string | undefined) => { statuses.set(key, value); },
+		},
+	};
+
+	await pi.commands.get("readonly")!.handler("", uiCtx as any);
+	assert.deepEqual(pi.appendedEntries, [{ customType: "agenticoding-readonly", data: { enabled: true } }]);
+
+	await pi.commands.get("handoff")!.handler("continue readonly work", handoffCommandCtx as any);
+
+	const [toolCallHandler] = pi.handlers.get("tool_call")!;
+	const writeBeforeHandoff = await toolCallHandler({ toolName: "write", input: { path: "/tmp/test", content: "x" } }, {});
+	assert.equal(writeBeforeHandoff.block, true);
+	const handoffBeforeCompaction = await toolCallHandler({ toolName: "handoff", input: { task: "continue readonly work" } }, {});
+	assert.equal(handoffBeforeCompaction, undefined, "temporary bypass should allow the requested handoff");
+
+	let compactOptions: any;
+	const handoffResult = await pi.tools.get("handoff").execute(
+		"handoff-1",
+		{ task: "Continue readonly work" },
+		undefined,
+		undefined,
+		{
+			hasUI: true,
+			ui: { setStatus: (key: string, value: string | undefined) => { statuses.set(key, value); } },
+			compact: (options: any) => { compactOptions = options; },
+		},
+	);
+	assert.equal(handoffResult.content[0].text, "Handoff started.");
+	assert.match(compactOptions ? "ok" : "", /ok/);
+
+	const [sessionBeforeCompact] = pi.handlers.get("session_before_compact")!;
+	const compaction = await sessionBeforeCompact(
+		{ preparation: { tokensBefore: 77 }, branchEntries: [{ id: "leaf-1" }] },
+		{},
+	);
+	assert.match(compaction.compaction.summary, /## Execution Constraints/);
+	assert.match(compaction.compaction.summary, /Fresh context resumes in readonly mode/);
+	compactOptions.onComplete({});
+
+	const branch = pi.appendedEntries.map((entry, index) => ({
+		id: `readonly-${index}`,
+		type: "custom",
+		customType: entry.customType,
+		data: entry.data,
+	}));
+	for (const handler of pi.handlers.get("session_start") ?? []) {
+		await handler({ reason: "resume" }, {
+			hasUI: true,
+			ui: {
+				theme: { fg: (_name: string, text: string) => text },
+				setStatus: (key: string, value: string | undefined) => { statuses.set(key, value); },
+				setWidget: () => {},
+			},
+			sessionManager: { getBranch: () => branch },
+			getContextUsage: () => null,
+		});
+	}
+
+	assert.ok(statuses.get("agenticoding-readonly")?.includes("readonly"), "fresh context should rehydrate readonly from persisted branch state");
+	const writeAfterRehydrate = await toolCallHandler({ toolName: "write", input: { path: "/tmp/test", content: "x" } }, {});
+	assert.equal(writeAfterRehydrate.block, true, "write should be blocked again after readonly rehydrates");
+	const blockedDirectHandoff = await toolCallHandler({ toolName: "handoff", input: { task: "direct call" } }, {});
+	assert.equal(blockedDirectHandoff.block, true, "temporary handoff bypass should be cleared after compaction");
+	assert.match(blockedDirectHandoff.reason, /unless the user explicitly requests \/handoff/);
+
+	await pi.commands.get("handoff")!.handler("second readonly handoff", handoffCommandCtx as any);
+	const handoffAfterExplicitRequest = await toolCallHandler({ toolName: "handoff", input: { task: "second readonly handoff" } }, {});
+	assert.equal(handoffAfterExplicitRequest, undefined, "handoff should be allowed again after a fresh explicit /handoff request");
+});
+
 test("handoff compaction replaces old context with the queued task", async () => {
 	const pi = new MockPi();
 	const state = createState();
 	state.pendingHandoff = { task: "Goal: continue", source: "tool" };
-	state.pendingRequestedHandoff = { direction: "implement auth", enforcementAttempts: 1, toolCalled: true };
+	state.pendingRequestedHandoff = {
+		toolCalled: true,
+		readonlyBypassActive: false,
+		resumeReadonlyAfterHandoff: false,
+		enforcementAttempts: 1,
+	};
 	state.activeNotebookTopic = "oauth";
 	state.activeNotebookTopicSource = "human";
 	registerHandoffCompaction(pi as any, state);
@@ -484,9 +654,10 @@ test("handoff compaction replaces old context with the queued task", async () =>
 	);
 
 	assert.equal(state.pendingHandoff, null);
-	assert.equal(state.pendingRequestedHandoff, null);
-	assert.equal(state.activeNotebookTopic, null);
-	assert.equal(state.activeNotebookTopicSource, null);
+	// pendingRequestedHandoff is preserved — compaction hasn't completed yet
+	assert.equal(state.pendingRequestedHandoff?.toolCalled, true);
+	assert.equal(state.activeNotebookTopic, "oauth");
+	assert.equal(state.activeNotebookTopicSource, "human");
 	assert.equal(result.compaction.summary, "Goal: continue");
 	assert.equal(result.compaction.tokensBefore, 123);
 	assert.equal(result.compaction.firstKeptEntryId, "leaf-1-handoff-cut");
@@ -531,7 +702,7 @@ test("handoff compaction clears the handoff status indicator", async () => {
 test("handoff compaction error clears pending state and status", async () => {
 	const pi = new MockPi();
 	const state = createState();
-	state.pendingRequestedHandoff = { direction: "implement auth", enforcementAttempts: 0, toolCalled: false };
+	state.pendingRequestedHandoff = { toolCalled: false, readonlyBypassActive: false, resumeReadonlyAfterHandoff: false, enforcementAttempts: 0 };
 	registerHandoffTool(pi as any, state);
 	let compactOptions: any;
 	const statuses = new Map<string, string | undefined>();
@@ -554,7 +725,7 @@ test("handoff compaction error clears pending state and status", async () => {
 	assert.equal(statuses.get(STATUS_KEY_HANDOFF), undefined);
 });
 
-test("turn_end fallback clears stale requested handoff status", async () => {
+test("turn_end keeps requested handoff status sticky until real handoff happens", async () => {
 	const pi = new MockPi();
 	registerAgenticoding(pi as any);
 	const statuses = new Map<string, string | undefined>();
@@ -579,7 +750,7 @@ test("turn_end fallback clears stale requested handoff status", async () => {
 		getContextUsage: () => null,
 	});
 
-	assert.equal(statuses.get(STATUS_KEY_HANDOFF), undefined);
+	assert.equal(statuses.get(STATUS_KEY_HANDOFF), "🤝 Handoff in progress");
 });
 
 test("session_start new clears stale handoff status and warning widget", async () => {
@@ -713,13 +884,14 @@ test("buildNudge handles null percent and boundary hints before topic guidance",
 			activeNotebookTopic: "oauth",
 			pendingTopicBoundaryHint: { from: "oauth", to: "billing", source: "human" },
 			readonlyEnabled: false,
+			pendingRequestedHandoff: null,
 		},
 		null,
 	);
 	assert.match(boundary, /Notebook topic changed from oauth to billing/);
 	assert.doesNotMatch(boundary, /Active notebook topic: oauth/);
 
-	const noTopic = buildNudge({ activeNotebookTopic: null, pendingTopicBoundaryHint: null, readonlyEnabled: false }, null);
+	const noTopic = buildNudge({ activeNotebookTopic: null, pendingTopicBoundaryHint: null, readonlyEnabled: false, pendingRequestedHandoff: null }, null);
 	assert.match(noTopic, /Topic-aware context reminder/);
 	assert.match(noTopic, /No active notebook topic is set/);
 });
@@ -746,10 +918,15 @@ test("context throttles watchdog nudges within the same band", async () => {
 });
 
 
-test("watchdog stays advisory when a requested handoff is not completed", async () => {
+test("watchdog keeps a requested handoff sticky when it is not completed", async () => {
 	const pi = new MockPi();
 	const state = createState();
-	state.pendingRequestedHandoff = { direction: "implement auth", enforcementAttempts: 0, toolCalled: false };
+	state.pendingRequestedHandoff = {
+		toolCalled: false,
+		readonlyBypassActive: false,
+		resumeReadonlyAfterHandoff: false,
+		enforcementAttempts: 0,
+	};
 	registerWatchdog(pi as any, state);
 	const [handler] = pi.handlers.get("agent_end")!;
 
@@ -766,9 +943,59 @@ test("watchdog stays advisory when a requested handoff is not completed", async 
 		},
 	);
 
-	assert.equal(state.pendingRequestedHandoff, null);
+	assert.equal(state.pendingRequestedHandoff?.toolCalled, false);
+	assert.equal(state.pendingRequestedHandoff?.enforcementAttempts, 1);
 	assert.deepEqual(notifications, []);
 	assert.deepEqual(pi.sentUserMessages, []);
+});
+
+test("watchdog auto-clears pending handoff after MAX_HANDOFF_ATTEMPTS turns", async () => {
+	const pi = new MockPi();
+	const state = createState();
+	state.pendingRequestedHandoff = {
+		toolCalled: false,
+		readonlyBypassActive: false,
+		resumeReadonlyAfterHandoff: false,
+		enforcementAttempts: 0,
+	};
+	registerWatchdog(pi as any, state);
+	const [handler] = pi.handlers.get("agent_end")!;
+
+	const notifications: string[] = [];
+	for (let i = 0; i < 4; i++) {
+		await handler(
+			{},
+			{
+				hasUI: true,
+				ui: {
+					notify: (message: string) => notifications.push(message),
+					setStatus: () => {},
+				},
+				getContextUsage: () => ({ percent: 20 }),
+			},
+		);
+	}
+
+	// After 4 turns, still pending, no notification yet
+	assert.equal(state.pendingRequestedHandoff?.enforcementAttempts, 4);
+	assert.notEqual(state.pendingRequestedHandoff, null);
+	assert.deepEqual(notifications, []);
+
+	// 5th turn hits the cap
+	await handler(
+		{},
+		{
+			hasUI: true,
+			ui: {
+				notify: (message: string) => notifications.push(message),
+				setStatus: () => {},
+			},
+			getContextUsage: () => ({ percent: 20 }),
+		},
+	);
+
+	assert.equal(state.pendingRequestedHandoff, null);
+	assert.match(notifications[0], /cancelled after 5 turns/i);
 });
 
 test("collapsed nested spawn render shows preview and stats", () => {
@@ -2465,7 +2692,7 @@ test("/notebook <topic> warns with readonly-safe guidance on boundary change", a
 	await pi.commands.get("notebook")!.handler("billing", ctx as any);
 
 	assert.match(notifications[2].message, /use spawn only for same-topic delegation/);
-	assert.match(notifications[2].message, /disable readonly with \/readonly before handoff/);
+	assert.match(notifications[2].message, /fresh context resumes in readonly mode/);
 	assert.equal(notifications[2].level, "warning");
 });
 
@@ -3544,42 +3771,83 @@ test("notebook_topic_set preserves human authority, stays idempotent for equal t
 	);
 });
 
-test("buildNudge readonly with topic suggests same-topic spawn and readonly disable for handoff", () => {
+test("buildNudge readonly with topic points handoff requests to readonly continuation", () => {
 	const nudge = buildNudge(
-		{ readonlyEnabled: true, activeNotebookTopic: "my-topic", pendingTopicBoundaryHint: null },
+		{ readonlyEnabled: true, activeNotebookTopic: "my-topic", pendingTopicBoundaryHint: null, pendingRequestedHandoff: null },
 		50,
 	);
 	assert.match(nudge, /my-topic/);
 	assert.match(nudge, /same-topic delegation/);
-	assert.match(nudge, /disable readonly with \/readonly/i);
+	assert.match(nudge, /fresh context resumes in readonly mode/i);
 });
 
 test("buildNudge readonly without topic suggests notebook_topic_set", () => {
 	const nudge = buildNudge(
-		{ readonlyEnabled: true, activeNotebookTopic: null, pendingTopicBoundaryHint: null },
+		{ readonlyEnabled: true, activeNotebookTopic: null, pendingTopicBoundaryHint: null, pendingRequestedHandoff: null },
 		50,
 	);
-	assert.match(nudge, /disable readonly with \/readonly/i);
+	assert.match(nudge, /fresh context resumes in readonly mode/i);
 	assert.match(nudge, /notebook_topic_set/);
 });
 
-test("buildNudge readonly with boundary hint points to spawn vs disable readonly", () => {
+test("buildNudge readonly with boundary hint points to spawn vs readonly-preserving handoff", () => {
 	const nudge = buildNudge(
-		{ readonlyEnabled: true, activeNotebookTopic: null, pendingTopicBoundaryHint: { from: "old", to: "new", source: "agent" } },
+		{ readonlyEnabled: true, activeNotebookTopic: null, pendingTopicBoundaryHint: { from: "old", to: "new", source: "agent" }, pendingRequestedHandoff: null },
 		null,
 	);
-	assert.match(nudge, /Readonly blocks handoff/);
+	assert.match(nudge, /Readonly mode is active/);
 	assert.match(nudge, /current topic/);
-	assert.match(nudge, /disable readonly with \/readonly/i);
+	assert.match(nudge, /fresh context resumes in readonly mode/i);
 });
 
 test("buildNudge no longer emits the old percent-only handoff text", () => {
-	const old = buildNudge({ activeNotebookTopic: "oauth", pendingTopicBoundaryHint: null, readonlyEnabled: false }, 46);
+	const old = buildNudge({ activeNotebookTopic: "oauth", pendingTopicBoundaryHint: null, readonlyEnabled: false, pendingRequestedHandoff: null }, 46);
 	assert.doesNotMatch(old, /One context, one job\.|If you're mid-job and still clear|consider a handoff and draft a clear brief/i);
 	assert.match(old, /Active notebook topic: oauth/);
 	assert.match(old, /prefer spawn/i);
 });
 
+test("buildNudge with pendingRequestedHandoff and resumeReadonlyAfterHandoff=true", () => {
+	const nudge = buildNudge(
+		{
+			readonlyEnabled: true,
+			activeNotebookTopic: "my-topic",
+			pendingTopicBoundaryHint: null,
+			pendingRequestedHandoff: {
+				toolCalled: false,
+				readonlyBypassActive: true,
+				resumeReadonlyAfterHandoff: true,
+				enforcementAttempts: 1,
+			},
+		},
+		50,
+	);
+	assert.match(nudge, /User explicitly requested \/handoff/);
+	assert.match(nudge, /You must complete a real handoff/);
+	assert.match(nudge, /Readonly remains active/);
+	assert.match(nudge, /temporary exception allows only the handoff tool/);
+	assert.match(nudge, /Draft the brief for readonly continuation/);
+});
+
+test("buildNudge with pendingRequestedHandoff and resumeReadonlyAfterHandoff=false", () => {
+	const nudge = buildNudge(
+		{
+			readonlyEnabled: false,
+			activeNotebookTopic: null,
+			pendingTopicBoundaryHint: null,
+			pendingRequestedHandoff: {
+				toolCalled: false,
+				readonlyBypassActive: false,
+				resumeReadonlyAfterHandoff: false,
+				enforcementAttempts: 1,
+			},
+		},
+		null,
+	);
+	assert.match(nudge, /User explicitly requested \/handoff/);
+	assert.match(nudge, /Complete a real handoff now/);
+	assert.doesNotMatch(nudge, /Readonly remains active/);
+});
 
 test("CONTEXT_PRIMER states the notebook, topic, and handoff contracts", () => {
 	assert.doesNotMatch(CONTEXT_PRIMER, /ledger/i,
@@ -4055,13 +4323,52 @@ test("readonly toggle command enables and disables readonly mode", () => {
 
 	// First toggle: ON
 	pi.commands.get("readonly")!.handler("", ctx);
-	assert.equal(notifications.pop(), "Readonly mode enabled \u2014 write/edit/handoff and non-temp bash writes blocked");
+	assert.equal(notifications.pop(), "Readonly mode enabled \u2014 write/edit and non-temp bash writes blocked; handoff stays blocked unless the user explicitly requests /handoff");
 	assert.ok(statuses.get("agenticoding-readonly")?.includes("readonly"));
 
 	// Second toggle: OFF
 	pi.commands.get("readonly")!.handler("", ctx);
 	assert.equal(notifications.pop(), "Readonly mode disabled \u2014 write/edit/handoff and non-temp bash writes unblocked");
 	assert.equal(statuses.get("agenticoding-readonly"), undefined);
+});
+
+test("readonly toggle while /handoff is pending keeps handoff tool accessible", async () => {
+	const pi = new MockPi();
+	registerAgenticoding(pi as any);
+
+	const uiCtx = {
+		hasUI: true,
+		ui: {
+			notify: () => {},
+			theme: { fg: (_n: string, t: string) => t },
+			setStatus: () => {},
+			setWidget: () => {},
+		},
+		getContextUsage: () => null,
+	};
+
+	const handoffCtx = { hasUI: true, isIdle: () => true, ui: { notify: () => {}, theme: { fg: (_n: string, t: string) => t }, setStatus: () => {} } };
+
+	// Enable readonly and request handoff
+	pi.commands.get("readonly")!.handler("", uiCtx);
+	pi.commands.get("handoff")!.handler("implement auth", handoffCtx as any);
+
+	const [toolCallHandler] = pi.handlers.get("tool_call")!;
+
+	// Toggle readonly OFF — readonly gone, handoff should pass through (early return)
+	pi.commands.get("readonly")!.handler("", uiCtx);
+	let result = await toolCallHandler({ toolName: "handoff", input: { task: "test" } }, {});
+	assert.equal(result, undefined, "handoff allowed when readonly is off");
+
+	// Toggle readonly ON — bypass active from handoff command, handoff still passes
+	pi.commands.get("readonly")!.handler("", uiCtx);
+	result = await toolCallHandler({ toolName: "handoff", input: { task: "test" } }, {});
+	assert.equal(result, undefined, "handoff allowed when readonly is on and bypass is active");
+
+	// Sanity: write is still blocked
+	const writeResult = await toolCallHandler({ toolName: "write", input: { path: "/tmp/test" } }, {});
+	assert.equal(writeResult.block, true);
+	assert.match(writeResult.reason, /write\/edit disabled/);
 });
 
 test("readonly toggle is a no-op in headless mode", async () => {
@@ -4114,7 +4421,7 @@ test("readonly TUI indicator is cleared when disabled", () => {
 
 // ── Readonly mode: tool_call blocking tests ────────────────────────
 
-test("readonly tool_call blocks write, edit, and handoff", async () => {
+test("readonly tool_call blocks write/edit and blocks handoff unless explicitly requested", async () => {
 	const pi = new MockPi();
 	registerAgenticoding(pi as any);
 
@@ -4132,20 +4439,31 @@ test("readonly tool_call blocks write, edit, and handoff", async () => {
 
 	const [toolCallHandler] = pi.handlers.get("tool_call")!;
 
-	// Block write
 	const writeResult = await toolCallHandler({ toolName: "write", input: { path: "/tmp/test" } }, {});
 	assert.equal(writeResult.block, true);
-	assert.match(writeResult.reason, /write\/edit\/handoff disabled/);
+	assert.match(writeResult.reason, /write\/edit disabled/);
 
-	// Block edit
 	const editResult = await toolCallHandler({ toolName: "edit", input: { path: "/tmp/test" } }, {});
 	assert.equal(editResult.block, true);
 
-	// Block handoff
-	const handoffResult = await toolCallHandler({ toolName: "handoff", input: { task: "test" } }, {});
-	assert.equal(handoffResult.block, true);
+	const blockedHandoff = await toolCallHandler({ toolName: "handoff", input: { task: "test" } }, {});
+	assert.equal(blockedHandoff.block, true);
+	assert.match(blockedHandoff.reason, /unless the user explicitly requests \/handoff/);
 
-	// Allow read
+	// Simulate /handoff command — activates bypass
+	await pi.commands.get("handoff")!.handler("implement auth", {
+		hasUI: true,
+		isIdle: () => true,
+		ui: {
+			notify: () => {},
+			theme: { fg: (_n: string, t: string) => t },
+			setStatus: () => {},
+		},
+	});
+
+	const allowedHandoff = await toolCallHandler({ toolName: "handoff", input: { task: "test" } }, {});
+	assert.equal(allowedHandoff, undefined);
+
 	const readResult = await toolCallHandler({ toolName: "read", input: { path: "/tmp/test" } }, {});
 	assert.equal(readResult, undefined);
 });
