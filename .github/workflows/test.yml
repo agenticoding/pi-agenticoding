@@ -1,0 +1,93 @@
+# Cross-platform CI for pi-agenticoding
+#
+# Runs the full unit suite on Linux, macOS, and Windows
+# on the minimum Node.js version required by pi coding agent. Snapshot
+# tests verify TUI render output against golden files.
+
+name: test
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['*.md', '**/docs/**']
+  pull_request:
+    branches: [main]
+    paths-ignore: ['*.md', '**/docs/**']
+
+jobs:
+  # ── Quick-check gate — catch trivial failures before the full matrix ──
+  quick-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+          cache: "npm"
+      - run: npm ci
+
+      # Fast pre-flight checks — type errors and security issues before matrix
+      - name: Type check
+        run: npx tsc --noEmit
+
+      - name: Security audit
+        run: npm audit --audit-level=moderate
+
+  # ── Cross-platform test matrix ──────────────────────────────────────
+  # Node 22 (minimum) is tested only on Linux — the primary platform and the only one
+  # guaranteed to have the oldest toolchain. macOS and Windows test Node 24 (latest)
+  # to catch regressions in the newest runtime. This asymmetry is intentional: it
+  # balances CI cost with meaningful coverage while ensuring the minimum version works
+  # correctly on the platform most likely to encounter toolchain edge cases.
+  test:
+    needs: quick-check
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false          # report every combination, don't cancel
+      matrix:
+        include:
+          - os: ubuntu-latest
+            node-version: "22"    # minimum version on primary platform
+          - os: ubuntu-latest
+            node-version: "24"    # latest on primary platform
+          - os: macos-latest
+            node-version: "24"    # latest on macOS
+          - os: windows-latest
+            node-version: "24"    # latest on Windows
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: "npm"
+
+      - run: npm ci
+
+      # Unit suite (unit tests + snapshot tests + property-based tests)
+      - name: Unit tests
+        run: npm test
+
+      # E2E tests — process-isolated child-process harness (stdin/stdout, no PTY).
+      # Verified cross-platform: runs on Linux, macOS, and Windows.
+      # See https://github.com/agenticoding/pi-agenticoding/issues/12
+      - name: E2E tests
+        run: npm run test:e2e
+
+      # Upload test results for debugging — artifacts available for 30 days.
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ matrix.os }}-node-${{ matrix.node-version }}
+          path: |
+            test-results/
+            tests/__snapshots__/
+          retention-days: 30

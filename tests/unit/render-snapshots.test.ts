@@ -56,17 +56,22 @@ function ensureSnapshotDir(): void {
 	}
 }
 
+/** Normalize line endings so golden files (stored with \n) match on Windows (\r\n). */
+function normalizeEOL(s: string): string {
+	return s.replace(/\r?\n/g, "\n");
+}
+
 function matchSnapshot(name: string, actual: string): void {
 	ensureSnapshotDir();
 	const file = join(SNAPSHOT_DIR, `${name}.txt`);
 	if (process.env.UPDATE_SNAPSHOTS) {
-		writeFileSync(file, actual);
+		writeFileSync(file, normalizeEOL(actual));
 		return;
 	}
 	if (!existsSync(file)) {
 		assert.fail(`Snapshot ${name} is missing. Re-run with UPDATE_SNAPSHOTS=1 to create it.`);
 	}
-	const expected = readFileSync(file, "utf-8");
+	const expected = normalizeEOL(readFileSync(file, "utf-8"));
 	assert.equal(actual, expected, `Snapshot ${name} does not match`);
 }
 

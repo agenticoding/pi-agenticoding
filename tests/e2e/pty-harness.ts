@@ -15,6 +15,8 @@ const ROOT = resolve(HERE, "..", "..");
 const LOADER = pathToFileURL(resolve(ROOT, "register-loader.mjs")).href;
 
 export const DEFAULT_SCRIPT = resolve(HERE, "test-host.ts");
+const DEFAULT_TIMEOUT_MS = 5000;
+const TIMEOUT_MS = parseInt(process.env.E2E_TIMEOUT_MS ?? "", 10) || DEFAULT_TIMEOUT_MS;
 
 export class PytestHarness {
   private child: ChildProcessWithoutNullStreams;
@@ -27,7 +29,7 @@ export class PytestHarness {
     scriptPath = DEFAULT_SCRIPT,
     options?: { timeoutMs?: number },
   ) {
-    this.timeoutMs = options?.timeoutMs ?? 5000;
+    this.timeoutMs = options?.timeoutMs ?? TIMEOUT_MS;
 
     const entry = isAbsolute(scriptPath) ? scriptPath : resolve(ROOT, scriptPath);
 

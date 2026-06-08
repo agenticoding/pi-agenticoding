@@ -46,6 +46,16 @@ Before submitting, check that your change:
 - `npm run test:snapshots:update` — rewrites the golden files in `tests/__snapshots__/` after an intentional render change. Review the diff carefully: snapshot updates are the only signal that catches unintended UI regressions.
 - `npm run test:e2e` — runs the process-isolated end-to-end suite under `tests/e2e/`.
 
+## CI
+
+Pull requests are automatically tested via GitHub Actions. The pipeline runs:
+
+1. **Quick-check** (Ubuntu, Node 22): `npm ci`, type check (`npx tsc --noEmit`), and security audit (`npm audit`). Catches trivial failures before the full matrix.
+2. **Cross-platform matrix** (depends on quick-check): Unit tests on Ubuntu (Node 22 + 24), macOS (Node 24), and Windows (Node 24). E2E tests on all platforms.
+
+Snapshot golden files in `tests/__snapshots__/` are stored with LF line endings (enforced by `.gitattributes`). The `normalizeEOL` helper in the snapshot test file normalizes `\r\n` to `\n` on read, so Windows developers get correct comparisons even if their working tree has CRLF. If you update snapshots, the CI matrix validates them on all platforms.
+The E2E suite runs on all platforms including Windows (verified in issue #12).
+
 ## Community
 
 Use GitHub Issues for bug reports and feature requests. Keep discussions concrete: describe the agent workflow you expected, what happened instead, and any reproduction steps.

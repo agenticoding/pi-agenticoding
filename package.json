@@ -11,6 +11,9 @@
     "type": "git",
     "url": "git+https://github.com/agenticoding/pi-agenticoding.git"
   },
+  "engines": {
+    "node": ">=22"
+  },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*",
