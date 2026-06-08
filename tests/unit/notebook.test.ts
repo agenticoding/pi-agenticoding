@@ -144,14 +144,15 @@ test("notebook tools add/get/list return stable contract details", async () => {
 	assert.equal(pi.appendedEntries[0].data.name, "entry-a");
 
 	const getResult = await notebookRead.execute("2", { name: "entry-a" }, undefined, undefined, {} as any);
-	assert.equal(getResult.details.found, true);
-	assert.deepEqual(getResult.details.entries, ["entry-a"]);
-	assert.match(getResult.content[0].text, /--- entry-a ---/);
-	assert.match(getResult.content[0].text, /second line/);
+	const details = getResult.details as { found: boolean; entries: string[] };
+	assert.equal(details.found, true);
+	assert.deepEqual(details.entries, ["entry-a"]);
+	assert.match((getResult.content[0] as any).text, /--- entry-a ---/);
+	assert.match((getResult.content[0] as any).text, /second line/);
 
 	const listResult = await notebookIndex.execute("3", {}, undefined, undefined, {} as any);
 	assert.deepEqual(listResult.details, { entries: ["entry-a"] });
-	assert.match(listResult.content[0].text, /entry-a: first line/);
+	assert.match((listResult.content[0] as any).text, /entry-a: first line/);
 });
 
 test("child notebook tools reject stale access after reset", async () => {
@@ -198,10 +199,10 @@ test("notebook_read reports not found with current page names", async () => {
 
 	const result = await notebookRead.execute("1", { name: "missing" }, undefined, undefined, {} as any);
 	assert.deepEqual(result.details, { entries: ["entry-a", "entry-b"], found: false });
-	assert.match(result.content[0].text, /Notebook page "missing" not found\./);
-	assert.match(result.content[0].text, /Notebook Pages:\n/);
-	assert.match(result.content[0].text, /entry-a: alpha/);
-	assert.match(result.content[0].text, /entry-b: beta/);
+	assert.match((result.content[0] as any).text, /Notebook page "missing" not found\./);
+	assert.match((result.content[0] as any).text, /Notebook Pages:\n/);
+	assert.match((result.content[0] as any).text, /entry-a: alpha/);
+	assert.match((result.content[0] as any).text, /entry-b: beta/);
 });
 
 test("notebook tools show empty-state placeholders", async () => {
@@ -211,11 +212,11 @@ test("notebook tools show empty-state placeholders", async () => {
 
 	const missing = await notebookRead.execute("1", { name: "missing" }, undefined, undefined, {} as any);
 	assert.deepEqual(missing.details, { entries: [], found: false });
-	assert.match(missing.content[0].text, /Notebook Pages:\n\(empty\)/);
+	assert.match((missing.content[0] as any).text, /Notebook Pages:\n\(empty\)/);
 
 	const list = await notebookIndex.execute("2", {}, undefined, undefined, {} as any);
 	assert.deepEqual(list.details, { entries: [] });
-	assert.match(list.content[0].text, /Notebook Pages:\n\(empty\)/);
+	assert.match((list.content[0] as any).text, /Notebook Pages:\n\(empty\)/);
 });
 
 test("notebook_write pushes onUpdate and refreshes UI indicators", async () => {
@@ -233,7 +234,7 @@ test("notebook_write pushes onUpdate and refreshes UI indicators", async () => {
 		makeTUICtx({ percent: 42, record }),
 	);
 
-	assert.equal(update.content[0].text, 'Saved "entry-a": first line');
+	assert.equal((update.content[0] as any).text, 'Saved "entry-a": first line');
 	assert.deepEqual(update.details, { entries: ["entry-a"], preview: "first line" });
 	assert.equal(record.statuses.get("agenticoding-notebook"), "📒 1");
 	assert.deepEqual(result.details, { entries: ["entry-a"], preview: "first line" });
@@ -249,7 +250,7 @@ test("notebook tool renderers expose stable call/result summaries", async () => 
 
 	const addResult = notebookWrite.renderResult!(
 		{ content: [{ type: "text", text: "" }], details: { entries: ["entry-a"], preview: "first line" } },
-		{ expanded: true },
+		{ expanded: true, isPartial: false },
 		theme,
 		{ args: { name: "entry-a", content: "first line\nsecond line" } } as any,
 	) as Text;
@@ -258,7 +259,7 @@ test("notebook tool renderers expose stable call/result summaries", async () => 
 
 	const getResult = notebookRead.renderResult!(
 		{ content: [{ type: "text", text: "ignored" }], details: { entries: ["entry-a"], found: true, body: "body" } },
-		{ expanded: true },
+		{ expanded: true, isPartial: false },
 		theme,
 		{ args: { name: "entry-a" } } as any,
 	) as Text;
@@ -267,7 +268,7 @@ test("notebook tool renderers expose stable call/result summaries", async () => 
 
 	const getResultWithDelimiters = notebookRead.renderResult!(
 		{ content: [{ type: "text", text: "ignored" }], details: { entries: ["entry-a"], found: true, body: "line 1\n---\nline 2" } },
-		{ expanded: true },
+		{ expanded: true, isPartial: false },
 		theme,
 		{ args: { name: "entry-a" } } as any,
 	) as Text;
@@ -276,7 +277,7 @@ test("notebook tool renderers expose stable call/result summaries", async () => 
 
 	const listResult = notebookIndex.renderResult!(
 		{ content: [{ type: "text", text: "" }], details: { entries: ["entry-a", "entry-b"] } },
-		{ expanded: true },
+		{ expanded: true, isPartial: false },
 		theme,
 		{} as any,
 	) as Text;
