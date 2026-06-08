@@ -69,19 +69,36 @@ export default function (pi: ExtensionAPI): void {
 	function toggleReadonly(ctx: ExtensionContext): void {
 		if (!ctx.hasUI) return; // Toggle is a UI-only command, no-op in headless.
 		state.readonlyEnabled = !state.readonlyEnabled;
+		// Keep a pending readonly handoff aligned with the current mode so the
+		// compacted task reflects the latest user intent.
+		if (state.pendingRequestedHandoff) {
+			state.pendingRequestedHandoff.resumeReadonlyAfterHandoff = state.readonlyEnabled;
+			state.pendingRequestedHandoff.readonlyBypassActive = state.readonlyEnabled;
+			if (state.readonlyEnabled) {
+				ctx.ui.notify(
+					"Pending handoff updated — the fresh context will resume in readonly mode.",
+					"info",
+				);
+			} else {
+				ctx.ui.notify(
+					"Pending handoff readonly-continuation cleared — the fresh context will not resume in readonly mode.",
+					"info",
+				);
+			}
+		}
 		state.readonlyNudgePending = true;
 		pi.appendEntry("agenticoding-readonly", { enabled: state.readonlyEnabled });
 		updateIndicators(ctx, state);
 		ctx.ui.notify(
 			state.readonlyEnabled
-				? "Readonly mode enabled \u2014 write/edit/handoff and non-temp bash writes blocked"
+				? "Readonly mode enabled \u2014 write/edit and non-temp bash writes blocked; handoff stays blocked unless the user explicitly requests /handoff"
 				: "Readonly mode disabled \u2014 write/edit/handoff and non-temp bash writes unblocked",
 			"info",
 		);
 	}
 
 	pi.registerCommand("readonly", {
-		description: "Toggle readonly mode (blocks write/edit/handoff and bash writes outside the OS temp dir)",
+		description: "Toggle readonly mode (blocks write/edit and bash writes outside the OS temp dir; handoff requires explicit /handoff)",
 		handler: async (_args, ctx) => toggleReadonly(ctx),
 	});
 
@@ -129,20 +146,30 @@ export default function (pi: ExtensionAPI): void {
 	pi.on("tool_call", async (event, ctx) => {
 		// ── Readonly mode ───────────────────────────────────────────
 		// Guardrail for a coding agent (not a security boundary):
-		// write/edit/handoff stay in the tool list but are blocked at
-		// call time with { block: true }. Keeping them advertised
-		// avoids context-cache invalidation from tools disappearing
-		// mid-session.  Children use the opposite approach (remove
-		// from tool list entirely) because they start with a fresh
-		// context — see spawn/index.ts.
+		// write/edit stay in the tool list but are blocked at call time.
+		// handoff is also blocked unless the user explicitly requested
+		// /handoff, which activates a narrow temporary exception for the
+		// handoff tool only. Keeping tools advertised avoids context-cache
+		// invalidation from tools disappearing mid-session. Children use
+		// the opposite approach (remove from tool list entirely) because
+		// they start with a fresh context — see spawn/index.ts.
 		if (!state.readonlyEnabled) return;
 
-		if (event.toolName === "write" || event.toolName === "edit" || event.toolName === "handoff") {
+		if (event.toolName === "write" || event.toolName === "edit") {
 			return {
 				block: true as const,
 				reason:
-					"Readonly mode: write/edit/handoff disabled. " +
+					"Readonly mode: write/edit disabled. " +
 					"Toggle with /readonly. Use spawn for same-topic delegation.",
+			};
+		}
+
+		if (event.toolName === "handoff" && !state.pendingRequestedHandoff?.readonlyBypassActive) {
+			return {
+				block: true as const,
+				reason:
+					"Readonly mode: handoff is disabled unless the user explicitly requests /handoff. " +
+					"Use spawn for same-topic delegation or ask for /handoff when a real context pivot is required.",
 			};
 		}
 
@@ -178,7 +205,7 @@ export default function (pi: ExtensionAPI): void {
 				if (ctx.hasUI) {
 					const message = result.boundaryHint
 						? state.readonlyEnabled
-							? `Active notebook topic changed: ${result.boundaryHint.from} → ${result.boundaryHint.to}. This is a likely task boundary; use spawn only for same-topic delegation, or disable readonly with /readonly before handoff.`
+							? `Active notebook topic changed: ${result.boundaryHint.from} → ${result.boundaryHint.to}. This is a likely task boundary; use spawn only for same-topic delegation. If the user explicitly requests /handoff, complete it and make clear the fresh context resumes in readonly mode.`
 							: `Active notebook topic changed: ${result.boundaryHint.from} → ${result.boundaryHint.to}. This is a likely task boundary; handoff is recommended before continuing.`
 						: `Active notebook topic: ${result.current}`;
 					ctx.ui.notify(message, result.boundaryHint ? "warning" : "info");
@@ -334,8 +361,9 @@ export default function (pi: ExtensionAPI): void {
 				role: "custom" as const,
 				customType: "agenticoding-readonly-nudge",
 				content: state.readonlyEnabled
-					? "Readonly mode is active. write, edit, handoff, and bash filesystem writes/deletions outside the OS temp dir are blocked. " +
-					  "Allowed: read, notebook, env inheritance, and non-mutating bash."
+					? state.pendingRequestedHandoff?.readonlyBypassActive
+						? "Readonly mode is active. write, edit, and bash filesystem writes/deletions outside the OS temp dir are blocked. A temporary exception allows the handoff tool for the current user-requested handoff only. After compaction, the fresh context will resume in readonly mode and this exception will be cleared."
+						: "Readonly mode is active. write, edit, handoff, and bash filesystem writes/deletions outside the OS temp dir are blocked unless the user explicitly requests /handoff. Allowed: read, notebook, env inheritance, and non-mutating bash."
 					: "Readonly mode has been turned off. You may now use write, edit, handoff, and bash freely." +
 					  (percent !== null && percent >= 30
 						? " Context was at " + Math.round(percent) + "% — if the work changed topics, you can handoff now."
@@ -345,9 +373,12 @@ export default function (pi: ExtensionAPI): void {
 			};
 		}
 
+		const mustEnforceRequestedHandoff = state.pendingRequestedHandoff !== null;
+
 		// Below primacy-zone threshold (~30%), skip watchdog unless a boundary
-		// hint is pending — context is still fresh enough that nudges add noise.
-		if (!state.pendingTopicBoundaryHint && (percent === null || percent < 30)) {
+		// hint or a sticky user-requested handoff is pending — context is still
+		// fresh enough that ordinary nudges add noise.
+		if (!mustEnforceRequestedHandoff && !state.pendingTopicBoundaryHint && (percent === null || percent < 30)) {
 			state.lastWatchdogBand = null;
 			if (readonlyNudgeMsg) {
 				return { messages: [...event.messages, readonlyNudgeMsg] };
@@ -358,7 +389,7 @@ export default function (pi: ExtensionAPI): void {
 		// Throttle: only nudge when crossing into a higher context-percentage band.
 		// Bands: null (<30), 0 (30-49), 1 (50-69), 2 (70+). This prevents nudging
 		// every turn once past 30%.
-		if (!state.pendingTopicBoundaryHint) {
+		if (!mustEnforceRequestedHandoff && !state.pendingTopicBoundaryHint) {
 			const band = percent! < 50 ? 0 : percent! < 70 ? 1 : 2;
 			if (state.lastWatchdogBand !== null && band <= state.lastWatchdogBand) {
 				if (readonlyNudgeMsg) {
@@ -410,14 +441,6 @@ export default function (pi: ExtensionAPI): void {
 
 	// ── update TUI indicators after each turn ───────────────────────
 	pi.on("turn_end", async (_event, ctx: ExtensionContext) => {
-		// Fallback: clear handoff indicator if the LLM completed a turn
-		// without calling the handoff tool (ignored the direction)
-		if (state.pendingRequestedHandoff && !state.pendingRequestedHandoff.toolCalled) {
-			state.pendingRequestedHandoff = null;
-			if (ctx.hasUI) {
-				ctx.ui.setStatus(STATUS_KEY_HANDOFF, undefined);
-			}
-		}
 		updateIndicators(ctx, state);
 	});
 }

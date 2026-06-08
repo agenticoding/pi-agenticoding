@@ -69,7 +69,7 @@ export function updateIndicators(ctx: ExtensionContext, state: AgenticodingState
 	if (usage && usage.percent !== null && usage.percent >= 70) {
 		const pct = Math.round(usage.percent);
 		const warning = state.readonlyEnabled
-			? `Context at ${pct}% — readonly: same topic → spawn; different topic → disable readonly, then handoff`
+			? `Context at ${pct}% — readonly: same topic → spawn; different topic → use /handoff for a real pivot; fresh context resumes readonly`
 			: state.activeNotebookTopic
 				? `Context at ${pct}% — use topic fit: same topic → spawn, different topic → handoff`
 				: `Context at ${pct}% — no active topic; handoff soon unless you can assign one cleanly`;
