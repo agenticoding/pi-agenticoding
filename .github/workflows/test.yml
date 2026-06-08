@@ -22,24 +22,6 @@ on:
     paths-ignore: ['*.md', '**/docs/**']
 
 jobs:
-  # ── Quick-check gate — catch trivial failures before the full matrix ──
-  quick-check:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: "22"
-          cache: "npm"
-      - run: npm ci
-
-      # Fast pre-flight checks — type errors and security issues before matrix
-      - name: Type check
-        run: npx tsc --noEmit
-
-      - name: Security audit
-        run: npm audit --audit-level=moderate
-
   # ── Cross-platform test matrix ──────────────────────────────────────
   # Node 22 (minimum) is tested only on Linux — the primary platform and the only one
   # guaranteed to have the oldest toolchain. macOS and Windows test Node 24 (latest)
@@ -47,7 +29,6 @@ jobs:
   # balances CI cost with meaningful coverage while ensuring the minimum version works
   # correctly on the platform most likely to encounter toolchain edge cases.
   test:
-    needs: quick-check
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false          # report every combination, don't cancel
@@ -70,6 +51,13 @@ jobs:
           cache: "npm"
 
       - run: npm ci
+
+      # Uniform pre-flight checks — type errors and security issues on every platform
+      - name: Type check
+        run: npx tsc --noEmit
+
+      - name: Security audit
+        run: npm audit --audit-level=moderate
 
       # Unit suite (unit tests + snapshot tests + property-based tests)
       - name: Unit tests
