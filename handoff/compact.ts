@@ -7,8 +7,6 @@
 
 import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
 import type { AgenticodingState } from "../state.js";
-import { clearActiveNotebookTopic } from "../notebook/topic.js";
-import { STATUS_KEY_HANDOFF } from "../tui.js";
 
 function getImpossibleKeptId(branchEntries: SessionEntry[]): string {
 	const leaf = branchEntries[branchEntries.length - 1];
@@ -16,20 +14,15 @@ function getImpossibleKeptId(branchEntries: SessionEntry[]): string {
 }
 
 export function registerHandoffCompaction(pi: ExtensionAPI, state: AgenticodingState): void {
-	pi.on("session_before_compact", async (event, ctx: ExtensionContext) => {
+	pi.on("session_before_compact", async (event, _ctx: ExtensionContext) => {
 		const pending = state.pendingHandoff;
 		if (!pending) {
 			return;
 		}
 
 		state.pendingHandoff = null;
-		state.pendingRequestedHandoff = null;
-		clearActiveNotebookTopic(state);
-
-		// Clear the handoff progress indicator now that compaction is consuming it
-		if (ctx.hasUI) {
-			ctx.ui.setStatus(STATUS_KEY_HANDOFF, undefined);
-		}
+		// Keep pendingRequestedHandoff — compaction must complete successfully first.
+		// onComplete in handoff/tool.ts clears it after success; onError preserves it for retry.
 
 		return {
 			compaction: {

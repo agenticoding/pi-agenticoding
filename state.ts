@@ -35,9 +35,13 @@ export interface AgenticodingState {
 
 	/** User-requested handoff that must result in a real tool-driven compaction. */
 	pendingRequestedHandoff: {
-		direction: string;
-		enforcementAttempts: number;
 		toolCalled: boolean;
+		/** Temporary readonly exception: allow only the handoff tool for this request. */
+		readonlyBypassActive: boolean;
+		/** Fresh context after compaction resumes in readonly mode. */
+		resumeReadonlyAfterHandoff: boolean;
+		/** Turn counter for enforcement nudge. Cleared after N consecutive failed attempts. */
+		enforcementAttempts: number;
 	} | null;
 
 	/**
@@ -64,7 +68,7 @@ export interface AgenticodingState {
 	 */
 	childSessionEpoch: number;
 
-	/** Whether readonly mode is active — blocks write/edit/handoff and bash writes outside temp. */
+	/** Whether readonly mode is active — blocks write/edit and bash writes outside temp; handoff requires explicit /handoff. */
 	readonlyEnabled: boolean;
 
 	/** One-shot flag: deliver a readonly ON or OFF nudge via context hook, then clear. */

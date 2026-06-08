@@ -21,21 +21,20 @@ export function registerHandoffCommand(pi: ExtensionAPI, state: AgenticodingStat
 				if (ctx.hasUI) ctx.ui.notify("Usage: /handoff <direction>", "error");
 				return;
 			}
-			if (state.readonlyEnabled) {
-				if (ctx.hasUI) {
-					ctx.ui.notify(
-						"Readonly mode blocks /handoff. Use spawn only for same-topic delegation, or disable readonly with /readonly before a real handoff.",
-						"warning",
-					);
-				}
-				return;
-			}
 
 			state.pendingRequestedHandoff = {
-				direction,
-				enforcementAttempts: 0,
 				toolCalled: false,
+				readonlyBypassActive: state.readonlyEnabled,
+				resumeReadonlyAfterHandoff: state.readonlyEnabled,
+				enforcementAttempts: 0,
 			};
+
+			if (ctx.hasUI && state.readonlyEnabled) {
+				ctx.ui.notify(
+					"Readonly is active. A temporary handoff-only exception is now enabled for this required handoff. The fresh context after handoff will resume in readonly mode.",
+					"info",
+				);
+			}
 
 			// Show live progress indicator in footer
 			if (ctx.hasUI && ctx.ui.theme) {
@@ -45,8 +44,12 @@ export function registerHandoffCommand(pi: ExtensionAPI, state: AgenticodingStat
 				);
 			}
 
+			const readonlyNotice = state.readonlyEnabled
+				? "\n\nReadonly remains active for normal mutations: write, edit, and non-temp bash writes stay blocked. A temporary exception allows the handoff tool for this request only. You must perform a real handoff now rather than continue normal work. The fresh context after compaction will resume in readonly mode with this handoff exception cleared, so draft the brief for a readonly continuation."
+				: "\n\nYou must perform a real handoff now rather than continue normal work.";
+
 			pi.sendUserMessage(
-				`Handoff direction: ${direction}\n\nPrepare a handoff in the current session. First, save any durable reusable knowledge that aligns with the direction above to the notebook: findings worth keeping, constraints discovered, decisions made, or other grounding future contexts will need. Then draft a concise but sufficiently detailed handoff brief capturing only the remaining situational context: current state, blockers, unresolved questions, failed paths worth avoiding, and next steps. The next context will read the notebook on demand, so do not duplicate notebook content in the brief. Use any structure that makes the next work unambiguous. Reference notebook pages by name when relevant.`,
+				`Handoff direction: ${direction}\n\nThe user explicitly requested /handoff. Prepare a handoff in the current session. First, save any durable reusable knowledge that aligns with the direction above to the notebook: findings worth keeping, constraints discovered, decisions made, or other grounding future contexts will need. Then draft a concise but sufficiently detailed handoff brief capturing only the remaining situational context: current state, blockers, unresolved questions, failed paths worth avoiding, and next steps. The next context will read the notebook on demand, so do not duplicate notebook content in the brief. Use any structure that makes the next work unambiguous. Reference notebook pages by name when relevant.${readonlyNotice}`,
 				ctx.isIdle() ? undefined : { deliverAs: "followUp" },
 			);
 		},

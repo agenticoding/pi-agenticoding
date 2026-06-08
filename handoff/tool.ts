@@ -11,6 +11,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { clearActiveNotebookTopic } from "../notebook/topic.js";
 import type { AgenticodingState } from "../state.js";
 import { STATUS_KEY_HANDOFF } from "../tui.js";
 
@@ -19,7 +20,7 @@ import { STATUS_KEY_HANDOFF } from "../tui.js";
  *
  * Shape: handoff primer + original task.
  */
-function buildEnrichedTask(task: string): string {
+function buildEnrichedTask(task: string, options?: { resumeReadonlyAfterHandoff?: boolean }): string {
 	const parts: string[] = [
 		"## Handoff — Continue Previous Work",
 		"",
@@ -29,12 +30,20 @@ function buildEnrichedTask(task: string): string {
 		"- Use `notebook_index` to scan available pages when needed",
 		"- Use `spawn` to delegate isolated subtasks to child agents",
 		"- Build on notebook grounding and this brief rather than reconstructing old context",
-		"",
-		"## Task",
-		"",
-		task,
 	];
 
+	if (options?.resumeReadonlyAfterHandoff) {
+		parts.push(
+			"",
+			"## Execution Constraints",
+			"",
+			"- Fresh context resumes in readonly mode.",
+			"- The temporary handoff-only exception used to reach this context is no longer active.",
+			"- Write, edit, and non-temp bash filesystem mutations remain blocked unless the user changes readonly mode.",
+		);
+	}
+
+	parts.push("", "## Task", "", task);
 	return parts.join("\n");
 }
 
@@ -79,18 +88,25 @@ export function registerHandoffTool(
 		}),
 
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const enrichedTask = buildEnrichedTask(params.task);
+			const requestedHandoff = state.pendingRequestedHandoff;
+			const enrichedTask = buildEnrichedTask(params.task, {
+				resumeReadonlyAfterHandoff: requestedHandoff?.resumeReadonlyAfterHandoff === true,
+			});
 			state.pendingHandoff = { task: enrichedTask, source: "tool" };
-			if (state.pendingRequestedHandoff) {
-				state.pendingRequestedHandoff.toolCalled = true;
+			if (requestedHandoff) {
+				requestedHandoff.toolCalled = true;
 			}
 			ctx.compact({
 				onComplete: () => {
+					clearActiveNotebookTopic(state);
+					state.pendingRequestedHandoff = null;
+					if (ctx.hasUI) {
+						ctx.ui.setStatus(STATUS_KEY_HANDOFF, undefined);
+					}
 					pi.sendUserMessage("Proceed.");
 				},
 				onError: () => {
 					state.pendingHandoff = null;
-					// Safe: pendingRequestedHandoff may already be cleaned up by watchdog
 					if (state.pendingRequestedHandoff) {
 						state.pendingRequestedHandoff.toolCalled = false;
 					}
