@@ -7,7 +7,7 @@
  * notebook_read / notebook_index are active.
  */
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { CustomEntry, ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { AgenticodingState } from "../state.js";
 
 // ── Types ─────────────────────────────────────────────────────────────
@@ -45,12 +45,12 @@ export function registerNotebookRehydration(
 
 			if (
 				entry.type !== "custom" ||
-				!ENTRY_TYPES.has((entry as Record<string, unknown>).customType as string)
+				!ENTRY_TYPES.has((entry as CustomEntry).customType)
 			) {
 				continue;
 			}
 
-			const data = (entry as Record<string, unknown>).data as NotebookEntryData | undefined;
+			const data = (entry as CustomEntry<NotebookEntryData>).data;
 			if (!data?.name || typeof data.content !== "string") continue;
 
 			// Skip if we already have a newer version of this name
