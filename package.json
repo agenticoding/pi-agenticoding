@@ -28,7 +28,11 @@
     "test:snapshots:update": "node ./scripts/run-node-test.mjs --update-snapshots tests/unit/render-snapshots.test.ts"
   },
   "devDependencies": {
+    "@earendil-works/pi-ai": "^0.78.1",
+    "@earendil-works/pi-coding-agent": "^0.78.1",
+    "@earendil-works/pi-tui": "^0.78.1",
     "fast-check": "^4.8.0",
+    "typebox": "^1.2.2",
     "typescript": "^6.0.3"
   },
   "pi": {
