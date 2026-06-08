@@ -8,10 +8,38 @@
 
 import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
-import { Type } from "typebox";
+import { Type, type Static } from "typebox";
 import type { AgenticodingState } from "../state.js";
 import { updateIndicators } from "../tui.js";
 import { formatPageList, formatPagePreview, getPageNames, saveNotebookPage } from "./store.js";
+
+// ── Parameter schemas ────────────────────────────────────────────────
+// Extracted to const so type inference works through ToolDefinition<TParams>.
+
+const notebookWriteParams = Type.Object({
+	name: Type.String({
+		description:
+			"Kebab-case notebook page identifier. Prefer stable subject-oriented names; using an existing name overwrites that page (refinement).",
+	}),
+	content: Type.String({
+		description:
+			"Compact markdown for one notebook page. Capture only durable, high-value " +
+			"grounding for one subject or thread, such as facts, architecture, decisions, constraints, " +
+			"open questions, or expensive discoveries. Compact sections like Facts / Architecture / Decisions / Constraints / Open questions work well. Truncated at 50KB / 2000 lines.",
+	}),
+});
+
+const notebookReadParams = Type.Object({
+	name: Type.String({
+		description: "Notebook page name to retrieve.",
+	}),
+});
+
+const notebookIndexParams = Type.Object({});
+
+type WriteArgs = Static<typeof notebookWriteParams>;
+type ReadArgs = Static<typeof notebookReadParams>;
+type IndexArgs = Static<typeof notebookIndexParams>;
 
 // ── Factory ───────────────────────────────────────────────────────────
 
@@ -34,7 +62,7 @@ export function createNotebookToolDefinitions(
 		}
 	};
 
-	const notebookWrite: ToolDefinition = {
+	const notebookWrite: ToolDefinition<typeof notebookWriteParams> = {
 		name: "notebook_write",
 		label: "Notebook Write",
 		description:
@@ -55,19 +83,8 @@ export function createNotebookToolDefinitions(
 				}
 			: {}),
 		executionMode: "sequential",
-		parameters: Type.Object({
-			name: Type.String({
-				description:
-					"Kebab-case notebook page identifier. Prefer stable subject-oriented names; using an existing name overwrites that page (refinement).",
-			}),
-			content: Type.String({
-				description:
-					"Compact markdown for one notebook page. Capture only durable, high-value " +
-					"grounding for one subject or thread, such as facts, architecture, decisions, constraints, " +
-					"open questions, or expensive discoveries. Compact sections like Facts / Architecture / Decisions / Constraints / Open questions work well. Truncated at 50KB / 2000 lines.",
-			}),
-		}),
-		renderCall(args, theme, _context) {
+		parameters: notebookWriteParams,
+		renderCall(args: WriteArgs, theme, _context) {
 			const preview = formatPagePreview(args.content).trim();
 
 			let text = theme.fg("toolTitle", theme.bold("notebook_write ")) +
@@ -78,7 +95,7 @@ export function createNotebookToolDefinitions(
 			return new Text(text, 0, 0);
 		},
 
-		renderResult(result, { expanded }, theme, context) {
+		renderResult(result, { expanded }, theme, context: { args: WriteArgs }) {
 			const details = result.details as { entries: string[]; preview: string };
 
 			let text = theme.fg("success", "\u2713 Saved ") + theme.fg("accent", `"${context.args.name}"`);
@@ -91,14 +108,14 @@ export function createNotebookToolDefinitions(
 			return new Text(text, 0, 0);
 		},
 
-		async execute(_toolCallId, params, _signal, onUpdate, ctx) {
+		async execute(_toolCallId, params: WriteArgs, _signal, onUpdate, ctx) {
 			assertFresh();
 			const saved = await saveNotebookPage(pi, state, params.name, params.content, assertFresh);
 			updateIndicators(ctx, state);
 
 			onUpdate?.({
 				content: [{
-					type: "text",
+					type: "text" as const,
 					text: `Saved "${params.name}"` + (saved.preview ? `: ${saved.preview}` : ""),
 				}],
 				details: { entries: saved.entries, preview: saved.preview },
@@ -106,7 +123,7 @@ export function createNotebookToolDefinitions(
 			return {
 				content: [
 					{
-						type: "text",
+						type: "text" as const,
 						text: `Saved notebook page "${params.name}".` +
 							(saved.preview ? `\n${saved.preview}` : "") +
 							`\n\nNotebook Pages:\n${formatPageList(state) || "(empty)"}`,
@@ -117,7 +134,7 @@ export function createNotebookToolDefinitions(
 		},
 	};
 
-	const notebookRead: ToolDefinition = {
+	const notebookRead: ToolDefinition<typeof notebookReadParams> = {
 		name: "notebook_read",
 		label: "Notebook Read",
 		description:
@@ -133,12 +150,8 @@ export function createNotebookToolDefinitions(
 					],
 				}
 			: {}),
-		parameters: Type.Object({
-			name: Type.String({
-				description: "Notebook page name to retrieve.",
-			}),
-		}),
-		renderResult(result, { expanded }, theme, context) {
+		parameters: notebookReadParams,
+		renderResult(result, { expanded }, theme, context: { args: ReadArgs }) {
 			const details = result.details as { entries: string[]; found: boolean; body?: string };
 			if (!details.found) {
 				return new Text(
@@ -154,7 +167,7 @@ export function createNotebookToolDefinitions(
 			return new Text(text, 0, 0);
 		},
 
-		async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+		async execute(_toolCallId, params: ReadArgs, _signal, _onUpdate, _ctx) {
 			assertFresh();
 			const content = state.notebookPages.get(params.name);
 			const names = getPageNames(state);
@@ -163,7 +176,7 @@ export function createNotebookToolDefinitions(
 				return {
 					content: [
 						{
-							type: "text",
+							type: "text" as const,
 							text:
 								`Notebook page "${params.name}" not found.` +
 								`\n\nNotebook Pages:\n${formatPageList(state) || "(empty)"}`,
@@ -176,7 +189,7 @@ export function createNotebookToolDefinitions(
 			return {
 				content: [
 					{
-						type: "text",
+						type: "text" as const,
 						text:
 							`--- ${params.name} ---\n${content}\n` +
 							`---\nNotebook Pages:\n${formatPageList(state) || "(empty)"}`,
@@ -187,7 +200,7 @@ export function createNotebookToolDefinitions(
 		},
 	};
 
-	const notebookIndex: ToolDefinition = {
+	const notebookIndex: ToolDefinition<typeof notebookIndexParams> = {
 		name: "notebook_index",
 		label: "Notebook Index",
 		description:
@@ -203,7 +216,7 @@ export function createNotebookToolDefinitions(
 					],
 				}
 			: {}),
-		parameters: Type.Object({}),
+		parameters: notebookIndexParams,
 		renderResult(result, { expanded }, theme, _context) {
 			const entries = (result.details as { entries: string[] }).entries;
 			if (entries.length === 0) {
@@ -222,7 +235,7 @@ export function createNotebookToolDefinitions(
 			return {
 				content: [
 					{
-						type: "text",
+						type: "text" as const,
 						text: `Notebook Pages:\n${formatPageList(state) || "(empty)"}`,
 					},
 				],
