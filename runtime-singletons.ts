@@ -20,6 +20,8 @@ export interface RuntimeFrameScheduler {
 	cancelDirty(component: unknown): void;
 	flushNow(): void;
 	clear(): void;
+	/** Marker property to identify the default noop scheduler. */
+	[NOOP_SCHEDULER_MARKER]?: true;
 }
 
 export interface RuntimeWriteLock {
@@ -42,15 +44,23 @@ export function createWriteLock(): RuntimeWriteLock {
 
 // ── Pre‑init defaults (overwritten by spawn/renderer.ts at import time) ──
 
-let current: RuntimeSingletons = {
-	writeLock: createWriteLock(),
-	writeContext: new AsyncLocalStorage<true>(),
-	frameScheduler: {
+/** Sentinel tag to identify the default noop scheduler. */
+const NOOP_SCHEDULER_MARKER = Symbol("no-op-scheduler");
+
+function createNoopScheduler(): RuntimeFrameScheduler {
+	return {
 		markDirty: () => {},
 		cancelDirty: () => {},
 		flushNow: () => {},
 		clear: () => {},
-	},
+		[NOOP_SCHEDULER_MARKER]: true,
+	};
+}
+
+let current: RuntimeSingletons = {
+	writeLock: createWriteLock(),
+	writeContext: new AsyncLocalStorage<true>(),
+	frameScheduler: createNoopScheduler(),
 };
 
 // ── Public API ────────────────────────────────────────────────────────
