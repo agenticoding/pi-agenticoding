@@ -76,6 +76,5 @@ jobs:
         with:
           name: test-results-${{ matrix.os }}-node-${{ matrix.node-version }}
           path: |
-            test-results/
-            tests/__snapshots__/
+            tests/snapshots/
           retention-days: 30

@@ -1,7 +1,7 @@
 /**
  * Snapshot tests for TUI render output.
  *
- * Creates golden files in tests/__snapshots__/ for every render variant.
+ * Creates golden files in tests/snapshots/ for every render variant.
  * Use UPDATE_SNAPSHOTS=1 to create/update golden files.
  *
  * No MockPi needed — uses real Theme, real TUI components via the harness.
@@ -26,7 +26,7 @@ import { createSession, makeTUICtx } from "./helpers.js";
 // ── Paths ─────────────────────────────────────────────────────────────
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const SNAPSHOT_DIR = join(__dirname, "..", "__snapshots__");
+const SNAPSHOT_DIR = join(__dirname, "..", "snapshots");
 
 // ── Render test backend ───────────────────────────────────────────────
 
@@ -61,18 +61,24 @@ function normalizeEOL(s: string): string {
 	return s.replace(/\r?\n/g, "\n");
 }
 
+/** Strip OSC terminal escape sequences for portable snapshot comparison. */
+function stripOSC(s: string): string {
+	return s.replace(/\u001b\]133;[A-Z][^\u0007]*\u0007/g, "");
+}
+
 function matchSnapshot(name: string, actual: string): void {
 	ensureSnapshotDir();
 	const file = join(SNAPSHOT_DIR, `${name}.txt`);
+	const cleaned = stripOSC(normalizeEOL(actual));
 	if (process.env.UPDATE_SNAPSHOTS) {
-		writeFileSync(file, normalizeEOL(actual));
+		writeFileSync(file, cleaned);
 		return;
 	}
 	if (!existsSync(file)) {
 		assert.fail(`Snapshot ${name} is missing. Re-run with UPDATE_SNAPSHOTS=1 to create it.`);
 	}
 	const expected = normalizeEOL(readFileSync(file, "utf-8"));
-	assert.equal(actual, expected, `Snapshot ${name} does not match`);
+	assert.equal(cleaned, expected, `Snapshot ${name} does not match`);
 }
 
 function withHarness(run: (h: { state: AgenticodingState } & ReturnType<typeof createTestHarness>) => void): void {

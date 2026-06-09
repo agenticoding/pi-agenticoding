@@ -1,1 +1,1 @@
-tests/__snapshots__/**/*.txt text eol=lf
+tests/snapshots/**/*.txt text eol=lf

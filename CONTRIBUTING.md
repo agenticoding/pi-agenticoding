@@ -42,18 +42,24 @@ Before submitting, check that your change:
 ## Tests
 
 - `npm test` — runs the unit suite under `tests/unit/` via the in-repo Node test runner.
-- `npm run test:snapshots:check` — runs only the render-snapshot tests; fails on any drift in `tests/__snapshots__/`.
-- `npm run test:snapshots:update` — rewrites the golden files in `tests/__snapshots__/` after an intentional render change. Review the diff carefully: snapshot updates are the only signal that catches unintended UI regressions.
+- `npm run test:snapshots:check` — runs only the render-snapshot tests; fails on any drift in `tests/snapshots/`.
+- `npm run test:snapshots:update` — rewrites the golden files in `tests/snapshots/` after an intentional render change. Review the diff carefully: snapshot updates are the only signal that catches unintended UI regressions.
 - `npm run test:e2e` — runs the process-isolated end-to-end suite under `tests/e2e/`.
 
 ## CI
 
-Pull requests are automatically tested via GitHub Actions. The pipeline runs:
+Pull requests are automatically tested via GitHub Actions. A cross-platform matrix runs on every push and PR:
 
-1. **Quick-check** (Ubuntu, Node 22): `npm ci`, type check (`npx tsc --noEmit`), and security audit (`npm audit`). Catches trivial failures before the full matrix.
-2. **Cross-platform matrix** (depends on quick-check): Unit tests on Ubuntu (Node 22 + 24), macOS (Node 24), and Windows (Node 24). E2E tests on all platforms.
+| OS | Node | Runs |
+|---|---|---|
+| Ubuntu | 22 (minimum) | Type check, security audit, unit tests, E2E tests |
+| Ubuntu | 24 | Type check, security audit, unit tests, E2E tests |
+| macOS | 24 | Unit tests, E2E tests |
+| Windows | 24 | Unit tests, E2E tests |
 
-Snapshot golden files in `tests/__snapshots__/` are stored with LF line endings (enforced by `.gitattributes`). The `normalizeEOL` helper in the snapshot test file normalizes `\r\n` to `\n` on read, so Windows developers get correct comparisons even if their working tree has CRLF. If you update snapshots, the CI matrix validates them on all platforms.
+Node 22 (minimum) is tested only on Linux — the primary platform and the only one guaranteed to have the oldest toolchain. macOS and Windows test Node 24 (latest) to catch regressions in the newest runtime while balancing CI cost.
+
+Snapshot golden files in `tests/snapshots/` are stored with LF line endings (enforced by `.gitattributes`). The `normalizeEOL` helper in the snapshot test file normalizes `\r\n` to `\n` on read, so Windows developers get correct comparisons even if their working tree has CRLF. If you update snapshots, the CI matrix validates them on all platforms.
 The E2E suite runs on all platforms including Windows (verified in issue #12).
 
 ## Community
