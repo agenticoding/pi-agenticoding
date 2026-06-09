@@ -300,15 +300,30 @@ export class SpawnFrameScheduler {
 		this.dirtyComponents.clear();
 
 		const requestRenders = new Set<() => void>();
+		const failed: SpawnFrameTarget[] = [];
+
 		for (const component of batch) {
-			// 1. Apply accumulated event state to rendering components
-			component.flushPendingUpdates();
-			// 2. Invalidate render cache so render() recomputes on next TUI paint
-			component.clearRenderCache();
-			// 3. Collect TUI invalidate
-			const r = component.flushScheduledRender();
-			if (r) requestRenders.add(r);
+			try {
+				// 1. Apply accumulated event state to rendering components
+				component.flushPendingUpdates();
+				// 2. Invalidate render cache so render() recomputes on next TUI paint
+				component.clearRenderCache();
+				// 3. Collect TUI invalidate
+				const r = component.flushScheduledRender();
+				if (r) requestRenders.add(r);
+			} catch (e) {
+				// Component failed during flush — re-queue for next frame.
+				// The error is logged but we continue processing remaining components.
+				console.error("[spawn] flush error on component:", e);
+				failed.push(component);
+			}
 		}
+
+		// Re-queue failed components for recovery on next frame
+		for (const component of failed) {
+			getSingletons().frameScheduler.markDirty(component);
+		}
+
 		// One invalidate per distinct callback per frame tick.
 		for (const requestRender of requestRenders) {
 			requestRender();
