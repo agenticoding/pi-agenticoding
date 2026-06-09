@@ -71,7 +71,7 @@ const mockCtx = {
 	sessionManager: null,
 	modelRegistry: null,
 	isIdle: () => true,
-	signal: undefined,
+	signal: new AbortController().signal,
 	abort: () => {},
 	hasPendingMessages: () => false,
 	shutdown: () => process.exit(0),
