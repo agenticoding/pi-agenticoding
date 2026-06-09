@@ -18,7 +18,7 @@ export const DEFAULT_SCRIPT = resolve(HERE, "test-host.ts");
 const DEFAULT_TIMEOUT_MS = 5000;
 const TIMEOUT_MS = parseInt(process.env.E2E_TIMEOUT_MS ?? "", 10) || DEFAULT_TIMEOUT_MS;
 
-export class PytestHarness {
+export class ProcessHarness {
   private child: ChildProcessWithoutNullStreams;
   private output = "";
   private readOffset = 0;

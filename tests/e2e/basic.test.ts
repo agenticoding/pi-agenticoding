@@ -7,18 +7,18 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { PytestHarness } from "./pty-harness.js";
+import { ProcessHarness } from "./pty-harness.js";
 
 /**
  * Create a fresh host, wait for READY, and return the harness.
  */
-async function start(): Promise<PytestHarness> {
-  const h = new PytestHarness();
+async function start(): Promise<ProcessHarness> {
+  const h = new ProcessHarness();
   await h.waitForText("READY");
   return h;
 }
 
-async function withHarness(run: (h: PytestHarness) => Promise<void>): Promise<void> {
+async function withHarness(run: (h: ProcessHarness) => Promise<void>): Promise<void> {
   const h = await start();
   try {
     await run(h);
