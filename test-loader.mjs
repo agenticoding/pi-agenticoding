@@ -7,14 +7,17 @@ import { existsSync } from "node:fs";
  * Walk up from a start directory to find node_modules/<name>.
  * Works regardless of how the package was installed (local vs global).
  */
-function findPackageRoot(name, startDir) {
+function findPackageRoot(name, startDir, maxDepth = 50) {
 	let dir = startDir;
+	let depth = 0;
 	while (true) {
+		if (depth > maxDepth) return null;
 		const candidate = path.join(dir, "node_modules", name);
 		if (existsSync(candidate)) return candidate;
 		const parent = path.dirname(dir);
 		if (parent === dir) return null;
 		dir = parent;
+		depth++;
 	}
 }
 
