@@ -31,3 +31,26 @@ test("register-loader resolves test-loader relative to itself instead of cwd", (
 		rmSync(cwd, { recursive: true, force: true });
 	}
 });
+
+test("register-loader errors when entry file does not exist", () => {
+	const cwd = mkdtempSync(resolve(tmpdir(), "pi-agenticoding-loader-fail-"));
+	try {
+		const result = spawnSync(
+			process.execPath,
+			["--import", REGISTER_LOADER, "/nonexistent/entry.mjs"],
+			{
+				cwd,
+				encoding: "utf8",
+				env: { ...process.env, NODE_OPTIONS: "" },
+			},
+		);
+
+		assert.notEqual(result.status, 0, "should exit non-zero for missing entry");
+		assert.ok(
+			result.stderr.includes("nonexistent") || result.stderr.includes("ENOENT"),
+			"stderr should reference the missing file, got: " + result.stderr,
+		);
+	} finally {
+		rmSync(cwd, { recursive: true, force: true });
+	}
+});
