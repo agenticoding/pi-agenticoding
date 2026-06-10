@@ -5854,6 +5854,26 @@ test("classifyBashCommand blocks curl remote-name flag permutations outside temp
 	assert.equal(isDirect("curl -JO http://example.com/evil.sh", tmp), true, "same forms remain allowed when cwd is temp");
 });
 
+test("classifyBashCommand does not confuse curl attached option values with -O", () => {
+	assert.equal(isDirect("curl -XPOST http://example.com"), true, "-XPOST should not be treated as remote-name");
+	assert.equal(isDirect("curl -AFOO http://example.com"), true, "-AFOO should not be treated as remote-name");
+	assert.equal(isDirect("curl -bCOOKIE http://example.com"), true, "-bCOOKIE should not be treated as remote-name");
+	assert.equal(isDirect("curl -uUSER http://example.com"), true, "-uUSER should not be treated as remote-name");
+	assert.equal(isDirect("curl -CO http://example.com"), true, "-CO should not be treated as remote-name");
+	assert.equal(isDirect("curl -KO http://example.com"), true, "-KO should not be treated as remote-name");
+	// Regression: flags not previously in CURL_VALUE_SHORT_FLAGS — none write to cwd
+	assert.equal(isDirect("curl -dO http://example.com"), true, "-dO is POST data, no cwd write");
+	assert.equal(isDirect("curl -DO http://example.com"), true, "-DO is dump-header, no cwd write");
+	assert.equal(isDirect("curl -FO http://example.com"), true, "-FO is form data, no cwd write");
+	assert.equal(isDirect("curl -cO http://example.com"), true, "-cO is cookie-jar, no cwd write");
+	// Regression: -eO, -HO, -PO are value-consuming flags, not remote-name
+	assert.equal(isDirect("curl -eO http://example.com"), true, "-eO is referer, not remote-name");
+	assert.equal(isDirect("curl -HO http://example.com"), true, "-HO is header, not remote-name");
+	assert.equal(isDirect("curl -PO http://example.com"), true, "-PO is ftp-port, not remote-name");
+	// -oO writes to cwd via -o flag, so it IS blocked (correct behavior)
+	assert.equal(isBlocked("curl -oO http://example.com"), true, "-oO writes to O in cwd via -o flag");
+});
+
 test("classifyBashCommand blocks curl -O even with explicit -o temp path", () => {
 	const tmp = os.tmpdir();
 	// -O still writes URL basename to cwd, even when -o targets temp dir
