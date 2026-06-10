@@ -65,7 +65,11 @@ let current: RuntimeSingletons = {
 
 // ── Public API ────────────────────────────────────────────────────────
 
-/** Atomically replace all singletons.  Test‑only — use __ naming convention. */
+/** Atomically replace all singletons.
+ * Called by spawn/renderer.ts at module evaluation time (production) and by
+ * tests via createTestHarness().  The __ prefix signals that callers should
+ * understand the lifecycle implications — see spawn/renderer.ts for the
+ * production registration pattern. */
 export function __setSingletons(
 	s: RuntimeSingletons,
 	options?: { forceWriteLock?: boolean },
