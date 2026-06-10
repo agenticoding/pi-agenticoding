@@ -416,7 +416,11 @@ function getMutationTargets(command: string, tokens: string[]): string[] | null 
 					// First arg is the backup extension — skip it.
 					// If -e was used, expression is not in non-option args (already consumed by -e skip).
 					// Remaining args after the extension are targets.
-					return hasExpressionFlag ? args.slice(1) : args.slice(2);
+					if (hasExpressionFlag) {
+						// Only empty-string backup extension is valid with -e.
+						return extArg === "" ? args.slice(1) : args;
+					}
+					return args.slice(2);
 				}
 				// No backup extension.
 				// If -e was used, all non-option args are targets.

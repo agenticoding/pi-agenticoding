@@ -5494,6 +5494,18 @@ test("classifyBashCommand blocks ruby in-place mutation", () => {
 	assert.equal(isBlocked("ruby -pi -e 's/a/b/g' file.txt"), true, "ruby -pi is blocked outside temp");
 });
 
+test("classifyBashCommand blocks sed -i -e without backup extension", () => {
+	// H4 fix: when -e is used without an explicit backup extension,
+	// the first non-option arg is the target, not a backup extension.
+	assert.equal(isBlocked("sed -i -e 's/foo/g' config"), true, "-e without backup ext");
+	assert.equal(isBlocked("sed -i -e 's/foo/g' /etc/config"), true, "-e with full path");
+	const tmp = os.tmpdir();
+	assert.equal(isDirect("sed -i -e 's/foo/g' " + tmp + "/config"), true, "-e inside temp");
+	// Existing macOS form with empty backup ext should still work
+	assert.equal(isBlocked("sed -i '' -e 's/foo/g' /etc/config"), true, "empty backup ext + -e");
+	assert.equal(isDirect("sed -i '' -e 's/foo/g' " + tmp + "/config"), true, "empty backup ext + -e inside temp");
+});
+
 test("classifyBashCommand blocks sed -i with multiple -e expressions outside temp", () => {
 	// H3 fix: expression values from -e flags should not leak as false targets
 	assert.equal(isBlocked("sed -i '' -e 's/foo/g' -e 's/bar/g' /etc/config"), true, "multi -e outside temp");
