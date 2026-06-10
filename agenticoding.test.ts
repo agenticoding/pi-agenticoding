@@ -6158,6 +6158,16 @@ test("applyReadonlyBashGuard fallback mirrors classifyBashCommand on unsupported
 	}
 });
 
+test("classifyBashCommand allows node -e with >= operator (no false positive)", () => {
+	// H4 fix: >= inside node -e inline code is not a write redirect
+	assert.equal(isDirect('node -e "var x=5; if(x>=0) console.log(x);"'), true);
+	assert.equal(isDirect('node -e "for(var i=0;i<10;i++){}"'), true, "< in for loop");
+});
+
+test("classifyBashCommand allows >= in test command", () => {
+	assert.equal(isDirect("test 5 -ge 3"), true, "-ge comparison");
+});
+
 test("classifyBashCommand: deep recursion triggers depth limit", () => {
 	// Build a deeply nested eval chain with safe commands to exceed the depth limit.
 	// eval always recurses, so each level increments depth. We need 11+ levels.

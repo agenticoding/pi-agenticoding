@@ -712,6 +712,8 @@ function getUnsafeWriteRedirectTarget(cmd: string, cwd: string): string | null {
 		const next = cmd[i + 1];
 		// >&N = fd redirect (e.g., 2>&1) — not a file write, skip
 		if (next === "&" && /^[\d-]$/.test(cmd[i + 2] ?? "")) continue;
+		// >= is the comparison operator (e.g., in [[ or node -e), not a write redirect
+		if (next === "=") continue;
 		// >& = combined stdout+stderr redirect to a file, treat as 2-char operator
 		const opLen = next === ">" || next === "|" || next === "&" ? 2 : 1;
 		const { target, end } = readRedirectTarget(cmd, i + opLen);
