@@ -104,7 +104,7 @@ describe("agenticoding E2E", () => {
     await h.waitForText("ERR:");
     const snap = h.snapshot();
     assert.ok(
-      snap.includes("authoritative") || snap.includes("already exists"),
+      snap.includes("authoritative"),
       "human-set topic blocks agent override",
     );
   }));

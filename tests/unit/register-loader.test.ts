@@ -46,8 +46,9 @@ test("register-loader errors when entry file does not exist", () => {
 		);
 
 		assert.notEqual(result.status, 0, "should exit non-zero for missing entry");
+		// Node.js always includes the path in ENOENT errors, so checking for "nonexistent" is sufficient
 		assert.ok(
-			result.stderr.includes("nonexistent") || result.stderr.includes("ENOENT"),
+			result.stderr.includes("nonexistent"),
 			"stderr should reference the missing file, got: " + result.stderr,
 		);
 	} finally {
