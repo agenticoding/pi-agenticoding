@@ -81,12 +81,13 @@ function matchSnapshot(name: string, actual: string): void {
 	assert.equal(cleaned, expected, `Snapshot ${name} does not match`);
 }
 
-function withHarness(run: (h: { state: AgenticodingState } & ReturnType<typeof createTestHarness>) => void): void {
-	const h = { state: createState(), ...createTestHarness() };
+function withHarness(run: (state: AgenticodingState) => void): void {
+	const harness = createTestHarness();
+	const state = createState();
 	try {
-		run(h);
+		run(state);
 	} finally {
-		h.teardown();
+		harness.teardown();
 	}
 }
 
@@ -134,7 +135,7 @@ test("spawn call long prompt matches snapshot", () => {
 // 3–5: Spawn result (renderSpawnResult, static Text path, no child session)
 // ═══════════════════════════════════════════════════════════════════════
 
-test("spawn result success matches snapshot", () => withHarness((h) => {
+test("spawn result success matches snapshot", () => withHarness((state) => {
 	const component = renderSpawnResult(
 		{
 			content: [{ type: "text", text: "Task completed successfully. All tests pass and documentation is updated." }],
@@ -148,14 +149,14 @@ test("spawn result success matches snapshot", () => withHarness((h) => {
 		false,
 		theme,
 		{ toolCallId: "tc-1", invalidate: () => {}, showImages: false, lastComponent: undefined },
-		h.state,
+		state,
 	);
 
 	const rtb = new RenderTestBackend().render(component as any, SNAP_WIDTH);
 	matchSnapshot("spawn-result-success", rtb.toSnapshot());
 }));
 
-test("spawn result error matches snapshot", () => withHarness((h) => {
+test("spawn result error matches snapshot", () => withHarness((state) => {
 	const component = renderSpawnResult(
 		{
 			content: [{ type: "text", text: "Failed to connect to API: rate limit exceeded. Retry after 60 seconds." }],
@@ -169,14 +170,14 @@ test("spawn result error matches snapshot", () => withHarness((h) => {
 		false,
 		theme,
 		{ toolCallId: "tc-2", invalidate: () => {}, showImages: false, lastComponent: undefined },
-		h.state,
+		state,
 	);
 
 	const rtb = new RenderTestBackend().render(component as any, SNAP_WIDTH);
 	matchSnapshot("spawn-result-error", rtb.toSnapshot());
 }));
 
-test("spawn result aborted matches snapshot", () => withHarness((h) => {
+test("spawn result aborted matches snapshot", () => withHarness((state) => {
 	const component = renderSpawnResult(
 		{
 			content: [{ type: "text", text: "Operation cancelled by user request." }],
@@ -190,7 +191,7 @@ test("spawn result aborted matches snapshot", () => withHarness((h) => {
 		false,
 		theme,
 		{ toolCallId: "tc-3", invalidate: () => {}, showImages: false, lastComponent: undefined },
-		h.state,
+		state,
 	);
 
 	const rtb = new RenderTestBackend().render(component as any, SNAP_WIDTH);
@@ -201,9 +202,9 @@ test("spawn result aborted matches snapshot", () => withHarness((h) => {
 // 6–8: NestedAgentSessionComponent (via renderSpawnResult with child session)
 // ═══════════════════════════════════════════════════════════════════════
 
-test("nested collapsed running matches snapshot", () => withHarness((h) => {
+test("nested collapsed running matches snapshot", () => withHarness((state) => {
 	const session = createSession([]);
-	h.state.childSessions.set("tc-nested-1", session);
+	state.childSessions.set("tc-nested-1", session);
 
 	const component = renderSpawnResult(
 		{
@@ -213,21 +214,21 @@ test("nested collapsed running matches snapshot", () => withHarness((h) => {
 		false,
 		theme,
 		{ toolCallId: "tc-nested-1", invalidate: () => {}, showImages: false, lastComponent: undefined },
-		h.state,
+		state,
 	);
 
 	const rtb = new RenderTestBackend().render(component as any, SNAP_WIDTH);
 	matchSnapshot("nested-collapsed-running", rtb.toSnapshot());
 }));
 
-test("nested collapsed success matches snapshot", () => withHarness((h) => {
+test("nested collapsed success matches snapshot", () => withHarness((state) => {
 	const session = createSession([
 		{
 			role: "assistant",
 			content: [{ type: "text", text: "Analysis complete. The optimal solution is to use a cache layer with TTL of 300s." }],
 		},
 	]);
-	h.state.childSessions.set("tc-nested-2", session);
+	state.childSessions.set("tc-nested-2", session);
 
 	const component = renderSpawnResult(
 		{
@@ -242,21 +243,21 @@ test("nested collapsed success matches snapshot", () => withHarness((h) => {
 		false,
 		theme,
 		{ toolCallId: "tc-nested-2", invalidate: () => {}, showImages: false, lastComponent: undefined },
-		h.state,
+		state,
 	);
 
 	const rtb = new RenderTestBackend().render(component as any, SNAP_WIDTH);
 	matchSnapshot("nested-collapsed-success", rtb.toSnapshot());
 }));
 
-test("nested expanded matches snapshot", () => withHarness((h) => {
+test("nested expanded matches snapshot", () => withHarness((state) => {
 	const session = createSession([
 		{
 			role: "assistant",
 			content: [{ type: "text", text: "Here is the implementation plan. Create data access layer, add caching middleware, wire up the controller." }],
 		},
 	]);
-	h.state.childSessions.set("tc-nested-3", session);
+	state.childSessions.set("tc-nested-3", session);
 
 	const component = renderSpawnResult(
 		{
@@ -271,7 +272,7 @@ test("nested expanded matches snapshot", () => withHarness((h) => {
 		true,
 		theme,
 		{ toolCallId: "tc-nested-3", invalidate: () => {}, showImages: false, lastComponent: undefined },
-		h.state,
+		state,
 	);
 
 	const rtb = new RenderTestBackend().render(component as any, SNAP_WIDTH);
