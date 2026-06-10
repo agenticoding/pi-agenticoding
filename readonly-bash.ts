@@ -31,12 +31,6 @@ import { TEMP_DIR } from "./temp-dir.js";
  *   - **xargs with stdin-fed package managers** — `printf install | xargs npm`
  *     bypasses because `xargs npm` alone has no verb args. The pipe feeds
  *     `install` at runtime via stdin; only the OS sandbox blocks the writes.
- *   - **curl combined-flag permutations** — `-JO`, `-sJO` (where `-O` is not
- *     the first character after `-`) pass through undetected because the
- *     classifier only checks `startsWith("-O")`, not substring presence.
- *     The natural form `-OJ` (now detected) should be used, or separate flags.
- *   - **curl --remote-name-all** — implicitly applies `-O` to every URL but
- *     has no `-O` token for the classifier to detect.
  */
 
 type Verdict =
@@ -329,16 +323,36 @@ function getCurlWriteTargets(tokens: string[]): { hasRemoteName: boolean; output
 			outputs.push(cArgs[i].slice(2));
 			continue;
 		}
-		if (cArgs[i] === "-O" || cArgs[i] === "--remote-name") {
+		if (cArgs[i] === "-O" || cArgs[i] === "--remote-name" || cArgs[i] === "--remote-name-all") {
 			hasRemoteName = true;
 			continue;
 		}
-		if (cArgs[i].startsWith("-O") && cArgs[i].length > 2 && !cArgs[i].startsWith("--")) {
+		if (isCurlShortFlagBundleWithRemoteName(cArgs[i])) {
 			hasRemoteName = true;
 			continue;
 		}
 	}
 	return { hasRemoteName, outputs };
+}
+
+const CURL_VALUE_SHORT_FLAGS = new Set([
+	// All 27 value-consuming short flags per curl --help all.
+	// A, b, u, X pre-existed; C, K fixed -CO/-KO; remaining cover -dO, -oO, etc.
+	"A", "b", "u", "X",
+	"C", "K", "y", "Y", "z",
+	"c", "d", "D", "e", "E", "F", "h", "H", "m", "o",
+	"P", "Q", "r", "t", "T", "U", "w", "x",
+]);
+
+function isCurlShortFlagBundleWithRemoteName(token: string): boolean {
+	if (!token.startsWith("-") || token.startsWith("--") || token.length <= 2) return false;
+	const flags = token.slice(1);
+	if (!/^[A-Za-z]+$/.test(flags)) return false;
+	for (const flag of flags) {
+		if (flag === "O") return true;
+		if (CURL_VALUE_SHORT_FLAGS.has(flag)) return false;
+	}
+	return false;
 }
 
 function getMutationTargets(command: string, tokens: string[]): string[] | null {
