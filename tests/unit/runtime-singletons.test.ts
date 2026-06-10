@@ -6,6 +6,7 @@ import {
 	__setSingletons,
 	createWriteLock,
 	getSingletons,
+	isNoopScheduler,
 } from "../../runtime-singletons.js";
 
 test("createTestHarness swaps singleton state atomically and restores it on teardown", () => {
@@ -81,5 +82,17 @@ test("write lock serializes concurrent writers and completes all", async () => {
 	const sorted = [...order].sort((a, b) => a - b);
 	assert.deepEqual(order, sorted, "lock must serialize writers — no concurrent completion");
 
+	h.teardown();
+});
+
+test("isNoopScheduler returns false for SpawnFrameScheduler", () => {
+	// The noop scheduler is created at module init but overwritten by
+	// spawn/renderer.ts at import time — so the global singleton always
+	// holds a real scheduler. The true path (returns true) is exercised by
+	// the import-order guard in createTestHarness() — see test-utils.ts.
+	assert.equal(isNoopScheduler(getSingletons().frameScheduler), false);
+
+	const h = createTestHarness();
+	assert.equal(isNoopScheduler(getSingletons().frameScheduler), false);
 	h.teardown();
 });

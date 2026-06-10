@@ -91,3 +91,8 @@ export function __setSingletons(
 export function getSingletons(): RuntimeSingletons {
 	return current;
 }
+
+/** True when scheduler is the pre-init noop — see createTestHarness() safety check. */
+export function isNoopScheduler(scheduler: RuntimeFrameScheduler): boolean {
+	return NOOP_SCHEDULER_MARKER in scheduler;
+}

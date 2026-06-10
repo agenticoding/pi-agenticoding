@@ -26,6 +26,7 @@ import {
 	__setSingletons,
 	createWriteLock,
 	getSingletons,
+	isNoopScheduler,
 	type RuntimeSingletons,
 } from "../runtime-singletons.js";
 import { SpawnFrameScheduler } from "../spawn/renderer.js";
@@ -67,6 +68,17 @@ export function createTestHarness(): TestHarness {
 	const warnings: Array<{ level: string; args: unknown[] }> = [];
 	const originalWarn = console.warn;
 	const originalError = console.error;
+
+	// Check whether spawn/renderer.ts was already statically imported before
+	// this harness call — if previousSingletons still holds the noop marker,
+	// the production registration at the bottom of spawn/renderer.ts never ran.
+	if (isNoopScheduler(previousSingletons.frameScheduler)) {
+		console.warn(
+			"[test-utils] spawn/renderer.ts was not statically imported before " +
+				"createTestHarness() — the production frame scheduler was never " +
+				"registered. Frame-batched rendering tests will use the noop scheduler.",
+		);
+	}
 
 	// Atomic swap: replace the production singleton container (write lock,
 	// context, frame scheduler) in one call.
