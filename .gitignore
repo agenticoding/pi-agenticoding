@@ -49,6 +49,9 @@ web_modules/
 
 # TypeScript compilation output
 *.js
+*.d.ts
+*.d.cts
+*.d.mts
 
 # Optional npm cache directory
 .npm
