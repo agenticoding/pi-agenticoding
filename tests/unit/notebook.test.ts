@@ -479,6 +479,35 @@ test("saveNotebookPage rejects true reentrancy explicitly", async () => {
 	assert.equal(state.notebookPages.size, 0);
 });
 
+test("saveNotebookPage stays non-reentrant across runtime singleton swaps", async () => {
+	const pi = createTestPI();
+	const state = createState();
+	const previousSingletons = getSingletons();
+
+	try {
+		await assert.rejects(
+			() => Promise.race([
+				saveNotebookPage(pi as any, state, "outer", "outer", async () => {
+					__setSingletons({
+						writeLock: createWriteLock(),
+						writeContext: new AsyncLocalStorage<true>(),
+						frameScheduler: getSingletons().frameScheduler,
+					});
+					await saveNotebookPage(pi as any, state, "inner", "inner");
+				}),
+				new Promise<never>((_, reject) => {
+					setTimeout(() => reject(new Error("timeout")), 1000);
+				}),
+			]),
+			/not reentrant/i,
+		);
+		assert.equal(state.notebookPages.size, 0);
+	} finally {
+		resetNotebookWriteLock();
+		__setSingletons(previousSingletons, { forceWriteLock: true });
+	}
+});
+
 test("saveNotebookPage releases the lock when assertWritable throws", async () => {
 	const pi = createTestPI();
 	const state = createState();
