@@ -6026,6 +6026,15 @@ test("classifyBashCommand uses the last wget output flag", () => {
 	assert.equal(isDirect(`wget -O ${tmp}/out.html -O- http://example.com`), true, "later stdout output should win over earlier temp path");
 });
 
+test("classifyBashCommand recognizes temp-dir download flags", () => {
+	const tmp = os.tmpdir();
+	assert.equal(isDirect(`wget -P ${tmp} http://example.com/file.txt`), true, "wget -P temp allowed");
+	assert.equal(isDirect(`wget --directory-prefix=${tmp} http://example.com/file.txt`), true, "wget --directory-prefix temp allowed");
+	assert.equal(isBlocked("wget -P /etc http://example.com/file.txt"), true, "wget -P non-temp blocked");
+	assert.equal(isDirect(`curl -O --output-dir ${tmp} http://example.com/file.txt`), true, "curl --output-dir temp allowed");
+	assert.equal(isBlocked("curl -O --output-dir /etc http://example.com/file.txt"), true, "curl --output-dir non-temp blocked");
+});
+
 test("classifyBashCommand blocks mktemp -d with non-temp pattern", () => {
 	assert.equal(isBlocked('f=$(mktemp -d /etc/temp.XXXX); echo hi > "$f/ok"'), true, "mktemp -d with explicit non-temp dir should be blocked");
 });

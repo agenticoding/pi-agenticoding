@@ -227,7 +227,10 @@ function getFilesystemMutationReason(segment: string, cwd: string, depth: number
 			(a) => a === "-O" || a.startsWith("-O") || a === "--output-document" || a.startsWith("--output-document="),
 		);
 		if (!hasOutputFlag) {
-			return "wget blocked outside temp dir: current directory (use -O /tmp/... to write to temp)";
+			const outputDir = getWgetOutputDir(tokens);
+			if (!outputDir || !isTempPath(outputDir, cwd, shellVars)) {
+				return "wget blocked outside temp dir: current directory (use -O /tmp/... to write to temp)";
+			}
 		}
 	}
 
@@ -235,8 +238,8 @@ function getFilesystemMutationReason(segment: string, cwd: string, depth: number
 	// when cwd itself is inside temp; when -o and -O are combined, both writes
 	// remain cumulative and must be allowed.
 	if (command === "curl") {
-		const { hasRemoteName } = getCurlWriteTargets(tokens);
-		if (hasRemoteName && !isTempPath(".", cwd)) {
+		const { hasRemoteName, outputDir } = getCurlWriteTargets(tokens);
+		if (hasRemoteName && !isTempPath(outputDir ?? ".", cwd, shellVars)) {
 			return "curl blocked outside temp dir: current directory (use -o /tmp/... to write to temp)";
 		}
 	}
@@ -309,10 +312,11 @@ function skipFlagValues(args: string[], flagsWithValues: Set<string>): string[] 
 	return result;
 }
 
-function getCurlWriteTargets(tokens: string[]): { hasRemoteName: boolean; outputs: string[] } {
+function getCurlWriteTargets(tokens: string[]): { hasRemoteName: boolean; outputs: string[]; outputDir: string | null } {
 	const cArgs = tokens.slice(1);
 	const outputs: string[] = [];
 	let hasRemoteName = false;
+	let outputDir: string | null = null;
 	for (let i = 0; i < cArgs.length; i++) {
 		if (cArgs[i] === "--") break; // end of options; remaining args are URLs
 		if ((cArgs[i] === "-o" || cArgs[i] === "--output") && cArgs[i + 1]) {
@@ -320,8 +324,17 @@ function getCurlWriteTargets(tokens: string[]): { hasRemoteName: boolean; output
 			i++;
 			continue;
 		}
+		if (cArgs[i] === "--output-dir" && cArgs[i + 1]) {
+			outputDir = cArgs[i + 1];
+			i++;
+			continue;
+		}
 		if (cArgs[i].startsWith("--output=")) {
 			outputs.push(cArgs[i].slice("--output=".length));
+			continue;
+		}
+		if (cArgs[i].startsWith("--output-dir=")) {
+			outputDir = cArgs[i].slice("--output-dir=".length);
 			continue;
 		}
 		if (cArgs[i].startsWith("-o") && cArgs[i].length > 2 && !cArgs[i].startsWith("--")) {
@@ -337,7 +350,7 @@ function getCurlWriteTargets(tokens: string[]): { hasRemoteName: boolean; output
 			continue;
 		}
 	}
-	return { hasRemoteName, outputs };
+	return { hasRemoteName, outputs, outputDir };
 }
 
 const CURL_VALUE_SHORT_FLAGS = new Set([
@@ -358,6 +371,30 @@ function isCurlShortFlagBundleWithRemoteName(token: string): boolean {
 		if (CURL_VALUE_SHORT_FLAGS.has(flag)) return false;
 	}
 	return false;
+}
+
+/**
+ * Extract the download directory from wget flags (-P / --directory-prefix).
+ * Returns null when no directory flag is present.
+ */
+function getWgetOutputDir(tokens: string[]): string | null {
+	const wArgs = tokens.slice(1);
+	for (let i = 0; i < wArgs.length; i++) {
+		if (wArgs[i] === "--") break;
+		if (wArgs[i] === "-P" && wArgs[i + 1]) {
+			return wArgs[i + 1];
+		}
+		if (wArgs[i].startsWith("-P") && wArgs[i].length > 2) {
+			return wArgs[i].slice(2);
+		}
+		if (wArgs[i] === "--directory-prefix" && wArgs[i + 1]) {
+			return wArgs[i + 1];
+		}
+		if (wArgs[i].startsWith("--directory-prefix=")) {
+			return wArgs[i].slice("--directory-prefix=".length);
+		}
+	}
+	return null;
 }
 
 function getMutationTargets(command: string, tokens: string[]): string[] | null {
@@ -467,6 +504,8 @@ function getMutationTargets(command: string, tokens: string[]): string[] | null 
 			if (outputTarget !== null) {
 				return stripMatchingQuotes(outputTarget) === "-" ? ["/dev/null"] : [outputTarget];
 			}
+			const outputDir = getWgetOutputDir(tokens);
+			if (outputDir !== null) return [outputDir];
 			// wget without -O/--output-document writes to disk (URL basename in cwd) —
 			// this path is unreachable when called via getFilesystemMutationReason (which
 			// handles the no-flag case before calling getMutationTargets), but kept as a
@@ -474,13 +513,14 @@ function getMutationTargets(command: string, tokens: string[]): string[] | null 
 			return ["."];
 		}
 		case "curl": {
-			const { hasRemoteName, outputs } = getCurlWriteTargets(tokens);
+			const { hasRemoteName, outputs, outputDir } = getCurlWriteTargets(tokens);
 			// -o - and --output - write to stdout, not a file — map to /dev/null (safe)
 			const mapped = outputs.map((o) => stripMatchingQuotes(o) === "-" ? "/dev/null" : o);
+			const remoteNameTarget = outputDir ?? ".";
 			if (mapped.length > 0) {
-				return hasRemoteName ? [...mapped, "."] : mapped;
+				return hasRemoteName ? [...mapped, remoteNameTarget] : mapped;
 			}
-			if (hasRemoteName) return ["."];
+			if (hasRemoteName) return [remoteNameTarget];
 			return null;
 		}
 		default:
