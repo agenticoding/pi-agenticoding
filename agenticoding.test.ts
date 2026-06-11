@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6101,6 +6102,28 @@ test("os-sandbox: wrapWithBwrap includes ro-bind and tmpfs", () => {
 	assert.ok(result.includes("--tmpfs /tmp"), "should include tmpfs /tmp");
 	assert.ok(result.includes(cmd), "should contain original command");
 	assert.ok(result.includes("/bin/bash << '"), "should use heredoc with bash");
+});
+
+test("os-sandbox external invariant: wrapped command blocks non-temp writes and allows temp writes", () => {
+	if (!canUseOsSandbox()) return;
+
+	const outsidePath = path.join(process.cwd(), `.pi-readonly-outside-${Date.now()}`);
+	const insideDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-readonly-sandbox-"));
+	const insidePath = path.join(insideDir, "inside.txt");
+	try {
+		assert.throws(
+			() => execFileSync("/bin/bash", ["-c", wrapCommandWithOsSandbox(`echo blocked > "${outsidePath}"`)], { encoding: "utf8", timeout: 5000 }),
+			/(Operation not permitted|Permission denied|readonly mode)/,
+			"sandbox should block writes outside temp",
+		);
+		assert.equal(fs.existsSync(outsidePath), false, "outside temp file should not be created");
+
+		execFileSync("/bin/bash", ["-c", wrapCommandWithOsSandbox(`echo allowed > "${insidePath}"`)], { encoding: "utf8", timeout: 5000 });
+		assert.equal(fs.readFileSync(insidePath, "utf8").trim(), "allowed", "sandbox should allow temp writes");
+	} finally {
+		try { fs.rmSync(outsidePath, { force: true }); } catch { /* best-effort cleanup */ }
+		try { fs.rmSync(insideDir, { recursive: true, force: true }); } catch { /* best-effort cleanup */ }
+	}
 });
 
 test("os-sandbox: wrapCommandWithOsSandbox returns sandbox-exec on darwin", () => {
