@@ -22,7 +22,7 @@ test("createTestHarness swaps singleton state atomically and restores it on tear
 	assert.equal(getSingletons(), before);
 });
 
-test("__setSingletons warns when preserving in-flight write lock", () => {
+test("__setSingletons warns and preserves lock + write context during in-flight writes", () => {
 	// Use harness to isolate the test's singleton manipulation
 	const h = createTestHarness();
 	try {
@@ -32,15 +32,18 @@ test("__setSingletons warns when preserving in-flight write lock", () => {
 			warnings.push(msg);
 		};
 		try {
-			const s = getSingletons();
-			s.writeLock.pending = 1; // simulate in-flight write on test singleton
+			const before = getSingletons();
+			before.writeLock.pending = 1; // simulate in-flight write on test singleton
 			__setSingletons({
 				writeLock: createWriteLock(),
 				writeContext: new AsyncLocalStorage<true>(),
-				frameScheduler: s.frameScheduler,
+				frameScheduler: before.frameScheduler,
 			});
+			const after = getSingletons();
 			assert.ok(warnings.length > 0);
 			assert.match(warnings[0], /pending/);
+			assert.equal(after.writeLock, before.writeLock);
+			assert.equal(after.writeContext, before.writeContext);
 		} finally {
 			console.warn = originalWarn;
 		}

@@ -81,7 +81,13 @@ export function __setSingletons(
 				"Use { forceWriteLock: true } to override.",
 			current.writeLock.pending,
 		);
-		current = { ...s, writeLock: current.writeLock };
+		// Preserve both lock and ALS context together. Swapping only the context
+		// breaks reentrancy detection for writers already running inside the old lock.
+		current = {
+			...s,
+			writeLock: current.writeLock,
+			writeContext: current.writeContext,
+		};
 		return;
 	}
 	current = s;
