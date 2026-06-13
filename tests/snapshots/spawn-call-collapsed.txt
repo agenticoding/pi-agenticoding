@@ -1,0 +1,4 @@
+                                                                                
+ spawn child [medium]                                                           
+ Research the rate limits for the OpenAI API and document the results.          
+                                                                                

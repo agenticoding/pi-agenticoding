@@ -1,0 +1,6 @@
+                                                                                
+     ✅ gpt-4o • medium                                                         
+                                                                                
+      Here is the implementation plan. Create data access layer, add caching    
+      middleware, wire up the controller.                                       
+                                                                                

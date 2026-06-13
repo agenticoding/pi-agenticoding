@@ -10,9 +10,13 @@ export type SpawnResultDetails = {
 	statsUnavailable?: boolean;
 };
 
+// Widen content to accept AgentMessage variants (UserMessage may have string content,
+// AssistantMessage has (TextContent | ThinkingContent | ToolCall)[] content).
+// Functions reading from AgentMessage[] arrays cast via this type at call sites.
 type AssistantMessageLike = {
 	role: string;
-	content?: { type: string; text?: string }[];
+	content?: unknown;
+	stopReason?: unknown;
 };
 
 /**
@@ -22,9 +26,10 @@ export function getLastAssistantText(messages: AssistantMessageLike[]): string {
 	for (let i = messages.length - 1; i >= 0; i--) {
 		const msg = messages[i];
 		if (msg.role !== "assistant") continue;
-		const text = (msg.content ?? [])
+		const blocks = Array.isArray(msg.content) ? (msg.content as Array<Record<string, unknown>>) : [];
+		const text = blocks
 			.filter((block) => block.type === "text" && typeof block.text === "string")
-			.map((block) => block.text ?? "")
+			.map((block) => block.text as string ?? "")
 			.join("\n")
 			.trim();
 		if (text) return text;

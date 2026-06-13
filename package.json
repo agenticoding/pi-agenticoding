@@ -2,7 +2,7 @@
   "name": "pi-agenticoding",
   "version": "0.3.0",
   "type": "module",
-  "description": "Context management primitives for the pi coding agent — spawn, ledger, handoff",
+  "description": "Context management primitives for the pi coding agent — spawn, notebook, handoff",
   "license": "MIT",
   "keywords": [
     "pi-package"
@@ -11,13 +11,28 @@
     "type": "git",
     "url": "git+https://github.com/agenticoding/pi-agenticoding.git"
   },
+  "engines": {
+    "node": ">=22"
+  },
   "peerDependencies": {
-    "@earendil-works/pi-ai": "*",
-    "@earendil-works/pi-coding-agent": "*",
-    "@earendil-works/pi-tui": "*",
-    "typebox": "*"
+    "@earendil-works/pi-ai": "^0.78.1",
+    "@earendil-works/pi-coding-agent": "^0.78.1",
+    "@earendil-works/pi-tui": "^0.78.1",
+    "typebox": "^1.2.2"
+  },
+  "scripts": {
+    "test": "node ./scripts/run-node-test.mjs tests/unit/**/*.test.ts",
+    "test:e2e": "node ./scripts/run-node-test.mjs tests/e2e/**/*.test.ts",
+    "test:all": "npm run test && npm run test:e2e",
+    "test:snapshots:check": "node ./scripts/run-node-test.mjs tests/unit/render-snapshots.test.ts",
+    "test:snapshots:update": "node ./scripts/run-node-test.mjs --update-snapshots tests/unit/render-snapshots.test.ts"
   },
   "devDependencies": {
+    "@earendil-works/pi-ai": "^0.78.1",
+    "@earendil-works/pi-coding-agent": "^0.78.1",
+    "@earendil-works/pi-tui": "^0.78.1",
+    "fast-check": "^4.8.0",
+    "typebox": "^1.2.2",
     "typescript": "^6.0.3"
   },
   "pi": {

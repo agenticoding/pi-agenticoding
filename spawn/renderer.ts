@@ -27,11 +27,16 @@ import {
 	ToolExecutionComponent,
 	UserMessageComponent,
 } from "@earendil-works/pi-coding-agent";
+
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import type { Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
 import { Container, Spacer, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { TUI } from "@earendil-works/pi-tui";
 import type { AgenticodingState } from "../state.js";
+import {
+	__setSingletons,
+	getSingletons,
+} from "../runtime-singletons.js";
 import {
 	getLastAssistantText,
 	type SpawnOutcome,
@@ -149,7 +154,7 @@ function renderPromptPreview(prompt: string, expanded: boolean): { shown: string
  */
 function safeKeyHint(action: string, fallback: string): string {
 	try {
-		return keyHint(action, fallback);
+		return keyHint(action as keyof import("@earendil-works/pi-tui").Keybindings, fallback);
 	} catch {
 		return fallback;
 	}
@@ -249,7 +254,7 @@ interface SpawnFrameTarget {
  * streaming events (50-100+/sec) do not trigger an equal number of heavy
  * component mutations.
  */
-class SpawnFrameScheduler {
+export class SpawnFrameScheduler {
 	private readonly frameMs: number;
 	private dirtyComponents = new Set<SpawnFrameTarget>();
 	private frameTimer: ReturnType<typeof setTimeout> | null = null;
@@ -295,15 +300,30 @@ class SpawnFrameScheduler {
 		this.dirtyComponents.clear();
 
 		const requestRenders = new Set<() => void>();
+		const failed: SpawnFrameTarget[] = [];
+
 		for (const component of batch) {
-			// 1. Apply accumulated event state to rendering components
-			component.flushPendingUpdates();
-			// 2. Invalidate render cache so render() recomputes on next TUI paint
-			component.clearRenderCache();
-			// 3. Collect TUI invalidate
-			const r = component.flushScheduledRender();
-			if (r) requestRenders.add(r);
+			try {
+				// 1. Apply accumulated event state to rendering components
+				component.flushPendingUpdates();
+				// 2. Invalidate render cache so render() recomputes on next TUI paint
+				component.clearRenderCache();
+				// 3. Collect TUI invalidate
+				const r = component.flushScheduledRender();
+				if (r) requestRenders.add(r);
+			} catch (e) {
+				// Component failed during flush — re-queue for next frame.
+				// The error is logged but we continue processing remaining components.
+				console.error("[spawn] flush error on component:", e);
+				failed.push(component);
+			}
 		}
+
+		// Re-queue failed components for recovery on next frame
+		for (const component of failed) {
+			getSingletons().frameScheduler.markDirty(component);
+		}
+
 		// One invalidate per distinct callback per frame tick.
 		for (const requestRender of requestRenders) {
 			requestRender();
@@ -316,8 +336,20 @@ class SpawnFrameScheduler {
 	}
 }
 
-/** Module-level singleton shared by all NestedAgentSessionComponent instances. */
+/**
+ * Module-level singleton shared by all NestedAgentSessionComponent instances.
+ *
+ * Registered into the RuntimeSingletons container at module evaluation time.
+ * Test harnesses overwrite this with a fresh SpawnFrameScheduler via
+ * createTestHarness().  ESM guarantees all static imports resolve before any
+ * module body runs, so the harness always wins.
+ *
+ * IMPORTANT: never use dynamic import() to load this module *after* a
+ * createTestHarness() call, or the production scheduler will overwrite the
+ * test one.
+ */
 const spawnFrameScheduler = new SpawnFrameScheduler();
+__setSingletons({ ...getSingletons(), frameScheduler: spawnFrameScheduler });
 
 // ── NestedAgentSessionComponent ───────────────────────────────────────
 
@@ -396,7 +428,7 @@ class NestedAgentSessionComponent extends Container implements SpawnFrameTarget 
 		this.renderQueued = false;
 		this.queuedRenderToken = undefined;
 		this.renderScheduleToken++;
-		spawnFrameScheduler.cancelDirty(this);
+		getSingletons().frameScheduler.cancelDirty(this);
 	}
 
 	/**
@@ -409,7 +441,7 @@ class NestedAgentSessionComponent extends Container implements SpawnFrameTarget 
 		if (this.renderQueued) return;
 		this.renderQueued = true;
 		this.queuedRenderToken = ++this.renderScheduleToken;
-		spawnFrameScheduler.markDirty(this);
+		getSingletons().frameScheduler.markDirty(this);
 	}
 
 	/**
@@ -555,7 +587,7 @@ class NestedAgentSessionComponent extends Container implements SpawnFrameTarget 
 	dispose(): void {
 		this.unsubscribe?.();
 		this.unsubscribe = undefined;
-		spawnFrameScheduler.cancelDirty(this);
+		getSingletons().frameScheduler.cancelDirty(this);
 		this.clearPendingState();
 		// Snapshot fields before clearing: if session.abort() triggers re-entrant
 		// dispose, the nulled-out fields prevent double-abort.
@@ -602,7 +634,7 @@ class NestedAgentSessionComponent extends Container implements SpawnFrameTarget 
 		// 1. Apply latest streaming message to the assistant component
 		if (this.pendingAssistantMessage && this.streamingComponent) {
 			try {
-				this.streamingComponent.updateContent(this.pendingAssistantMessage);
+				this.streamingComponent.updateContent(this.pendingAssistantMessage as unknown as import("@earendil-works/pi-ai").AssistantMessage);
 			} catch (error) {
 				this.resetStreamingComponent(error, "message_update");
 			}
@@ -677,17 +709,18 @@ class NestedAgentSessionComponent extends Container implements SpawnFrameTarget 
 	private addMessageToChat(message: SpawnChildMessage): void {
 		switch (message.role) {
 			case "bashExecution": {
-				const component = new BashExecutionComponent(message.command, this.fakeUi as unknown as TUI, message.excludeFromContext);
+				const component = new BashExecutionComponent(message.command ?? "", this.fakeUi as unknown as TUI, message.excludeFromContext);
 				if (message.output) {
 					component.appendOutput(message.output);
 				}
-				component.setComplete(message.exitCode, message.cancelled, message.truncated ? { truncated: true } : undefined, message.fullOutputPath);
+				component.setComplete(message.exitCode, message.cancelled ?? false, message.truncated ? { truncated: true } as any : undefined, message.fullOutputPath);
 				this.addChild(component);
 				break;
 			}
 			case "custom": {
 				if (message.display) {
-					const component = new CustomMessageComponent(message, undefined, this.markdownTheme);
+					// CustomMessage type is internal to the SDK; SpawnChildMessage is structurally compatible.
+					const component = new CustomMessageComponent(message as any, undefined, this.markdownTheme);
 					component.setExpanded(this.expanded);
 					this.addChild(component);
 				}
@@ -718,7 +751,7 @@ class NestedAgentSessionComponent extends Container implements SpawnFrameTarget 
 				break;
 			}
 			case "assistant": {
-				this.addChild(new AssistantMessageComponent(message, false, this.markdownTheme, "Thinking..."));
+				this.addChild(new AssistantMessageComponent(message as unknown as import("@earendil-works/pi-ai").AssistantMessage, false, this.markdownTheme, "Thinking..."));
 				break;
 			}
 			case "toolResult": {
@@ -731,7 +764,7 @@ class NestedAgentSessionComponent extends Container implements SpawnFrameTarget 
 		if (!this.session) return;
 
 		// Flush any pending state first so accumulated updates don't double-apply
-		spawnFrameScheduler.cancelDirty(this);
+		getSingletons().frameScheduler.cancelDirty(this);
 		this.clearPendingState();
 
 		this.clear();
@@ -752,7 +785,7 @@ class NestedAgentSessionComponent extends Container implements SpawnFrameTarget 
 				this.addMessageToChat(message);
 				for (const content of message.content ?? []) {
 					if (content.type !== "toolCall") continue;
-					const component = this.createToolComponent(content.name, content.id, content.arguments ?? {});
+					const component = this.createToolComponent(content.name ?? "", content.id ?? "", content.arguments ?? {});
 					this.addToolComponent(component);
 					if (!component) continue;
 					if (stopOutcome) {
@@ -761,17 +794,17 @@ class NestedAgentSessionComponent extends Container implements SpawnFrameTarget 
 							: message.errorMessage || "Error";
 						component.updateResult({ content: [{ type: "text", text: errorMessage }], isError: true });
 					} else {
-						renderedPendingTools.set(content.id, component);
+						renderedPendingTools.set(content.id ?? "", component);
 					}
 				}
 				continue;
 			}
 
 			if (message.role === "toolResult") {
-				const component = renderedPendingTools.get(message.toolCallId);
+				const component = renderedPendingTools.get(message.toolCallId ?? "");
 				if (component) {
-					component.updateResult(message);
-					renderedPendingTools.delete(message.toolCallId);
+					component.updateResult({ ...asToolResult(message), isError: false });
+					renderedPendingTools.delete(message.toolCallId ?? "");
 				}
 				continue;
 			}
@@ -919,7 +952,7 @@ class NestedAgentSessionComponent extends Container implements SpawnFrameTarget 
 
 	private handleMessageStart(event: Extract<AgentSessionEvent, { type: "message_start" }>): void {
 		if (event.message.role === "custom" || event.message.role === "user") {
-			this.addMessageToChat(event.message);
+			this.addMessageToChat(event.message as unknown as SpawnChildMessage);
 			return;
 		}
 		if (event.message.role === "assistant") {
@@ -967,7 +1000,7 @@ class NestedAgentSessionComponent extends Container implements SpawnFrameTarget 
 		// Cheap per-event: update the live action text preview
 		const textBlock = event.message.content?.find(
 			(c: any) => c.type === "text" && c.text,
-		);
+		) as { text: string } | undefined;
 		if (textBlock?.text) {
 			const firstLine = textBlock.text.trim().split("\n")[0];
 			if (firstLine) {
@@ -1209,16 +1242,20 @@ export { NestedAgentSessionComponent, renderSpawnCall, renderSpawnResult };
  * Synchronously flush all pending spawn frame work.
  * Exported for tests.  Not needed in production — the frame timer handles
  * everything automatically.
+ *
+ * Delegate through getSingletons() so that test harness swaps are respected.
  */
 export function flushSpawnFrameScheduler(): void {
-	spawnFrameScheduler.flushNow();
+	getSingletons().frameScheduler.flushNow();
 }
 
 /**
  * Reset the frame scheduler, discarding any pending dirty markers.
  * Exported for tests.  In production the scheduler lifecycle is tied to
  * component dispose(), so this is never needed.
+ *
+ * Delegate through getSingletons() so that test harness swaps are respected.
  */
 export function resetSpawnFrameScheduler(): void {
-	spawnFrameScheduler.clear();
+	getSingletons().frameScheduler.clear();
 }
