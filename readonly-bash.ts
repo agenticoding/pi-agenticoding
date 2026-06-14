@@ -654,13 +654,15 @@ function stripMatchingQuotes(token: string): string {
  * or the variable is unknown.
  */
 function expandShellVariable(rawPath: string, shellVars: ReadonlyMap<string, string>, visited: Set<string> = new Set()): string | null {
-	const braceMatch = rawPath.match(/^\$\{([A-Za-z_][A-Za-z0-9_]*)\}(.*)$/);
+	const braceMatch = rawPath.match(/^\$\{([A-Za-z_][A-Za-z0-9_]*)(?:(:-|:=)([^}]*))?\}(.*)$/);
 	if (braceMatch) {
-		const varName = braceMatch[1];
+		const [, varName, operator, fallback = "", suffix] = braceMatch;
 		if (visited.has(varName)) return null;
 		visited.add(varName);
 		const value = shellVars.get(varName) ?? process.env[varName];
-		return value ? value + braceMatch[2] : null;
+		if (value !== undefined && value !== "") return value + suffix;
+		if (operator === ":-" || operator === ":=") return fallback + suffix;
+		return null;
 	}
 	const plainMatch = rawPath.match(/^\$([A-Za-z_][A-Za-z0-9_]*)(.*)$/);
 	if (plainMatch) {
@@ -668,7 +670,7 @@ function expandShellVariable(rawPath: string, shellVars: ReadonlyMap<string, str
 		if (visited.has(varName)) return null;
 		visited.add(varName);
 		const value = shellVars.get(varName) ?? process.env[varName];
-		return value ? value + plainMatch[2] : null;
+		return value !== undefined && value !== "" ? value + plainMatch[2] : null;
 	}
 	return null;
 }

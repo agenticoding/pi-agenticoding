@@ -4299,6 +4299,16 @@ test("classifyBashCommand checks command substitutions for writes", () => {
 	assert.equal(isDirect("echo $(printf hi)"), true);
 });
 
+test("classifyBashCommand allows temp-safe shell parameter expansion defaults and blocks unsafe ones", () => {
+	const varName = "PI_AGENTICODING_READONLY_UNSET_VAR";
+	delete process.env[varName];
+	const tmp = os.tmpdir();
+	assert.equal(isDirect(`f=\${${varName}:-${tmp}/x}; echo hi > "$f"`), true, '${VAR:-temp} with unset var should be allowed');
+	assert.equal(isDirect(`f=\${${varName}:=${tmp}/x}; echo hi > "$f"`), true, '${VAR:=temp} with unset var should be allowed');
+	assert.equal(isBlocked(`f=\${${varName}:-/etc}; echo hi > "$f"`), true, '${VAR:-/etc} with unset var should be blocked');
+	assert.equal(isBlocked(`f=\${${varName}:=/etc}; echo hi > "$f"`), true, '${VAR:=/etc} with unset var should be blocked');
+});
+
 
 // ── Readonly mode: toggle + TUI indicator tests ────────────────────
 
