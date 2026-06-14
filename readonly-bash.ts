@@ -741,10 +741,17 @@ function isTempPath(rawPath: string, cwd: string, shellVars: ReadonlyMap<string,
 		return isTempPath(expandedVar, cwd, shellVars, visited);
 	}
 
-	if (/[*?`{}()\[\]]/.test(normalized)) {
+	// Unresolved dynamic paths are unsafe: if a shell var expansion still leaves
+	// command/process substitution or an unknown $VAR, we cannot prove temp-dir safety.
+	if (/`|\$\(|<\(/.test(normalized) || /\$(?:\{[^}]*\}|[A-Za-z_][A-Za-z0-9_]*)/.test(normalized)) {
+		return false;
+	}
+
+	if (/[*?{}\[\]]/.test(normalized)) {
 		// Glob pattern - resolve against cwd and check each target individually.
 		// Empty glob (no matches) is allowed — no files to mutate.
 		try {
+			// @ts-expect-error — GlobOptions types omit `dot` (Node 22 fast-glob compat) but runtime supports it
 			const matches = globSync(normalized, { cwd, dot: true });
 			if (matches.length === 0) return true;
 			return matches.every((m) => isTempPath(m, cwd));
