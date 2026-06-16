@@ -87,6 +87,31 @@ test("notebook rehydration clears stale in-memory notebook state when persisted 
 	assert.deepEqual(pi.activeTools, ["notebook_read", "notebook_index"]);
 });
 
+test("notebook rehydration ignores null and malformed branch entries", async () => {
+	const pi = createTestPI();
+	const state = createState();
+	registerNotebookRehydration(pi as any, state);
+	const [handler] = pi.handlers.get("session_start")!;
+
+	await handler(
+		{},
+		{
+			sessionManager: {
+				getBranch: () => [
+					null,
+					undefined,
+					"bad-string",
+					{ type: "custom", customType: "notebook-entry", data: { epoch: 1, name: "keep", content: "valid" } },
+					null,
+					{ customType: "notebook-entry" },
+				],
+			},
+		},
+	);
+
+	assert.equal(state.epoch, 1);
+	assert.deepEqual(Array.from(state.notebookPages.entries()), [["keep", "valid"]]);
+});
 
 test("session_start rehydrates the latest persisted notebook state through the full hook chain", async () => {
 	const pi = createTestPI();
