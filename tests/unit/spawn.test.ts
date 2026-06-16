@@ -682,6 +682,42 @@ test("child tool names exclude inactive registered and active phantom tools", ()
 	assert.equal(toolNames.includes("spawn"), false);
 });
 
+test("buildChildToolNames (2-arg fallback) removes spawn and handoff from inherited tools", () => {
+	const result = buildChildToolNames(["read", "bash", "spawn", "handoff"], []);
+	assert.ok(!result.includes("spawn"), "spawn must be filtered out");
+	assert.ok(!result.includes("handoff"), "handoff must be filtered out");
+	assert.ok(result.includes("read"), "read must be preserved");
+	assert.ok(result.includes("bash"), "bash must be preserved");
+});
+
+test("buildChildToolNames (2-arg fallback) preserves non-spawn/handoff tools", () => {
+	const result = buildChildToolNames(["read", "bash", "write", "edit"], []);
+	assert.deepEqual(result.sort(), ["bash", "edit", "read", "write"]);
+});
+
+test("buildChildToolNames (2-arg fallback) adds custom child tools to the list", () => {
+	const result = buildChildToolNames(["read"], [{ name: "custom-tool", description: "", parameters: {} }]);
+	assert.ok(result.includes("custom-tool"), "custom child tool must be added");
+	assert.ok(result.includes("read"), "inherited tool must be preserved");
+});
+
+test("buildChildToolNames (2-arg fallback) deduplicates overlapping inherited and custom names", () => {
+	const result = buildChildToolNames(["read", "bash"], [{ name: "bash", description: "", parameters: {} }]);
+	assert.deepEqual(result, ["read", "bash"]);
+});
+
+test("buildChildToolNames (2-arg fallback) handles empty parent tool names", () => {
+	assert.deepEqual(buildChildToolNames([], [{ name: "only-child", description: "", parameters: {} }]), ["only-child"]);
+});
+
+test("buildChildToolNames (2-arg fallback) handles empty custom tools", () => {
+	assert.deepEqual(buildChildToolNames(["read", "bash"], []), ["read", "bash"]);
+});
+
+test("buildChildToolNames (2-arg fallback) handles both empty inputs", () => {
+	assert.deepEqual(buildChildToolNames([], []), []);
+});
+
 test("spawn execute short-circuits when signal is already aborted", async () => {
 	const pi = createTestPI();
 	pi.setActiveTools(["read", "bash", "spawn"]);
