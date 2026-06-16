@@ -31,6 +31,10 @@ import { registerHandoffTool } from "./handoff/tool.js";
 import { registerHandoffCommand } from "./handoff/command.js";
 import { registerHandoffCompaction } from "./handoff/compact.js";
 import { registerSpawnTool } from "./spawn/index.js";
+import { registerModelGroupsCommand } from "./model-groups/command.js";
+import { registerModelGroupAutocomplete } from "./model-groups/autocomplete.js";
+import { getEffectiveModelGroupNames } from "./model-groups/router.js";
+import { loadModelGroups, summarizeBootValidation, validateModelGroups } from "./model-groups/store.js";
 import {
 	STATUS_KEY_HANDOFF,
 	STATUS_KEY_TOPIC,
@@ -38,6 +42,24 @@ import {
 	updateIndicators,
 } from "./tui.js";
 import { formatPagePreview } from "./notebook/store.js";
+
+function refreshModelGroupsState(state: AgenticodingState, ctx: ExtensionContext) {
+	if (!ctx.cwd || !(ctx as any).modelRegistry) return null;
+	const loadedModelGroups = loadModelGroups(ctx.cwd);
+	const resolvedModelGroups = validateModelGroups(loadedModelGroups, (ctx as any).modelRegistry);
+	state.modelGroups.groups = resolvedModelGroups;
+	state.modelGroups.validation = { groups: resolvedModelGroups, loadIssues: loadedModelGroups.issues };
+	return state.modelGroups.validation;
+}
+
+function modelGroupsPromptSection(names: string[]): string | undefined {
+	if (names.length === 0) return undefined;
+	return `\n## Model Groups for spawn\n` +
+		`Available Model Groups: ${names.join(", ")}\n` +
+		`When the operator asks to spawn with one of these groups, or mentions #group-name, call spawn with group set to the exact group name only when the mapping is known and confident. ` +
+		`If no known/confident group is requested, omit group and inherit the parent model/thinking. ` +
+		`The group list is names-only; do not assume provider/model membership, thinking levels, auth status, validation details, or storage paths from it.`;
+}
 
 export default function (pi: ExtensionAPI): void {
 	const state: AgenticodingState = createState();
@@ -55,6 +77,7 @@ export default function (pi: ExtensionAPI): void {
 
 	// ── Register commands ───────────────────────────────────────────
 	registerHandoffCommand(pi, state);
+	registerModelGroupsCommand(pi, state);
 
 	// ── /notebook command — interactive page selector ────────────────
 	pi.registerCommand("notebook", {
@@ -162,6 +185,7 @@ export default function (pi: ExtensionAPI): void {
 	pi.on("before_agent_start", async (event, ctx: ExtensionContext) => {
 		// Update TUI indicators before each user-prompt agent run
 		updateIndicators(ctx, state);
+		refreshModelGroupsState(state, ctx);
 
 		const parts: string[] = [event.systemPrompt];
 
@@ -179,6 +203,11 @@ export default function (pi: ExtensionAPI): void {
 				`\n## Active Notebook Topic\n` +
 				`No active notebook topic is set. Early in the next substantive task, assign a short stable topic with \`notebook_topic_set\`. Human-set topics are authoritative.`,
 			);
+		}
+
+		const modelGroupSection = modelGroupsPromptSection(getEffectiveModelGroupNames(state.modelGroups.groups));
+		if (modelGroupSection) {
+			parts.push(modelGroupSection);
 		}
 
 		// Inject notebook listing so the LLM always knows what's available
@@ -239,6 +268,20 @@ export default function (pi: ExtensionAPI): void {
 				ctx.ui.setWidget(WIDGET_KEY_WARNING, undefined);
 			}
 		}
+
+		registerModelGroupAutocomplete(ctx, state);
+		const validation = refreshModelGroupsState(state, ctx);
+		if (validation && ctx.hasUI) {
+			for (const issue of validation.loadIssues) {
+				const backupNote = issue.backupFailed ? "; backup failed, original file left untouched" : "";
+				ctx.ui.notify(`Model Groups config ${issue.kind} in ${issue.scope} scope (${issue.sourcePath}); using empty config for that scope${backupNote}`, "warning");
+			}
+			const { unavailableCount, overrideCount } = summarizeBootValidation(validation.groups);
+			if (unavailableCount > 0 || overrideCount > 0) {
+				ctx.ui.notify(`Model Groups boot validation: ${unavailableCount} unavailable model references · ${overrideCount} project overrides`, "warning");
+			}
+		}
+
 		updateIndicators(ctx, state);
 	});
 

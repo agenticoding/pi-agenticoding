@@ -6,6 +6,7 @@
  */
 
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
+import type { ModelGroupsBootValidation, ResolvedModelGroup } from "./model-groups/types.js";
 
 export interface AgenticodingState {
 	/** Compact notebook pages keyed by kebab-case name */
@@ -39,6 +40,12 @@ export interface AgenticodingState {
 		enforcementAttempts: number;
 		toolCalled: boolean;
 	} | null;
+
+	/** Boot-time Model Groups validation snapshot used by /model-groups. */
+	modelGroups: {
+		groups: ResolvedModelGroup[];
+		validation: ModelGroupsBootValidation | null;
+	};
 
 	/**
 	 * Published child agent sessions keyed by toolCallId.
@@ -78,6 +85,7 @@ export function createState(): AgenticodingState {
 		lastContextPercent: null,
 		pendingHandoff: null,
 		pendingRequestedHandoff: null,
+		modelGroups: { groups: [], validation: null },
 		childSessions,
 		liveChildSessions,
 		childSessionEpoch: 0,
@@ -111,6 +119,8 @@ export function resetState(state: AgenticodingState): void {
 	state.lastContextPercent = null;
 	state.pendingHandoff = null;
 	state.pendingRequestedHandoff = null;
+	state.modelGroups.groups = [];
+	state.modelGroups.validation = null;
 	abortAndClearChildSessions(state);
 }
 

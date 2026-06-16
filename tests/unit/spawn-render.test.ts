@@ -75,6 +75,22 @@ test("collapsed nested spawn render shows preview and stats", () => {
 	assert.ok(lines.some((l: string) => l.includes("trunc")));
 });
 
+test("spawn result identity formats default routed and unknown fallback", () => {
+	const state = createState();
+	const childSpawnTool = makeChildSpawnTool(state);
+	const routed = childSpawnTool.renderResult(
+		{ content: [{ type: "text", text: "done" }], details: { model: "gpt-routed", thinking: "high", truncated: false, outcome: "success", route: { status: "routed", group: "review", provider: "openai", modelId: "gpt-routed" } } },
+		{ expanded: false }, theme, createRenderContext(),
+	) as any;
+	assert.ok(routed.render(120).some((l: string) => l.includes("review → openai/gpt-routed • high")));
+
+	const fallback = childSpawnTool.renderResult(
+		{ content: [{ type: "text", text: "done" }], details: { model: "parent", thinking: "medium", truncated: false, outcome: "success", route: { status: "unknown-fallback", requestedGroup: "rev", provider: "openai", modelId: "parent" } } },
+		{ expanded: false }, theme, createRenderContext(),
+	) as any;
+	assert.ok(fallback.render(120).some((l: string) => l.includes("rev? fallback → openai/parent • medium")));
+});
+
 test("collapsed nested spawn render keeps all text blocks from the last assistant message", () => {
 	const state = createState();
 	const childSpawnTool = makeChildSpawnTool(state);

@@ -178,13 +178,59 @@ test("spawn execute passes broad active registered tool formula to child session
 	);
 
 	assert.equal(seenConfig.model.id, "mock-model");
-	assert.equal(seenConfig.thinkingLevel, "high");
+	assert.equal(seenConfig.thinkingLevel, "medium");
 	assert.equal(seenConfig.cwd, "/tmp");
 	assert.deepEqual(
 		new Set(seenConfig.tools),
 		new Set(["read", "bash", "project_search", "notebook_write", "notebook_read", "notebook_index"]),
 	);
 	assert.deepEqual(seenConfig.customTools.map((tool: any) => tool.name), ["notebook_write", "notebook_read", "notebook_index"]);
+});
+
+test("spawn execute routes Model Group with parent registry/auth and ignores stale thinking", async () => {
+	const pi = createTestPI();
+	pi.setActiveTools(["read", "spawn"]);
+	const state = createState();
+	const routedModel = { provider: "openai", id: "gpt-routed", reasoning: true };
+	state.modelGroups.groups = [{
+		name: "review",
+		scope: "project",
+		sourcePath: "<project>",
+		models: [{ provider: "openai", modelId: "gpt-routed", thinkingLevel: "low" }],
+		validation: { unavailableRefs: [], shadowedByProject: false, degraded: false },
+	} as any];
+	const parentAuth = { sentinel: true };
+	const parentRegistry = {
+		authStorage: parentAuth,
+		find: (provider: string, modelId: string) => provider === "openai" && modelId === "gpt-routed" ? routedModel : undefined,
+		hasConfiguredAuth: (model: any) => model === routedModel,
+	};
+	let seenConfig: any;
+	const mockFactory = async (config: any) => {
+		seenConfig = config;
+		const session = {
+			messages: [] as any[],
+			prompt: async () => { session.messages = [{ role: "assistant", content: [{ type: "text", text: "routed result" }] }]; },
+			abort: async () => {},
+			getSessionStats: () => undefined,
+		};
+		return { session: session as any };
+	};
+	registerSpawnTool(pi as any, state, mockFactory as any);
+
+	const result = await pi.tools.get("spawn").execute(
+		"spawn-routed",
+		{ prompt: "Do the task", group: "review", thinking: "xhigh" },
+		undefined,
+		undefined,
+		{ model: { provider: "openai", id: "parent" }, cwd: "/tmp", modelRegistry: parentRegistry },
+	);
+
+	assert.equal(seenConfig.model, routedModel);
+	assert.equal(seenConfig.thinkingLevel, "low");
+	assert.equal(seenConfig.modelRegistry, parentRegistry);
+	assert.equal(seenConfig.authStorage, parentAuth);
+	assert.deepEqual(result.details.route, { status: "routed", group: "review", provider: "openai", modelId: "gpt-routed" });
 });
 
 test("spawn execute builds prompt with notebook pages and task", async () => {
@@ -308,7 +354,7 @@ test("spawn execute returns result and stats", async () => {
 
 	assert.deepEqual(updates, [{
 		content: [],
-		details: { model: "mock-model", thinking: "high", truncated: false, outcome: "running" },
+		details: { model: "mock-model", thinking: "medium", truncated: false, outcome: "running", route: { status: "inherited" } },
 	}]);
 	assert.equal(result.content[0].text, "child result");
 	assert.equal(result.details.outcome, "success");
@@ -953,7 +999,7 @@ test("spawn execute aborts child session when signal fires during execution", as
 	assert.equal(result.details.outcome, "aborted");
 });
 
-test("spawn renderCall shows prompt preview and thinking level", () => {
+test("spawn renderCall shows prompt preview and optional group", () => {
 	const state = createState();
 	const pi = createTestPI();
 	registerSpawnTool(pi as any, state);
@@ -972,10 +1018,13 @@ test("spawn renderCall shows prompt preview and thinking level", () => {
 	const truncatedLines = truncated.render(120);
 	assert.ok(truncatedLines.some((l: string) => l.includes("more lines")));
 
-	// With thinking level
-	const withThinking = tool.renderCall({ prompt: "Do X", thinking: "high" }, theme, { expanded: false });
-	const thinkingLines = withThinking.render(120);
-	assert.ok(thinkingLines.some((l: string) => l.includes("high")));
+	// Stale thinking is not rendered; optional group is rendered as routing context
+	const staleThinking = tool.renderCall({ prompt: "Do X", thinking: "high" }, theme, { expanded: false });
+	const staleThinkingLines = staleThinking.render(120);
+	assert.ok(!staleThinkingLines.some((l: string) => l.includes("high")));
+	const withGroup = tool.renderCall({ prompt: "Do X", group: "review" }, theme, { expanded: false });
+	const groupLines = withGroup.render(120);
+	assert.ok(groupLines.some((l: string) => l.includes("review")));
 
 	// Expanded: shows full prompt
 	const expanded = tool.renderCall({ prompt: longPrompt }, theme, { expanded: true });
@@ -1209,6 +1258,9 @@ test("spawn tool definitions include prompt hints when registered", () => {
 	registerSpawnTool(pi as any, state);
 
 	const spawnTool = pi.tools.get("spawn")!;
+	assert.ok(spawnTool.parameters.properties.prompt, "spawn should advertise prompt");
+	assert.ok(spawnTool.parameters.properties.group, "spawn should advertise optional group");
+	assert.equal(spawnTool.parameters.properties.thinking, undefined, "spawn should not advertise thinking");
 	assert.ok(typeof spawnTool.promptSnippet === "string", "spawn should have promptSnippet");
 	assert.ok(spawnTool.promptSnippet!.length > 10, "spawn promptSnippet should be non-trivial");
 	assert.ok(Array.isArray(spawnTool.promptGuidelines), "spawn should have promptGuidelines");

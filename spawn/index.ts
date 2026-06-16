@@ -23,11 +23,11 @@ import {
 	ModelRegistry,
 	SessionManager,
 } from "@earendil-works/pi-coding-agent";
-import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import type { AgenticodingState } from "../state.js";
 import { formatPageList } from "../notebook/store.js";
 import { createNotebookToolDefinitions } from "../notebook/tools.js";
+import { resolveSpawnModelRoute } from "../model-groups/router.js";
 import {
 	renderSpawnCall,
 	renderSpawnResult,
@@ -142,13 +142,14 @@ export function buildChildToolNames(
 
 const SPAWN_DESCRIPTION =
 	"Spawn an isolated child agent for a focused subtask. " +
-	"Child inherits parent model, thinking level, cwd, active registered tools executable in the child session, and shared notebook tools; children cannot spawn or handoff. " +
+	"Child inherits parent model, thinking level, cwd, active registered tools executable in the child session, and shared notebook tools unless an optional Model Group routes its model/thinking; children cannot spawn or handoff. " +
 	"Reference notebook pages by name — child will notebook_read them on demand.";
 
 const SPAWN_PROMPT_SNIPPET = "Spawn a focused subtask agent";
 
 const SPAWN_PROMPT_GUIDELINES = [
 	"Use spawn to delegate isolated work to child agents. They are trusted extensions of you with their own context and the same authority. Only condensed results are returned.",
+	"If the operator requests a known Model Group confidently, pass its exact name as group. If no known/confident group is requested, omit group so the child inherits the parent model/thinking.",
 ];
 
 const SPAWN_PARAMETERS = Type.Object({
@@ -157,13 +158,9 @@ const SPAWN_PARAMETERS = Type.Object({
 			"Self-contained task description. Reference notebook pages by name — " +
 			"child will notebook_read them on demand.",
 	}),
-	thinking: StringEnum(
-		["off", "minimal", "low", "medium", "high", "xhigh"] as const,
-		{
-			description:
-				"Override child thinking level. Inherits parent by default.",
-		},
-	),
+	group: Type.Optional(Type.String({
+		description: "Optional exact Model Group name for child model routing. Omit to inherit the parent model/thinking.",
+	})),
 });
 
 
@@ -207,7 +204,7 @@ export async function executeSpawn(
 	pi: ExtensionAPI,
 	ctx: ExtensionContext,
 	state: AgenticodingState,
-	params: { prompt: string; thinking?: ThinkingValue },
+	params: { prompt: string; group?: string; thinking?: unknown },
 	signal: AbortSignal | undefined,
 	onUpdate:
 		| ((result: {
@@ -219,12 +216,27 @@ export async function executeSpawn(
 	sessionFactory: typeof createAgentSession = createAgentSession,
 ) {
 
-	const childModel = ctx.model;
-	if (!childModel) {
+	const parentModel = ctx.model;
+	if (!parentModel) {
 		throw new Error("No model configured. Cannot spawn child agent.");
 	}
 
-	const childThinking: ThinkingValue = params.thinking ?? defaultThinking;
+	const authStorage = (ctx as any).modelRegistry?.authStorage ?? AuthStorage.create();
+	const modelRegistry = (ctx as any).modelRegistry ?? ModelRegistry.create(authStorage);
+	const route = resolveSpawnModelRoute({
+		requestedGroup: params.group,
+		groups: state.modelGroups.groups,
+		parentModel: parentModel as any,
+		parentThinking: defaultThinking,
+		modelRegistry,
+	});
+	const childModel = route.model;
+	const childThinking: ThinkingValue = route.thinking;
+	const routeDetails: SpawnResultDetails["route"] = route.status === "routed"
+		? { status: "routed", group: route.groupName ?? route.requestedGroup ?? params.group?.trim() ?? "", provider: route.provider, modelId: route.modelId }
+		: route.status === "unknown-fallback"
+			? { status: "unknown-fallback", requestedGroup: route.requestedGroup ?? params.group?.trim() ?? "", provider: route.provider, modelId: route.modelId }
+			: { status: "inherited" };
 
 	const listing = formatPageList(state);
 	const notebookListing = listing
@@ -242,8 +254,6 @@ export async function executeSpawn(
 		`When complete, provide a concise summary of findings. ` +
 		`Keep the result under ${CHILD_MAX_LINES} lines / ${(CHILD_MAX_BYTES / 1024).toFixed(0)}KB.`;
 
-	const authStorage = AuthStorage.create();
-	const modelRegistry = ModelRegistry.create(authStorage);
 	const childSessionEpoch = state.childSessionEpoch;
 	const isStale = () => state.childSessionEpoch !== childSessionEpoch;
 	const childTools = createChildTools(pi, state, { isStale });
@@ -310,6 +320,7 @@ export async function executeSpawn(
 				thinking: childThinking,
 				truncated: false,
 				outcome: "running",
+				route: routeDetails,
 			} satisfies SpawnResultDetails,
 		});
 
@@ -373,6 +384,7 @@ export async function executeSpawn(
 		thinking: childThinking,
 		truncated,
 		outcome,
+		route: routeDetails,
 	};
 	if (stats) {
 		details.stats = stats;
@@ -413,7 +425,7 @@ export function registerSpawnTool(
 
 		async execute(
 			_toolCallId: string,
-			params: { prompt: string; thinking?: ThinkingValue },
+			params: { prompt: string; group?: string; thinking?: unknown },
 			signal: AbortSignal | undefined,
 			onUpdate:
 				| ((result: {

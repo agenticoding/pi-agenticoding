@@ -1,4 +1,4 @@
                                                                                 
- spawn child [medium]                                                           
+ spawn child                                                                    
  Research the rate limits for the OpenAI API and document the results.          
                                                                                 
