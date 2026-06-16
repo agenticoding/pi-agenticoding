@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createState } from "../../state.js";
-import { updateIndicators, STATUS_KEY_TOPIC } from "../../tui.js";
+import { updateIndicators, STATUS_KEY_TOPIC, STATUS_KEY_READONLY } from "../../tui.js";
 import { makeTUICtx } from "./helpers.js";
 
 test("updateIndicators sets context usage status with correct color tone", () => {
@@ -87,6 +87,43 @@ test("updateIndicators shows active notebook topic when set", () => {
 
 	updateIndicators(ctx, state);
 	assert.equal(record.statuses.get(STATUS_KEY_TOPIC), "🧭 oauth");
+});
+
+test("updateIndicators shows readonly indicator when enabled", () => {
+	const state = createState();
+	state.readonlyEnabled = true;
+	const record = { statuses: new Map<string, string | undefined>(), widgets: new Map<string, string[] | undefined>() };
+	const ctx = makeTUICtx({ percent: null, record });
+
+	updateIndicators(ctx, state);
+	const s = record.statuses.get(STATUS_KEY_READONLY);
+	assert.ok(s?.includes("\u{1F512}"), "readonly indicator should show lock emoji when enabled");
+	assert.ok(s?.includes("readonly"), "readonly indicator should show 'readonly' text when enabled");
+});
+
+test("updateIndicators hides readonly indicator when disabled", () => {
+	const state = createState();
+	state.readonlyEnabled = false;
+	const record = { statuses: new Map<string, string | undefined>(), widgets: new Map<string, string[] | undefined>() };
+	const ctx = makeTUICtx({ percent: null, record });
+
+	updateIndicators(ctx, state);
+	assert.equal(record.statuses.get(STATUS_KEY_READONLY), undefined, "readonly indicator should be undefined when disabled");
+});
+
+test("updateIndicators shows readonly-specific warning widget at 70%+ context", () => {
+	const state = createState();
+	state.readonlyEnabled = true;
+	const record = { statuses: new Map<string, string | undefined>(), widgets: new Map<string, string[] | undefined>() };
+	const ctx = makeTUICtx({ percent: 85, record });
+
+	updateIndicators(ctx, state);
+	const w = record.widgets.get("agenticoding-warning");
+	assert.ok(w, "warning widget should be present at 85%");
+	assert.ok(w[0].includes("readonly"), "widget should mention readonly");
+	assert.ok(w[0].includes("spawn"), "widget should mention spawn");
+	assert.ok(w[0].includes("handoff"), "widget should mention handoff");
+	assert.ok(w[0].includes("resumes readonly"), "widget should mention readonly resumption");
 });
 
 test("updateIndicators hides widget below 70% context", () => {
