@@ -7,7 +7,7 @@ import registerAgenticoding from "../../index.js";
 import { registerModelGroupsCommand } from "../../model-groups/command.js";
 import { __setModelGroupsFsForTests, modelGroupsPath } from "../../model-groups/store.js";
 import { createState } from "../../state.js";
-import { createTestPI, theme } from "./helpers.js";
+import { createTestPI, setTempHome, theme } from "./helpers.js";
 
 function registry(available = new Set(["openai:gpt-5"])): any {
 	const models = [{ provider: "openai", id: "gpt-5", reasoning: true, thinkingLevelMap: { xhigh: "x" } }];
@@ -21,10 +21,9 @@ function registry(available = new Set(["openai:gpt-5"])): any {
 
 async function withTemp(fn: (cwd: string) => Promise<void> | void): Promise<void> {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "model-groups-int-"));
-	const oldHome = process.env.HOME;
-	process.env.HOME = path.join(root, "home");
+	const restoreHome = setTempHome(path.join(root, "home"));
 	try { await fn(path.join(root, "project")); }
-	finally { process.env.HOME = oldHome; __setModelGroupsFsForTests(null); fs.rmSync(root, { recursive: true, force: true }); }
+	finally { restoreHome(); __setModelGroupsFsForTests(null); fs.rmSync(root, { recursive: true, force: true }); }
 }
 
 test("/model-groups command registers and opens ctx.ui.custom with live registry/cwd", async () => withTemp(async (cwd) => {
