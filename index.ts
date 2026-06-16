@@ -152,16 +152,7 @@ export default function (pi: ExtensionAPI): void {
 		}
 
 		if (isToolCallEventType("bash", event)) {
-			const cmd = event.input.command;
-			// Defensive guard: malformed bash input (null/undefined/object) blocks cleanly.
-			// Whitespace-only strings pass through to classifyBashCommand.
-			if (typeof cmd !== "string") {
-				return {
-					block: true as const,
-					reason: `Readonly mode: invalid bash command input (expected string, got ${typeof cmd}: ${String(cmd).slice(0, 100)})`,
-				};
-			}
-			const result = applyReadonlyBashGuard(cmd, ctx.cwd);
+			const result = applyReadonlyBashGuard(event.input.command, ctx.cwd);
 			if (result.action === "block") {
 				return { block: true as const, reason: result.reason };
 			}
