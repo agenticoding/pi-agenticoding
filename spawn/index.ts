@@ -152,6 +152,17 @@ export function buildChildToolNames(
 }
 
 /**
+ * Filter child tool names for readonly mode.
+ * Removes write/edit from the tool list entirely — children start with
+ * a fresh context, so there is no cache to preserve.
+ */
+export function filterReadonlyToolNames(toolNames: string[], readonlyEnabled: boolean): string[] {
+	return readonlyEnabled
+		? toolNames.filter((name) => name !== "write" && name !== "edit")
+		: toolNames;
+}
+
+/**
  * Create a bash tool definition for readonly-mode child sessions.
  *
  * Applies OS-level sandboxing (sandbox-exec on macOS, bwrap on Linux) when available.
@@ -310,12 +321,7 @@ export async function executeSpawn(
 			: []),
 	];
 
-	// Readonly: remove write/edit from child tool list entirely (fresh context,
-	// no cache to invalidate). The readonly bash guard overrides the built-in
-	// bash tool — no name exclusion needed.
-	const effectiveToolNames = state.readonlyEnabled
-		? childToolNames.filter((name) => name !== "write" && name !== "edit")
-		: childToolNames;
+	const effectiveToolNames = filterReadonlyToolNames(childToolNames, state.readonlyEnabled);
 
 	const { session } = await sessionFactory({
 		sessionManager: SessionManager.inMemory(),

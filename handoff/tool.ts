@@ -20,7 +20,7 @@ import { STATUS_KEY_HANDOFF } from "../tui.js";
  *
  * Shape: handoff primer + original task.
  */
-function buildEnrichedTask(task: string, options?: { resumeReadonlyAfterHandoff?: boolean }): string {
+export function buildEnrichedTask(task: string, options?: { resumeReadonlyAfterHandoff?: boolean }): string {
 	const parts: string[] = [
 		"## Handoff — Continue Previous Work",
 		"",
