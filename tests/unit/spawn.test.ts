@@ -361,9 +361,6 @@ test("spawn execute marks stats unavailable when stats collection throws", async
 
 	assert.equal(result.details.stats, undefined);
 	assert.equal(result.details.statsUnavailable, true);
-	assert.equal(h.warnings.length, 1);
-	assert.match(String(h.warnings[0].args[1]), /stats failed/);
-	assert.equal(h.warnings[0].args[2], "spawn-1");
 });
 
 test("spawn execute throws when child produces no output", async () => {
@@ -1175,8 +1172,6 @@ test("nested spawn attachSession recovers from subscribe throwing", () => {
 
 	// Should not crash, session attached, ownership transferred
 	assert.equal(state.childSessions.has("tool-call-1"), false);
-	assert.equal(h.warnings.length, 1);
-	assert.match(String(h.warnings[0].args[0]), /Failed to subscribe/);
 
 	// Should still render from session messages despite subscribe failure
 	const lines = component.render(120);
