@@ -1,9 +1,10 @@
 // ── Shared test helpers ──────────────────────────────────────────
 // Imported by other test files via `./helpers.js`
-// Includes createTestPI(), test utilities, theme constants, etc.
+// Includes createTestPI(), test utilities, theme constants, readonly helpers, etc.
 
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import assert from "node:assert/strict";
+import registerAgenticoding from "../../index.js";
 
 export const theme = {
 	fg: (_name: string, text: string) => text,
@@ -87,6 +88,8 @@ export function createTestPI() {
 	const _handlers = new Map<string, any[]>();
 	const _tools = new Map<string, any>();
 	const _commands = new Map<string, any>();
+	const _shortcuts = new Map<string, any>();
+	const _flags = new Map<string, any>();
 	const _activeTools: string[] = [];
 	const _allToolNames: string[] = [];
 	const _toolSources = new Map<string, string>();
@@ -146,15 +149,18 @@ export function createTestPI() {
 		getCommands: () => [],
 		setModel: () => Promise.resolve(true),
 		registerProvider: () => {},
-		registerShortcut: () => {},
-		registerFlag: () => {},
-		getFlag: () => undefined,
+		registerShortcut: (key: string, def: any) => { _shortcuts.set(key, def); },
+		registerFlag: (name: string, def: any) => {
+			if (!_flags.has(name)) _flags.set(name, def.default);
+		},
+		getFlag: (name: string) => _flags.get(name),
 		registerMessageRenderer: () => {},
 		setLabel: () => {},
 		unregisterProvider: () => {},
 		events: { on: () => () => {}, emit: () => {} } as import("@earendil-works/pi-coding-agent").EventBus,
 		setEditorText: () => {},
 		get commands() { return _commands; },
+		get shortcuts() { return _shortcuts; },
 		get tools() { return _tools; },
 		get handlers() { return _handlers; },
 		get activeTools() { return _activeTools; },
@@ -162,6 +168,7 @@ export function createTestPI() {
 			_activeTools.length = 0;
 			_activeTools.push(...tools);
 		},
+		get flags() { return _flags; },
 		get sentUserMessages() { return _sentUserMessages; },
 		get appendedEntries() { return _appendedEntries; },
 		get allToolNames() { return _allToolNames; },
@@ -176,6 +183,39 @@ export function createTestPI() {
 type _TestPICoversExtensionAPI = typeof createTestPI extends () => import("@earendil-works/pi-coding-agent").ExtensionAPI ? true : never;
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 const _testPIVerified: _TestPICoversExtensionAPI = true;
+
+// ── Readonly test helpers ────────────────────────────────────────────
+
+import type registerAgenticodingType from "../../index.js"; // type-only re-export for clients
+
+export type ToolCall = (event: { toolName: string; input?: Record<string, unknown> }, ctx: { cwd?: string }) => Promise<any>;
+
+/**
+ * Create a test PI instance with agenticoding registered and the tool_call handler extracted.
+ */
+export function registerReadonlyPI() {
+	const pi = createTestPI();
+	registerAgenticoding(pi as any);
+	const [toolCall] = pi.handlers.get("tool_call") as ToolCall[];
+	return { pi, toolCall };
+}
+
+/**
+ * Create a minimal UI context with the required shape for tool_call/auth tests.
+ */
+export function makeReadonlyUICtx(overrides: Record<string, unknown> = {}) {
+	return {
+		hasUI: true,
+		ui: {
+			notify: () => {},
+			theme: { fg: (_name: string, text: string) => text },
+			setStatus: () => {},
+			setWidget: () => {},
+		},
+		getContextUsage: () => null,
+		...overrides,
+	};
+}
 
 export const EMPTY_USAGE = {
 	input: 0,
