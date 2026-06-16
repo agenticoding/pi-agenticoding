@@ -10,6 +10,7 @@ import {
 	createChildTools,
 	executeSpawn,
 	registerSpawnTool,
+	truncateText,
 } from "../../spawn/index.js";
 import { renderSpawnResult } from "../../spawn/renderer.js";
 import { createTestPI, createRenderContext, createSession, createSubscribableSession, messageText, makeTUICtx, theme, createTestAssistantMessage, createTestAssistantStream } from "./helpers.js";
@@ -220,6 +221,13 @@ test("spawn execute builds prompt with notebook pages and task", async () => {
 	// Verify user-facing invariants: task text is included, notebook pages are referenced
 	assert.match(seenPrompt, /Do the task/);
 	assert.match(seenPrompt, /entry-a: preview line/);
+});
+
+test("truncateText handles multi-byte boundaries correctly", () => {
+	assert.equal(truncateText("🙂", 10, 2), "");
+	assert.equal(truncateText("🙂", 10, 4), "🙂");
+	assert.equal(truncateText("", 10, 1024), "");
+	assert.equal(truncateText("hello", 10, 1024), "hello");
 });
 
 test("spawn renderResult falls back to static text when no live session is stored", () => {
