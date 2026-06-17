@@ -347,10 +347,12 @@ export default function (pi: ExtensionAPI): void {
 		// Below primacy-zone threshold (~30%), skip watchdog unless a boundary
 		// hint or a sticky user-requested handoff is pending — context is still
 		// fresh enough that ordinary nudges add noise.
+		// HACK: `as any` required because readonlyNudgeMsg has customType field not in AgentMessage.
+		// Proper fix: augment CustomAgentMessages via module augmentation on @earendil-works/pi-agent-core.
 		if (!mustEnforceRequestedHandoff && !state.pendingTopicBoundaryHint && (percent === null || percent < 30)) {
 			state.lastWatchdogBand = null;
 			if (readonlyNudgeMsg) {
-				return { messages: [...event.messages, readonlyNudgeMsg] };
+				return { messages: [...event.messages, readonlyNudgeMsg as any] };
 			}
 			return;
 		}
@@ -362,7 +364,7 @@ export default function (pi: ExtensionAPI): void {
 			const band = percent! < 50 ? 0 : percent! < 70 ? 1 : 2;
 			if (state.lastWatchdogBand !== null && band <= state.lastWatchdogBand) {
 				if (readonlyNudgeMsg) {
-					return { messages: [...event.messages, readonlyNudgeMsg] };
+					return { messages: [...event.messages, readonlyNudgeMsg as any] };
 				}
 				return;
 			}
@@ -374,7 +376,7 @@ export default function (pi: ExtensionAPI): void {
 		return {
 			messages: [
 				...event.messages,
-				...(readonlyNudgeMsg ? [readonlyNudgeMsg] : []),
+				...(readonlyNudgeMsg ? [readonlyNudgeMsg as any] : []),
 				{
 					role: "custom",
 					customType: "agenticoding-watchdog",

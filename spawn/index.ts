@@ -21,6 +21,7 @@ import {
 	AuthStorage,
 	createAgentSession,
 	createBashToolDefinition,
+	defineTool,
 	ModelRegistry,
 	SessionManager,
 } from "@earendil-works/pi-coding-agent";
@@ -172,7 +173,7 @@ export function filterReadonlyToolNames(toolNames: string[], readonlyEnabled: bo
  */
 function createReadonlyChildBashTool(
 	cwd: string,
-): ToolDefinition {
+) {
 	const bashTool = createBashToolDefinition(cwd, {
 		spawnHook: (spawnContext) => {
 			const result = applyReadonlyBashGuard(spawnContext.command, cwd);
@@ -185,7 +186,7 @@ function createReadonlyChildBashTool(
 			return spawnContext;
 		},
 	});
-	return bashTool;
+	return defineTool(bashTool);
 }
 
 

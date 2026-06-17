@@ -115,7 +115,7 @@ test("context consumes a boundary hint after the first injected nudge", async ()
 
 
 test("buildNudge emits topic and spawn guidance", () => {
-	const nudge = buildNudge({ activeNotebookTopic: "oauth", pendingTopicBoundaryHint: null }, 46);
+	const nudge = buildNudge({ activeNotebookTopic: "oauth", pendingTopicBoundaryHint: null, readonlyEnabled: false, pendingRequestedHandoff: null }, 46);
 	assert.match(nudge, /Active notebook topic: oauth/);
 	assert.match(nudge, /prefer spawn/i);
 });
@@ -126,13 +126,15 @@ test("buildNudge handles null percent and boundary hints before topic guidance",
 		{
 			activeNotebookTopic: "oauth",
 			pendingTopicBoundaryHint: { from: "oauth", to: "billing", source: "human" },
+			readonlyEnabled: false,
+			pendingRequestedHandoff: null,
 		},
 		null,
 	);
 	assert.match(boundary, /Notebook topic changed from oauth to billing/);
 	assert.doesNotMatch(boundary, /Active notebook topic: oauth/);
 
-	const noTopic = buildNudge({ activeNotebookTopic: null, pendingTopicBoundaryHint: null }, null);
+	const noTopic = buildNudge({ activeNotebookTopic: null, pendingTopicBoundaryHint: null, readonlyEnabled: false, pendingRequestedHandoff: null }, null);
 	assert.match(noTopic, /Topic-aware context reminder/);
 	assert.match(noTopic, /No active notebook topic is set/);
 });

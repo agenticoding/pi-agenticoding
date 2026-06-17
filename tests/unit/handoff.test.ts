@@ -51,7 +51,7 @@ test("handoff tool triggers compaction and resumes with the compacted task", asy
 	const pi = createTestPI();
 	const state = createState();
 	state.notebookPages.set("auth-refresh", "sensitive notebook body");
-	state.pendingRequestedHandoff = { direction: "implement auth", enforcementAttempts: 0, toolCalled: false };
+	state.pendingRequestedHandoff = { toolCalled: false, readonlyBypassActive: true, resumeReadonlyAfterHandoff: true, enforcementAttempts: 0 };
 	registerHandoffTool(pi as any, state);
 
 	let compactOptions: any;
@@ -152,7 +152,7 @@ test("handoff compaction clears the handoff status indicator", async () => {
 test("handoff compaction error clears pending state and status", async () => {
 	const pi = createTestPI();
 	const state = createState();
-	state.pendingRequestedHandoff = { direction: "implement auth", enforcementAttempts: 0, toolCalled: false };
+	state.pendingRequestedHandoff = { toolCalled: false, readonlyBypassActive: true, resumeReadonlyAfterHandoff: true, enforcementAttempts: 0 };
 	registerHandoffTool(pi as any, state);
 	let compactOptions: any;
 	const statuses = new Map<string, string | undefined>();

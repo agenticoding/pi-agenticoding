@@ -693,18 +693,18 @@ test("buildChildToolNames (2-arg fallback) preserves non-spawn/handoff tools", (
 });
 
 test("buildChildToolNames (2-arg fallback) adds custom child tools to the list", () => {
-	const result = buildChildToolNames(["read"], [{ name: "custom-tool", description: "", parameters: {} }]);
+	const result = buildChildToolNames(["read"], [{ name: "custom-tool", description: "", parameters: {}, label: "", execute: async () => ({ content: [], details: undefined }) }]);
 	assert.ok(result.includes("custom-tool"), "custom child tool must be added");
 	assert.ok(result.includes("read"), "inherited tool must be preserved");
 });
 
 test("buildChildToolNames (2-arg fallback) deduplicates overlapping inherited and custom names", () => {
-	const result = buildChildToolNames(["read", "bash"], [{ name: "bash", description: "", parameters: {} }]);
+	const result = buildChildToolNames(["read", "bash"], [{ name: "bash", description: "", parameters: {}, label: "", execute: async () => ({ content: [], details: undefined }) }]);
 	assert.deepEqual(result, ["read", "bash"]);
 });
 
 test("buildChildToolNames (2-arg fallback) handles empty parent tool names", () => {
-	assert.deepEqual(buildChildToolNames([], [{ name: "only-child", description: "", parameters: {} }]), ["only-child"]);
+	assert.deepEqual(buildChildToolNames([], [{ name: "only-child", description: "", parameters: {}, label: "", execute: async () => ({ content: [], details: undefined }) }]), ["only-child"]);
 });
 
 test("buildChildToolNames (2-arg fallback) handles empty custom tools", () => {
