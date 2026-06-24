@@ -7,6 +7,10 @@ export function registerModelGroupsCommand(pi: ExtensionAPI, state: Agenticoding
 		description: "Manage Model Groups",
 		handler: async (_args, ctx) => {
 			if (!ctx.hasUI) return;
+			if (!ctx.cwd || !ctx.modelRegistry) {
+				ctx.ui.notify("Cannot manage model groups: missing working directory or model registry", "error");
+				return;
+			}
 			await ctx.ui.custom<void>((tui, theme, _keybindings, done) =>
 				createModelGroupsComponent(tui, theme, ctx.modelRegistry, ctx.cwd, done, {
 					initialValidation: state.modelGroups.validation,

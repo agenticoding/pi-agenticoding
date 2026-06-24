@@ -214,6 +214,10 @@ export function deleteGroup(scope: ModelGroupScope, cwd: string, name: string): 
 	const config = loadScopeConfig(scope, cwd);
 	if (!config.groups[name]) throw new Error(`Model group '${name}' does not exist in ${scope} scope`);
 	delete config.groups[name];
+
+	// Load the opposite scope before saving — if this throws, nothing was persisted yet.
+	const other = loadScopeConfig(scope === "global" ? "project" : "global", cwd);
+
 	try {
 		saveModelGroups(scope, cwd, config);
 	} catch (cause) {
@@ -230,7 +234,6 @@ export function deleteGroup(scope: ModelGroupScope, cwd: string, name: string): 
 		}
 		throw cause;
 	}
-	const other = loadScopeConfig(scope === "global" ? "project" : "global", cwd);
 	return { otherScopeHasOverride: Boolean(other.groups[name]) };
 }
 
