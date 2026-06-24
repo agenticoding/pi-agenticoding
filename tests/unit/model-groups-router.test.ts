@@ -2,19 +2,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { getEffectiveModelGroupNames, resolveSpawnModelRoute, SpawnRouteError } from "../../model-groups/router.js";
 import type { ResolvedModelGroup } from "../../model-groups/types.js";
+import { group } from "./model-groups-helpers.js";
 
 function model(provider: string, id: string, overrides: Record<string, unknown> = {}): any {
 	return { provider, id, reasoning: true, ...overrides };
-}
-
-function group(name: string, scope: "project" | "global", models: any[], shadowedByProject = false): ResolvedModelGroup {
-	return {
-		name,
-		scope,
-		sourcePath: `<${scope}>`,
-		models,
-		validation: { unavailableRefs: [], shadowedByProject, degraded: false },
-	};
 }
 
 function registry(models: any[], authenticated = new Set(models.map((m) => `${m.provider}:${m.id}`))): any {
@@ -26,9 +17,9 @@ function registry(models: any[], authenticated = new Set(models.map((m) => `${m.
 
 test("effective model group names use project-over-global names", () => {
 	const groups = [
-		group("review", "global", [], true),
-		group("review", "project", []),
-		group("research", "global", []),
+		group("review", { scope: "global", shadowedByProject: true }),
+		group("review", { scope: "project" }),
+		group("research", { scope: "global" }),
 	];
 	assert.deepEqual(getEffectiveModelGroupNames(groups), ["research", "review"]);
 });
@@ -47,11 +38,11 @@ test("omitted and unknown groups inherit parent route with fallback metadata", (
 test("known empty and all-unusable groups fail clearly", () => {
 	const parent = model("openai", "parent");
 	assert.throws(
-		() => resolveSpawnModelRoute({ requestedGroup: "empty", groups: [group("empty", "project", [])], parentModel: parent, parentThinking: "low", modelRegistry: registry([parent]) }),
+		() => resolveSpawnModelRoute({ requestedGroup: "empty", groups: [group("empty", { scope: "project" })], parentModel: parent, parentThinking: "low", modelRegistry: registry([parent]) }),
 		(error: unknown) => error instanceof SpawnRouteError && error.group === "empty" && error.reason === "empty" && /empty/.test(error.message),
 	);
 	assert.throws(
-		() => resolveSpawnModelRoute({ requestedGroup: "bad", groups: [group("bad", "project", [{ provider: "openai", modelId: "missing" }])], parentModel: parent, parentThinking: "low", modelRegistry: registry([parent]) }),
+		() => resolveSpawnModelRoute({ requestedGroup: "bad", groups: [group("bad", { scope: "project", models: [{ provider: "openai", modelId: "missing" }] })], parentModel: parent, parentThinking: "low", modelRegistry: registry([parent]) }),
 		(error: unknown) => error instanceof SpawnRouteError && error.group === "bad" && error.reason === "no-usable-models" && /configured\/authenticated/.test(error.message),
 	);
 });
@@ -61,12 +52,12 @@ test("known usable groups filter registry/auth, draw with rng seam, and clamp th
 	const usableA = model("openai", "a", { thinkingLevelMap: { xhigh: "x" } });
 	const usableB = model("anthropic", "b", { thinkingLevelMap: { xhigh: null } });
 	const unauth = model("openai", "unauth");
-	const groups = [group("review", "project", [
+	const groups = [group("review", { scope: "project", models: [
 		{ provider: "openai", modelId: "missing" },
 		{ provider: "openai", modelId: "unauth" },
 		{ provider: "openai", modelId: "a" },
 		{ provider: "anthropic", modelId: "b", thinkingLevel: "xhigh" },
-	])];
+	] })];
 	const reg = registry([parent, usableA, usableB, unauth], new Set(["openai:parent", "openai:a", "anthropic:b"]));
 	const first = resolveSpawnModelRoute({ requestedGroup: "review", groups, parentModel: parent, parentThinking: "low", modelRegistry: reg, rng: () => 0 });
 	assert.equal(first.status, "routed");

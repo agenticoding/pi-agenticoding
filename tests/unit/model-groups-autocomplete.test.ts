@@ -3,29 +3,16 @@ import assert from "node:assert/strict";
 import { createModelGroupAutocompleteProvider, registerModelGroupAutocomplete } from "../../model-groups/autocomplete.js";
 import { createState } from "../../state.js";
 import type { ResolvedModelGroup } from "../../model-groups/types.js";
-
-function group(
-	name: string,
-	models: ResolvedModelGroup["models"] = [],
-	unavailableRefs: ResolvedModelGroup["validation"]["unavailableRefs"] = [],
-): ResolvedModelGroup {
-	return {
-		name,
-		scope: "project",
-		sourcePath: "<project>",
-		models,
-		validation: { unavailableRefs, shadowedByProject: false, degraded: unavailableRefs.length > 0 },
-	};
-}
+import { group } from "./model-groups-helpers.js";
 
 test("#group autocomplete suggests effective live group names and delegates elsewhere", async () => {
 	const state = createState();
 	state.modelGroups.groups = [
-		group("review", [
+		group("review", { models: [
 			{ provider: "openai", modelId: "gpt-5", thinkingLevel: "high" },
 			{ provider: "anthropic", modelId: "claude-sonnet-4" },
-		]),
-		group("research", [{ provider: "google", modelId: "gemini-2.5-pro", thinkingLevel: "xhigh" }]),
+		]}),
+		group("research", { models: [{ provider: "google", modelId: "gemini-2.5-pro", thinkingLevel: "xhigh" }] }),
 	];
 	let delegated = 0;
 	const current = {
@@ -44,7 +31,7 @@ test("#group autocomplete suggests effective live group names and delegates else
 	]);
 	assert.equal(delegated, 0);
 
-	state.modelGroups.groups = [group("reviewers", [{ provider: "openai", modelId: "gpt-5" }], [{ provider: "openai", modelId: "gpt-5" }])];
+	state.modelGroups.groups = [group("reviewers", { models: [{ provider: "openai", modelId: "gpt-5" }], unavailableRefs: [{ provider: "openai", modelId: "gpt-5" }] })];
 	const fresh = await provider.getSuggestions(["#rev"], 0, 4, {});
 	assert.deepEqual(fresh.items.map((item: any) => item.value), ["#reviewers"]);
 	assert.equal(fresh.items[0].description, "openai/gpt-5 • inherit (unavailable)");

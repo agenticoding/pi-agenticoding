@@ -16,15 +16,7 @@ import {
 	validateModelGroups,
 } from "../../model-groups/store.js";
 import { ModelGroupsPersistenceError, type ModelGroupScope } from "../../model-groups/types.js";
-import { setTempHome } from "./helpers.js";
-
-function withTemp(fn: (ctx: { cwd: string; home: string }) => void): void {
-	const root = fs.mkdtempSync(path.join(os.tmpdir(), "model-groups-"));
-	const home = path.join(root, "home");
-	const restoreHome = setTempHome(home);
-	try { fn({ cwd: path.join(root, "project"), home }); }
-	finally { restoreHome(); __setModelGroupsFsForTests(null); fs.rmSync(root, { recursive: true, force: true }); }
-}
+import { withTemp } from "./model-groups-helpers.js";
 
 function read(scope: ModelGroupScope, cwd: string): any {
 	return JSON.parse(fs.readFileSync(modelGroupsPath(scope, cwd), "utf8"));

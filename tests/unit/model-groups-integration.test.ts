@@ -1,13 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import registerAgenticoding from "../../index.js";
 import { registerModelGroupsCommand } from "../../model-groups/command.js";
 import { __setModelGroupsFsForTests, modelGroupsPath } from "../../model-groups/store.js";
 import { createState } from "../../state.js";
-import { createTestPI, setTempHome, theme } from "./helpers.js";
+import { createTestPI, theme } from "./helpers.js";
+import { withTemp } from "./model-groups-helpers.js";
 
 function registry(available = new Set(["openai:gpt-5"])): any {
 	const models = [{ provider: "openai", id: "gpt-5", reasoning: true, thinkingLevelMap: { xhigh: "x" } }];
@@ -19,14 +19,7 @@ function registry(available = new Set(["openai:gpt-5"])): any {
 	};
 }
 
-async function withTemp(fn: (cwd: string) => Promise<void> | void): Promise<void> {
-	const root = fs.mkdtempSync(path.join(os.tmpdir(), "model-groups-int-"));
-	const restoreHome = setTempHome(path.join(root, "home"));
-	try { await fn(path.join(root, "project")); }
-	finally { restoreHome(); __setModelGroupsFsForTests(null); fs.rmSync(root, { recursive: true, force: true }); }
-}
-
-test("/model-groups command registers and opens ctx.ui.custom with live registry/cwd", async () => withTemp(async (cwd) => {
+test("/model-groups command registers and opens ctx.ui.custom with live registry/cwd", async () => withTemp(async ({ cwd }) => {
 	fs.mkdirSync(path.dirname(modelGroupsPath("project", cwd)), { recursive: true });
 	fs.writeFileSync(modelGroupsPath("project", cwd), JSON.stringify({ version: 1, groups: { "cwd-sentinel-group": { models: [{ provider: "openai", modelId: "gpt-5" }] } } }), "utf8");
 	const pi = createTestPI();
@@ -63,7 +56,7 @@ test("/model-groups command registers and opens ctx.ui.custom with live registry
 	assert.deepEqual(findCalls, ["openai:gpt-5"]);
 }));
 
-test("index session_start stores model group validation and notifies load and validation issues", async () => withTemp(async (cwd) => {
+test("index session_start stores model group validation and notifies load and validation issues", async () => withTemp(async ({ cwd }) => {
 	fs.mkdirSync(path.dirname(modelGroupsPath("global", cwd)), { recursive: true });
 	fs.writeFileSync(modelGroupsPath("global", cwd), JSON.stringify({ version: 1, groups: { bad: { models: [{ provider: "missing", modelId: "nope" }] }, shadow: { models: [] } } }), "utf8");
 	fs.mkdirSync(path.dirname(modelGroupsPath("project", cwd)), { recursive: true });
@@ -88,7 +81,7 @@ test("index session_start stores model group validation and notifies load and va
 	assert.ok(notifications.some((m) => /1 unavailable model references · 1 project overrides/.test(m)));
 }));
 
-test("index session_start notifies corrupt/schema/unsupported load issues", async () => withTemp(async (cwd) => {
+test("index session_start notifies corrupt/schema/unsupported load issues", async () => withTemp(async ({ cwd }) => {
 	fs.mkdirSync(path.dirname(modelGroupsPath("global", cwd)), { recursive: true });
 	fs.writeFileSync(modelGroupsPath("global", cwd), "{bad", "utf8");
 	fs.mkdirSync(path.dirname(modelGroupsPath("project", cwd)), { recursive: true });
@@ -109,7 +102,7 @@ test("index session_start notifies corrupt/schema/unsupported load issues", asyn
 	assert.ok(notifications.some((m) => /unsupported-version/.test(m)));
 }));
 
-test("index session_start notifies schema-invalid load issues", async () => withTemp(async (cwd) => {
+test("index session_start notifies schema-invalid load issues", async () => withTemp(async ({ cwd }) => {
 	fs.mkdirSync(path.dirname(modelGroupsPath("project", cwd)), { recursive: true });
 	fs.writeFileSync(modelGroupsPath("project", cwd), JSON.stringify({ version: 1, groups: { broken: { models: [{ provider: 1 }] } } }), "utf8");
 	const pi = createTestPI();
@@ -129,7 +122,7 @@ test("index session_start notifies schema-invalid load issues", async () => with
 	assert.ok(notifications.some((m) => m.includes(modelGroupsPath("project", cwd))));
 }));
 
-test("index session_start includes backup-failure detail in load issue notifications", async () => withTemp(async (cwd) => {
+test("index session_start includes backup-failure detail in load issue notifications", async () => withTemp(async ({ cwd }) => {
 	fs.mkdirSync(path.dirname(modelGroupsPath("project", cwd)), { recursive: true });
 	fs.writeFileSync(modelGroupsPath("project", cwd), "{bad", "utf8");
 	__setModelGroupsFsForTests({ copyFileSync: () => { throw new Error("backup denied"); } });
@@ -148,7 +141,7 @@ test("index session_start includes backup-failure detail in load issue notificat
 	assert.ok(notifications.some((m) => /corrupt-json/.test(m) && /backup failed, original file left untouched/.test(m) && m.includes(modelGroupsPath("project", cwd))));
 }));
 
-test("before_agent_start injects fresh names-only Model Groups guidance", async () => withTemp(async (cwd) => {
+test("before_agent_start injects fresh names-only Model Groups guidance", async () => withTemp(async ({ cwd }) => {
 	fs.mkdirSync(path.dirname(modelGroupsPath("project", cwd)), { recursive: true });
 	fs.writeFileSync(modelGroupsPath("project", cwd), JSON.stringify({ version: 1, groups: { review: { models: [{ provider: "openai", modelId: "gpt-5" }] } } }), "utf8");
 	const pi = createTestPI();
@@ -164,7 +157,7 @@ test("before_agent_start injects fresh names-only Model Groups guidance", async 
 	assert.doesNotMatch(result.systemPrompt, /model-groups\.json/);
 }));
 
-test("session_start registers Model Groups autocomplete provider when UI supports it", async () => withTemp(async (cwd) => {
+test("session_start registers Model Groups autocomplete provider when UI supports it", async () => withTemp(async ({ cwd }) => {
 	const pi = createTestPI();
 	registerAgenticoding(pi as any);
 	const providers: any[] = [];
@@ -179,7 +172,7 @@ test("session_start registers Model Groups autocomplete provider when UI support
 	assert.equal(providers.length, 1);
 }));
 
-test("index session_start does not notify when load and validation issues are absent", async () => withTemp(async (cwd) => {
+test("index session_start does not notify when load and validation issues are absent", async () => withTemp(async ({ cwd }) => {
 	const pi = createTestPI();
 	registerAgenticoding(pi as any);
 	const notifications: string[] = [];

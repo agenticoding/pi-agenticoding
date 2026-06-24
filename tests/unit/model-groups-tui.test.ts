@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { createModelGroupsComponent } from "../../model-groups/tui.js";
 import { ModelGroupsPersistenceError, type ModelGroupsBootValidation, type ResolvedModelGroup } from "../../model-groups/types.js";
 import { theme } from "./helpers.js";
+import { group } from "./model-groups-helpers.js";
 
 function registry(): any {
 	const models = [
@@ -17,10 +18,6 @@ function registry(): any {
 		find: (provider: string, id: string) => models.find((m) => m.provider === provider && m.id === id),
 		hasConfiguredAuth: (model: any) => model.provider !== "missing" && model.configuredAuth !== false,
 	};
-}
-
-function group(name: string, scope: "project" | "global", models: any[] = []): ResolvedModelGroup {
-	return { name, scope, sourcePath: `/tmp/${scope}.json`, models, validation: { unavailableRefs: [], shadowedByProject: false, degraded: false } };
 }
 
 function boot(groups: ResolvedModelGroup[]): ModelGroupsBootValidation { return { groups, loadIssues: [] }; }
@@ -54,12 +51,12 @@ function rendered(c: { render: (width: number) => string[] }): string {
 }
 
 test("model groups TUI list renders validation summary, health tags, add row, no Validate row, and confirmed D delete", () => {
-	const override = group("review", "global");
+	const override = group("review", { scope: "global" });
 	override.validation.shadowedByProject = true;
-	const degraded = group("mixed", "project", [{ provider: "openai", modelId: "gpt-5" }, { provider: "missing", modelId: "nope" }]);
+	const degraded = group("mixed", { scope: "project", models: [{ provider: "openai", modelId: "gpt-5" }, { provider: "missing", modelId: "nope" }] });
 	degraded.validation.degraded = true;
 	degraded.validation.unavailableRefs = [{ provider: "missing", modelId: "nope" }];
-	let groups = [override, group("review", "project"), degraded];
+	let groups = [override, group("review", { scope: "project" }), degraded];
 	const deleteCalls: string[] = [];
 	const store = {
 		deleteGroup: (scope: string, _cwd: string, name: string) => { deleteCalls.push(`${scope}:${name}`); groups = groups.filter((candidate) => !(candidate.scope === scope && candidate.name === name)); return { otherScopeHasOverride: true }; },
@@ -84,12 +81,12 @@ test("model groups TUI list renders validation summary, health tags, add row, no
 });
 
 test("model groups TUI computes unique new-group names and opens editor after create", () => {
-	let groups = [group("new-group", "project")];
+	let groups = [group("new-group", { scope: "project" })];
 	const calls: string[] = [];
 	const store = {
 		createGroup: (scope: string, _cwd: string, name: string, def: any) => {
 			calls.push(`${scope}:${name}:${def.models.length}`);
-			groups = [...groups, group(name, "project")];
+			groups = [...groups, group(name, { scope: "project" })];
 		},
 		listResolvedModelGroups: () => boot(groups),
 	};
@@ -103,7 +100,7 @@ test("model groups TUI computes unique new-group names and opens editor after cr
 test("model groups TUI wizard renders provider/model/thinking steps and preserves state on add failure", () => {
 	const messages: string[] = [];
 	let updateCalls = 0;
-	const groups = [group("review", "project")];
+	const groups = [group("review", { scope: "project" })];
 	const store = {
 		updateGroup: () => {
 			updateCalls++;
@@ -154,7 +151,7 @@ test("model groups TUI wizard renders provider/model/thinking steps and preserve
 
 test("model groups TUI Esc and left-arrow share wizard back-step behavior", () => {
 	function atProvider() {
-		const { c } = component({ groups: [group("review", "project")] });
+		const { c } = component({ groups: [group("review", { scope: "project" })] });
 		press(c, ENTER, DOWN, DOWN, DOWN, ENTER);
 		return c;
 	}
@@ -202,14 +199,14 @@ test("model groups TUI selected markers and primary labels use accent token", ()
 		fg: (name: string, text: string) => name === "accent" ? `<accent>${text}</accent>` : text,
 		bold: (text: string) => text,
 	};
-	const list = component({ groups: [group("review", "project", [{ provider: "openai", modelId: "gpt-5" }])], renderTheme: accentTheme }).c;
+	const list = component({ groups: [group("review", { scope: "project", models: [{ provider: "openai", modelId: "gpt-5" }] })], renderTheme: accentTheme }).c;
 
 	let text = rendered(list);
 	assert.match(text, /<accent>→<\/accent> <accent>review<\/accent> \[project\]/);
 	press(list, DOWN);
 	assert.match(rendered(list), /<accent>→<\/accent> <accent>\+ Add group<\/accent>/);
 
-	const editor = component({ groups: [group("review", "project", [{ provider: "openai", modelId: "gpt-5" }])], renderTheme: accentTheme }).c;
+	const editor = component({ groups: [group("review", { scope: "project", models: [{ provider: "openai", modelId: "gpt-5" }] })], renderTheme: accentTheme }).c;
 	press(editor, ENTER);
 	text = rendered(editor);
 	assert.match(text, /<accent>→<\/accent> <accent>Location: project<\/accent> ✓/);
@@ -225,11 +222,11 @@ test("model groups TUI selected markers and primary labels use accent token", ()
 	press(editor, ENTER);
 	assert.match(rendered(editor), /<accent>→<\/accent> <accent>inherit<\/accent>/);
 
-	const modelEdit = component({ groups: [group("review", "project", [{ provider: "openai", modelId: "gpt-5" }])], renderTheme: accentTheme }).c;
+	const modelEdit = component({ groups: [group("review", { scope: "project", models: [{ provider: "openai", modelId: "gpt-5" }] })], renderTheme: accentTheme }).c;
 	press(modelEdit, ENTER, DOWN, DOWN, DOWN, ENTER);
 	assert.match(rendered(modelEdit), /<accent>→<\/accent> <accent>Thinking: inherit<\/accent>/);
 
-	const deleteConfirm = component({ groups: [group("review", "project")], renderTheme: accentTheme }).c;
+	const deleteConfirm = component({ groups: [group("review", { scope: "project" })], renderTheme: accentTheme }).c;
 	press(deleteConfirm, "D");
 	assert.match(rendered(deleteConfirm), /<accent>→<\/accent> <accent>Keep group<\/accent>/);
 	press(deleteConfirm, DOWN);
@@ -237,11 +234,11 @@ test("model groups TUI selected markers and primary labels use accent token", ()
 });
 
 test("model groups TUI model edit renders identity/status and filters thinking options", () => {
-	const groups = [group("review", "project", [
+	const groups = [group("review", { scope: "project", models: [
 		{ provider: "anthropic", modelId: "claude" },
 		{ provider: "openai", modelId: "gpt-5" },
 		{ provider: "missing", modelId: "nope" },
-	])];
+	] })];
 	const { c } = component({ groups });
 
 	press(c, ENTER, DOWN, DOWN, DOWN, ENTER);
@@ -274,7 +271,7 @@ test("model groups TUI model edit renders identity/status and filters thinking o
 
 test("model groups TUI notifies and preserves location on move collision", () => {
 	const messages: string[] = [];
-	const groups = [group("review", "project")];
+	const groups = [group("review", { scope: "project" })];
 	const store = {
 		moveGroup: () => { throw new Error("target scope already contains review"); },
 		listResolvedModelGroups: () => boot(groups),
@@ -291,7 +288,7 @@ test("model groups TUI notifies and preserves location on move collision", () =>
 test("model groups TUI notifies and preserves model edit state when updateGroup fails", () => {
 	const messages: string[] = [];
 	const attemptedModels: string[][] = [];
-	const groups = [group("review", "project", [{ provider: "openai", modelId: "gpt-5" }])];
+	const groups = [group("review", { scope: "project", models: [{ provider: "openai", modelId: "gpt-5" }] })];
 	const store = {
 		updateGroup: (_scope: string, _cwd: string, _name: string, def: any) => {
 			attemptedModels.push(def.models.map((model: any) => `${model.provider}/${model.modelId}/${model.thinkingLevel ?? "inherit"}`));
@@ -325,10 +322,10 @@ test("model groups TUI notifies and preserves model edit state when updateGroup 
 });
 
 test("model groups TUI name edit commits through renameGroup on row-change and D in text input types literally", () => {
-	let groups = [group("abc", "project")];
+	let groups = [group("abc", { scope: "project" })];
 	const calls: string[] = [];
 	const store = {
-		renameGroup: (_scope: string, _cwd: string, oldName: string, newName: string) => { calls.push(`${oldName}->${newName}`); groups = [group(newName, "project")]; },
+		renameGroup: (_scope: string, _cwd: string, oldName: string, newName: string) => { calls.push(`${oldName}->${newName}`); groups = [group(newName, { scope: "project" })]; },
 		listResolvedModelGroups: () => boot(groups),
 	};
 	const { c } = component({ groups, store });
@@ -348,11 +345,11 @@ test("model groups TUI name edit commits through renameGroup on row-change and D
 });
 
 test("model groups TUI move, wizard add, model thinking, and remove persist through store calls", () => {
-	let groups = [group("review", "project", [{ provider: "openai", modelId: "gpt-5" }])];
+	let groups = [group("review", { scope: "project", models: [{ provider: "openai", modelId: "gpt-5" }] })];
 	const calls: string[] = [];
 	const store = {
-		moveGroup: (_cwd: string, name: string, scope: string) => { calls.push(`move:${name}:${scope}`); groups = [group(name, "global", groups[0].models)]; },
-		updateGroup: (scope: string, _cwd: string, name: string, def: any) => { calls.push(`update:${scope}:${name}:${def.models.map((m: any) => `${m.provider}/${m.modelId}/${m.thinkingLevel ?? "inherit"}`).join(",")}`); groups = [group(name, scope as any, def.models)]; },
+		moveGroup: (_cwd: string, name: string, scope: string) => { calls.push(`move:${name}:${scope}`); groups = [group(name, { scope: "global", models: groups[0].models })]; },
+		updateGroup: (scope: string, _cwd: string, name: string, def: any) => { calls.push(`update:${scope}:${name}:${def.models.map((m: any) => `${m.provider}/${m.modelId}/${m.thinkingLevel ?? "inherit"}`).join(",")}`); groups = [group(name, { scope: scope as "project" | "global", models: def.models })]; },
 		listResolvedModelGroups: () => boot(groups),
 	};
 	const { c } = component({ groups, store });
@@ -390,7 +387,7 @@ test("model groups TUI move, wizard add, model thinking, and remove persist thro
 test("model groups TUI notifies and keeps visible state on persistence errors", () => {
 	const messages: string[] = [];
 	const { c } = component({
-		groups: [group("review", "project")],
+		groups: [group("review", { scope: "project" })],
 		notify: (message) => messages.push(message),
 		store: {
 			renameGroup: () => {
@@ -403,7 +400,7 @@ test("model groups TUI notifies and keeps visible state on persistence errors", 
 					message: "collision",
 				});
 			},
-			listResolvedModelGroups: () => boot([group("review", "project")]),
+			listResolvedModelGroups: () => boot([group("review", { scope: "project" })]),
 		},
 	});
 	c.handleInput?.("\r");
