@@ -5,12 +5,18 @@ import fs from "node:fs";
 import os from "node:os";
 import { resolveRealPath } from "../../resolve-path.js";
 
+const DEEP_PATH_PARTS = ["__pi_test_deep", "a", "b", "c"];
+
 test("resolveRealPath: non-existent path inside temp dir preserves full path", () => {
 	const tmp = os.tmpdir();
-	const nonExistent = `${tmp}/__pi_test_deep/a/b/c`;
+	const nonExistent = path.join(tmp, ...DEEP_PATH_PARTS);
 	const result = resolveRealPath(nonExistent);
-	// Should contain the full path including all intermediate components
-	assert.ok(result.includes("__pi_test_deep/a/b/c"), "should preserve all path components");
+	// Use path.join for platform-native separators (\ vs /)
+	const expectedSuffix = path.join(...DEEP_PATH_PARTS);
+	assert.ok(
+		result.includes(expectedSuffix),
+		`should preserve all path components — expected "${expectedSuffix}" in "${result}"`,
+	);
 });
 
 test("resolveRealPath follows symlinks", () => {
