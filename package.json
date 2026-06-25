@@ -34,6 +34,7 @@
     "@earendil-works/pi-coding-agent": "^0.79.6",
     "@earendil-works/pi-tui": "^0.79.6",
     "@types/node": "^25.9.3",
+    "audit-ci": "^7.1.0",
     "fast-check": "^4.8.0",
     "husky": "^9.1.7",
     "typebox": "^1.2.2",
