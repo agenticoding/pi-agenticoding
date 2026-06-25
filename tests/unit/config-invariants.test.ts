@@ -9,6 +9,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 type AuditRecord = {
@@ -30,11 +31,14 @@ type PackageJson = {
 };
 
 const AUDIT_SCHEMA = "https://github.com/IBM/audit-ci/raw/main/docs/schema.json";
-const REPO_ROOT = new URL("../../", import.meta.url);
-const AUDIT_CONFIG_PATH = new URL("audit-ci.jsonc", REPO_ROOT);
-const AUDIT_CLI_PATH = new URL("node_modules/audit-ci/dist/bin.js", REPO_ROOT);
-const PACKAGE_JSON_PATH = new URL("package.json", REPO_ROOT);
-const WORKFLOW_PATH = new URL(".github/workflows/test.yml", REPO_ROOT);
+const REPO_ROOT_URL = new URL("../../", import.meta.url);
+const REPO_ROOT = fileURLToPath(REPO_ROOT_URL);
+const AUDIT_CONFIG_PATH = new URL("audit-ci.jsonc", REPO_ROOT_URL);
+const AUDIT_CLI_PATH = fileURLToPath(
+	new URL("node_modules/audit-ci/dist/bin.js", REPO_ROOT_URL),
+);
+const PACKAGE_JSON_PATH = new URL("package.json", REPO_ROOT_URL);
+const WORKFLOW_PATH = new URL(".github/workflows/test.yml", REPO_ROOT_URL);
 const EXPECTED_MATRIX = new Set([
 	"ubuntu-latest@22",
 	"ubuntu-latest@24",
@@ -100,8 +104,8 @@ function minimumNodeVersion(value: string): number {
 }
 
 function runAuditCi(): void {
-	const result = spawnSync(process.execPath, [AUDIT_CLI_PATH.pathname, "--config", "audit-ci.jsonc"], {
-		cwd: REPO_ROOT.pathname,
+	const result = spawnSync(process.execPath, [AUDIT_CLI_PATH, "--config", "audit-ci.jsonc"], {
+		cwd: REPO_ROOT,
 		encoding: "utf8",
 	});
 	assert.equal(result.status, 0, [result.stdout, result.stderr].filter(Boolean).join("\n"));
