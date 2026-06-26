@@ -138,164 +138,155 @@ export function classifyBashCommand(cmd: string, cwd: string = process.cwd(), de
  * Classify a shell segment's filesystem mutation risk.
  *
  * Extracts the command and its targets, then blocks if any target
- * resolves outside the OS temp dir. Handles git, sudo, env, interpreter -c,
- * dd of=, sed -i, find -exec/-delete, perl/ruby -pi, and package managers.
+ * resolves outside the OS temp dir. Handles git, sudo, env, eval/exec,
+ * interpreter inline execution flags (-c/-e), dd of=, sed -i,
+ * find -exec/-delete, perl/ruby -pi, and package managers.
  * Command names are compared case-insensitively (normalized via .toLowerCase()).
  * Unknown commands return null (allowed).
  */
+// ── Command-specific mutation classifiers (one per command, ≤15 lines each) ──
+
+/** Strip subshell parens: (rm file) → rm file, then classify recursively. */
+function classifySubshellSegment(segment: string, cwd: string, depth: number, shellVars: ReadonlyMap<string, string>): string | null {
+	if (!segment.startsWith("(") || !segment.endsWith(")")) return null;
+	const inner = segment.slice(1, -1).trim();
+	return inner ? getFilesystemMutationReason(inner, cwd, depth, shellVars) : null;
+}
+
+/** eval/exec: recursively classify the remaining argument string. */
+function classifyEvalExec(command: string, tokens: string[], cwd: string, depth: number, shellVars: ReadonlyMap<string, string>): string | null {
+	if (command !== "eval" && command !== "exec") return null;
+	const inner = tokens.slice(1).map(stripMatchingQuotes).join(" ");
+	const nested = classifyBashCommand(inner, cwd, depth + 1, shellVars);
+	return nested.ok ? null : nested.reason;
+}
+
+/** sudo: classify the command after sudo flags. */
+function classifySudo(command: string, tokens: string[], cwd: string, depth: number, shellVars: ReadonlyMap<string, string>): string | null {
+	if (command !== "sudo") return null;
+	const nested = classifyBashCommand(tokens.slice(findSudoCommandIndex(tokens)).join(" "), cwd, depth + 1, shellVars);
+	return nested.ok ? null : nested.reason;
+}
+
+/** env: handle env prefix including -S/--split-string. */
+function classifyEnv(command: string, segment: string, tokens: string[], cwd: string, depth: number, shellVars: ReadonlyMap<string, string>): string | null {
+	if (command !== "env") return null;
+	if (tokens.length > 1) {
+		const nested = classifyBashCommand(tokens.slice(1).join(" "), cwd, depth + 1, shellVars);
+		return nested.ok ? null : nested.reason;
+	}
+	// env with only flags (e.g., env -S "cmd") — extract -S value
+	const sMatch = segment.match(/\benv\b.*?(?:-S|--split-string)\s+/);
+	if (!sMatch) return null;
+	const afterS = segment.slice(sMatch.index! + sMatch[0].length).trim();
+	const nested = classifyBashCommand(stripMatchingQuotes(afterS), cwd, depth + 1, shellVars);
+	return nested.ok ? null : nested.reason;
+}
+
+/** git: classify subcommand via three-tier allowlist (immutable/mutable/mixed). */
+function classifyGit(command: string, tokens: string[]): string | null {
+	if (command !== "git") return null;
+	return isSafeGitCommand(tokens.slice(1).join(" ")) ? null : "mutable git command blocked outside temp dir";
+}
+
+/** Interpreters with inline-execution flags — classify inline code recursively. */
+function classifyInterpreter(command: string, tokens: string[], cwd: string, depth: number, shellVars: ReadonlyMap<string, string>): string | null {
+	if (!INTERPRETERS.has(command)) return null;
+	const args = tokens.slice(1);
+	for (const flag of INTERPRETER_EXEC_FLAGS[command]) {
+		const idx = args.indexOf(flag);
+		if (idx === -1 || idx + 1 >= args.length) continue;
+		const nested = classifyBashCommand(stripMatchingQuotes(args[idx + 1]), cwd, depth + 1, shellVars);
+		if (!nested.ok) return `${command} ${flag} blocked: ${nested.reason}`;
+	}
+	return null;
+}
+
+/** dd of= target check. */
+function classifyDdOutput(segment: string, cwd: string, shellVars: ReadonlyMap<string, string>): string | null {
+	const ddMatch = segment.match(/\bof=([^\s]+)/);
+	if (!ddMatch || isTempPath(ddMatch[1], cwd, shellVars)) return null;
+	return `dd output blocked outside temp dir: ${stripMatchingQuotes(ddMatch[1])}`;
+}
+
+/** wget -P/--download-dir outside temp — block. No-flag case falls through to classifyGenericMutation. */
+function classifyWget(command: string, tokens: string[], cwd: string, shellVars: ReadonlyMap<string, string>): string | null {
+	if (command !== "wget") return null;
+	const wArgs = tokens.slice(1);
+	const hasOutputFlag = wArgs.some((a) => a === "-O" || a.startsWith("-O") || a === "--output-document" || a.startsWith("--output-document="));
+	if (hasOutputFlag) return null;
+	const outputDir = getWgetOutputDir(tokens);
+	if (outputDir && !isTempPath(outputDir, cwd, shellVars)) return `wget download dir blocked outside temp dir: ${outputDir}`;
+	return null;
+}
+
+/** curl -O/--remote-name writes to disk — block unless cwd is temp. */
+function classifyCurl(command: string, tokens: string[], cwd: string, shellVars: ReadonlyMap<string, string>): string | null {
+	if (command !== "curl") return null;
+	const { hasRemoteName, outputDir } = getCurlWriteTargets(tokens);
+	if (hasRemoteName && !isTempPath(outputDir ?? ".", cwd, shellVars)) {
+		return "curl blocked outside temp dir: current directory (use -o /tmp/... to write to temp)";
+	}
+	return null;
+}
+
+/** xargs: classify the command xargs would run + block targetless mutation commands. */
+function classifyXargs(command: string, tokens: string[], cwd: string, depth: number, shellVars: ReadonlyMap<string, string>): string | null {
+	if (command !== "xargs") return null;
+	const xArgs = tokens.slice(1);
+	const XARGS_FLAGS_WITH_VALUE = new Set(["-I", "-L", "-n", "-P", "-d", "-E", "-s"]);
+	let cmdStart = 0;
+	while (cmdStart < xArgs.length) {
+		if (XARGS_FLAGS_WITH_VALUE.has(xArgs[cmdStart])) { cmdStart += 2; continue; }
+		if (xArgs[cmdStart].startsWith("-")) { cmdStart++; continue; }
+		break;
+	}
+	if (cmdStart >= xArgs.length) return null;
+	const xTokens = xArgs.slice(cmdStart);
+	const nested = classifyBashCommand(xTokens.join(" "), cwd, depth + 1, shellVars);
+	if (!nested.ok) return nested.reason;
+	const xCmd = xTokens[0]?.toLowerCase();
+	if (xCmd && getMutationTargets(xCmd, xTokens) !== null) return `xargs ${xCmd} blocked: mutation command via xargs`;
+	return null;
+}
+
+/** Generic mutation: extract targets via getMutationTargets, block non-temp paths. */
+function classifyGenericMutation(command: string, tokens: string[], cwd: string, shellVars: ReadonlyMap<string, string>): string | null {
+	const paths = getMutationTargets(command, tokens);
+	if (!paths) return null;
+	for (const target of paths) {
+		if (!isTempPath(target, cwd, shellVars)) return `${command} blocked outside temp dir: ${stripMatchingQuotes(target)}`;
+	}
+	return null;
+}
+
+// ── Main dispatcher ─────────────────────────────────────────────────
+
 function getFilesystemMutationReason(segment: string, cwd: string, depth: number = 0, shellVars: ReadonlyMap<string, string> = new Map()): string | null {
 	const tokens = getCommandTokens(segment);
 	const command = tokens[0]?.toLowerCase();
 	if (!command) return null;
 
-	// Strip subshell parens: (rm file) → rm file
-	if (command.startsWith("(") && segment.endsWith(")")) {
-		const inner = segment.slice(1, -1).trim();
-		return inner ? getFilesystemMutationReason(inner, cwd, depth, shellVars) : null;
-	}
-
-	// eval/exec: recursively classify the remaining argument string
-	if (command === "eval" || command === "exec") {
-		const inner = tokens.slice(1).map(stripMatchingQuotes).join(" ");
-		const nested = classifyBashCommand(inner, cwd, depth + 1, shellVars);
-		return nested.ok ? null : nested.reason;
-	}
-
-	if (command === "sudo") {
-		const nested = classifyBashCommand(tokens.slice(findSudoCommandIndex(tokens)).join(" "), cwd, depth + 1, shellVars);
-		return nested.ok ? null : nested.reason;
-	}
-
-	if (command === "env") {
-		// Handle env prefix: recursively classify the inner command.
-		// env -S "command" is common — getCommandTokens strips env flags
-		// and assignments, but -S "string" and its value consume all
-		// remaining tokens, leaving tokens.length === 1 (just ["env"]).
-		// In that case, find the -S value in the raw segment and classify it.
-		if (tokens.length > 1) {
-			const nested = classifyBashCommand(tokens.slice(1).join(" "), cwd, depth + 1, shellVars);
-			return nested.ok ? null : nested.reason;
-		}
-		// env with only flags (e.g., env -S "cmd") — extract -S value
-		const sMatch = segment.match(/\benv\b.*?(?:-S|--split-string)\s+/);
-		if (sMatch) {
-			const afterS = segment.slice(sMatch.index! + sMatch[0].length).trim();
-			const stripped = stripMatchingQuotes(afterS);
-			const nested = classifyBashCommand(stripped, cwd, depth + 1, shellVars);
-			return nested.ok ? null : nested.reason;
-		}
-		return null;
-	}
-
-	if (command === "git") {
-		return isSafeGitCommand(tokens.slice(1).join(" "))
-			? null
-			: "mutable git command blocked outside temp dir";
-	}
-
-	// Interpreters with inline-execution flags — check inline code, then fall through
-	// so perl/ruby -pi, python3 script.py, etc. still reach getMutationTargets.
-	if (INTERPRETERS.has(command)) {
-		const args = tokens.slice(1);
-		const execFlags = INTERPRETER_EXEC_FLAGS[command];
-		for (const flag of execFlags) {
-			const idx = args.indexOf(flag);
-			if (idx !== -1 && idx + 1 < args.length) {
-				const inlineScript = stripMatchingQuotes(args[idx + 1]);
-				const nested = classifyBashCommand(inlineScript, cwd, depth + 1, shellVars);
-				if (!nested.ok) {
-					return `${command} ${flag} blocked: ${nested.reason}`;
-				}
-			}
-		}
-	}
-
-	const ddMatch = segment.match(/\bof=([^\s]+)/);
-	if (ddMatch && !isTempPath(ddMatch[1], cwd, shellVars)) {
-		return `dd output blocked outside temp dir: ${stripMatchingQuotes(ddMatch[1])}`;
-	}
-
-	const packageManagerReason = getPackageManagerMutationReason(segment);
-	if (packageManagerReason) return packageManagerReason;
-
-	// wget without -O/--output-document writes to disk (URL basename in cwd) — block
-	// Must be checked before getMutationTargets since there is no explicit target path
-	// to feed into the generic path check.
-	if (command === "wget") {
-		const wArgs = tokens.slice(1);
-		const hasOutputFlag = wArgs.some(
-			(a) => a === "-O" || a.startsWith("-O") || a === "--output-document" || a.startsWith("--output-document="),
-		);
-		if (!hasOutputFlag) {
-			const outputDir = getWgetOutputDir(tokens);
-			if (!outputDir || !isTempPath(outputDir, cwd, shellVars)) {
-				return "wget blocked outside temp dir: current directory (use -O /tmp/... to write to temp)";
-			}
-		}
-	}
-
-	// curl -O/--remote-name writes to disk (URL basename in cwd). Allow it only
-	// when cwd itself is inside temp; when -o and -O are combined, both writes
-	// remain cumulative and must be allowed.
-	if (command === "curl") {
-		const { hasRemoteName, outputDir } = getCurlWriteTargets(tokens);
-		if (hasRemoteName && !isTempPath(outputDir ?? ".", cwd, shellVars)) {
-			return "curl blocked outside temp dir: current directory (use -o /tmp/... to write to temp)";
-		}
-	}
-
-	// xargs: classify the command xargs would run.
-	// xargs feeds stdin as args, so any mutation command is blocked even
-	// without explicit targets — the targets come from the pipe.
-	if (command === "xargs") {
-		const xArgs = tokens.slice(1);
-		const XARGS_FLAGS_WITH_VALUE = new Set(["-I", "-L", "-n", "-P", "-d", "-E", "-s"]);
-		let cmdStart = 0;
-		while (cmdStart < xArgs.length) {
-			if (XARGS_FLAGS_WITH_VALUE.has(xArgs[cmdStart])) { cmdStart += 2; continue; }
-			if (xArgs[cmdStart].startsWith("-")) { cmdStart++; continue; }
-			break;
-		}
-		if (cmdStart < xArgs.length) {
-			const xTokens = xArgs.slice(cmdStart);
-			// L1: Full classifier check (catches git, interpreters, package managers, etc.)
-			const inner = xTokens.join(" ");
-			const nested = classifyBashCommand(inner, cwd, depth + 1, shellVars);
-			if (!nested.ok) return nested.reason;
-			// L2: xargs feeds stdin as arguments, so even targetless mutation commands
-			// (rm, mv, rm, sed -i, etc.) are dangerous — the targets come from the pipe.
-			// Block if getMutationTargets recognizes the command (returns non-null).
-			const xCmd = xTokens[0]?.toLowerCase();
-			if (xCmd && getMutationTargets(xCmd, xTokens) !== null) {
-				return `xargs ${xCmd} blocked: mutation command via xargs`;
-			}
-			return null;
-		}
-		return null;
-	}
-
-	const paths = getMutationTargets(command, tokens);
-	if (!paths) return null;
-	for (const target of paths) {
-		if (!isTempPath(target, cwd, shellVars)) {
-			return `${command} blocked outside temp dir: ${stripMatchingQuotes(target)}`;
-		}
-	}
-	return null;
+	return classifySubshellSegment(segment, cwd, depth, shellVars)
+		?? classifyEvalExec(command, tokens, cwd, depth, shellVars)
+		?? classifySudo(command, tokens, cwd, depth, shellVars)
+		?? classifyEnv(command, segment, tokens, cwd, depth, shellVars)
+		?? classifyGit(command, tokens)
+		?? classifyInterpreter(command, tokens, cwd, depth, shellVars)
+		?? classifyDdOutput(segment, cwd, shellVars)
+		?? classifyPackageManager(command, tokens)
+		?? classifyWget(command, tokens, cwd, shellVars)
+		?? classifyCurl(command, tokens, cwd, shellVars)
+		?? classifyXargs(command, tokens, cwd, depth, shellVars)
+		?? classifyGenericMutation(command, tokens, cwd, shellVars);
 }
 
-function getPackageManagerMutationReason(cmd: string): string | null {
-	for (const rawSegment of splitUnquotedShellSegments(cmd)) {
-		const segment = rawSegment.trim();
-		if (!segment) continue;
-		const tokens = getCommandTokens(segment);
-		const command = tokens[0]?.toLowerCase();
-		if (command && PACKAGE_MANAGERS.has(command) && isPackageMutation(tokens.slice(1))) {
-			const args = tokens.slice(1).join(" ");
-			return `${command} ${args} is blocked in readonly mode`;
-		}
-	}
-	return null;
+/** Package manager mutation: block unconditionally regardless of target path. */
+function classifyPackageManager(command: string, tokens: string[]): string | null {
+	if (!PACKAGE_MANAGERS.has(command)) return null;
+	if (!isPackageMutation(tokens.slice(1))) return null;
+	const args = tokens.slice(1).join(" ");
+	return `${command} ${args} is blocked in readonly mode`;
 }
 
 function skipFlagValues(args: string[], flagsWithValues: Set<string>): string[] {
@@ -397,134 +388,111 @@ function getWgetOutputDir(tokens: string[]): string | null {
 	return null;
 }
 
+// ── Mutation target extractors (one per command group, ≤20 lines each) ──
+
+function getRmTargets(tokens: string[]): string[] {
+	return nonOptionArgs(skipFlagValues(tokens.slice(1), new Set(["-s", "-o", "--io-size"])));
+}
+
+function getTruncateTargets(tokens: string[]): string[] {
+	return nonOptionArgs(skipFlagValues(tokens.slice(1), new Set(["-s", "-r", "--reference", "-o", "--io-size"])));
+}
+
+function getTouchTargets(tokens: string[]): string[] {
+	return nonOptionArgs(skipFlagValues(tokens.slice(1), new Set(["-t", "-d", "-r"])));
+}
+
+function getChmodTargets(tokens: string[]): string[] {
+	const args = nonOptionArgs(tokens.slice(1));
+	return args.slice(1);
+}
+
+function getCpTargets(tokens: string[]): string[] {
+	const args = nonOptionArgs(tokens.slice(1));
+	return args.length > 0 ? [args[args.length - 1]] : [];
+}
+
+function getTeeTargets(tokens: string[]): string[] {
+	return nonOptionArgs(tokens.slice(1));
+}
+
+function getPerlRubyTargets(tokens: string[]): string[] | null {
+	if (!tokens.slice(1).some((arg) => /^-p?i/.test(arg))) return null;
+	return nonOptionArgs(tokens.slice(1));
+}
+
+/** Strip -e/--expression flag-value pairs from sed tokens, tracking if any were found. */
+function filterSedExpressionTokens(sedTokens: string[]): { filtered: string[]; hasExpression: boolean } {
+	const filtered: string[] = [];
+	let hasExpression = false;
+	let ti = 0;
+	while (ti < sedTokens.length) {
+		if (sedTokens[ti] === "-e" || sedTokens[ti] === "--expression") {
+			ti += 2; hasExpression = true;
+		} else if (sedTokens[ti].startsWith("-e")) {
+			ti += 1; hasExpression = true; // -e'expr' concatenated form
+		} else if (sedTokens[ti].startsWith("--expression=")) {
+			ti += 1; hasExpression = true;
+		} else {
+			filtered.push(sedTokens[ti]); ti++;
+		}
+	}
+	return { filtered, hasExpression };
+}
+
+/** sed -i target extraction with -e/--expression and backup-extension handling. */
+function getSedTargets(tokens: string[]): string[] | null {
+	if (!tokens.slice(1).some((arg) => arg === "-i" || arg.startsWith("-i"))) return null;
+	const { filtered, hasExpression } = filterSedExpressionTokens(tokens.slice(1));
+	const args = nonOptionArgs(filtered);
+	const extArg = args.length > 0 ? stripMatchingQuotes(args[0]) : "";
+	const hasBackupExt = args.length > 0 && (extArg === "" || /^[a-zA-Z0-9._-]{1,10}$/.test(extArg));
+	if (hasBackupExt) return hasExpression ? (extArg === "" ? args.slice(1) : args) : args.slice(2);
+	return hasExpression ? args : args.slice(1);
+}
+
+/** wget target extraction from -O/--output-document flags. */
+function getWgetTargets(tokens: string[]): string[] {
+	const wArgs = tokens.slice(1);
+	let outputTarget: string | null = null;
+	for (let i = 0; i < wArgs.length; i++) {
+		if (wArgs[i] === "-O" && wArgs[i + 1]) { outputTarget = wArgs[i + 1]; i++; continue; }
+		if (wArgs[i].startsWith("-O") && wArgs[i].length > 2) { outputTarget = wArgs[i].slice(2); continue; }
+		if (wArgs[i] === "--output-document" && wArgs[i + 1]) { outputTarget = wArgs[i + 1]; i++; continue; }
+		if (wArgs[i].startsWith("--output-document=")) { outputTarget = wArgs[i].slice("--output-document=".length); }
+	}
+	if (outputTarget !== null) return stripMatchingQuotes(outputTarget) === "-" ? ["/dev/null"] : [outputTarget];
+	const outputDir = getWgetOutputDir(tokens);
+	if (outputDir !== null) return [outputDir];
+	return ["."]; // safety net — unreachable via getFilesystemMutationReason
+}
+
+/** curl target extraction from -o/--output and -O/--remote-name flags. */
+function getCurlTargets(tokens: string[]): string[] | null {
+	const { hasRemoteName, outputs, outputDir } = getCurlWriteTargets(tokens);
+	const mapped = outputs.map((o) => stripMatchingQuotes(o) === "-" ? "/dev/null" : o);
+	const remoteNameTarget = outputDir ?? ".";
+	if (mapped.length > 0) return hasRemoteName ? [...mapped, remoteNameTarget] : mapped;
+	if (hasRemoteName) return [remoteNameTarget];
+	return null;
+}
+
+// ── Main dispatcher ─────────────────────────────────────────────────
+
 function getMutationTargets(command: string, tokens: string[]): string[] | null {
 	switch (command) {
-		case "rm":
-		case "rmdir":
-		case "unlink":
-		case "mkdir":
-			return nonOptionArgs(skipFlagValues(tokens.slice(1), new Set(["-s", "-o", "--io-size"])));
-		case "truncate":
-			return nonOptionArgs(skipFlagValues(tokens.slice(1), new Set(["-s", "-r", "--reference", "-o", "--io-size"])));
-		case "touch":
-			return nonOptionArgs(skipFlagValues(tokens.slice(1), new Set(["-t", "-d", "-r"])));
-		case "chmod":
-		case "chown":
-		case "chgrp": {
-			const args = nonOptionArgs(tokens.slice(1));
-			return args.slice(1);
-		}
-		case "cp":
-		case "mv":
-		case "install":
-		case "ln": {
-			const args = nonOptionArgs(tokens.slice(1));
-			return args.length > 0 ? [args[args.length - 1]] : [];
-		}
-		case "tee":
-			return nonOptionArgs(tokens.slice(1));
-		case "sed":
-			if (tokens.slice(1).some((arg) => arg === "-i" || arg.startsWith("-i"))) {
-				const sedTokens = tokens.slice(1);
-				// Strip -e/--expression flag-value pairs so their expression values
-				// don't appear as false non-option targets. Track whether any -e was
-				// used — this changes how we skip the expression slot later.
-				let hasExpressionFlag = false;
-				const filteredTokens: string[] = [];
-				let ti = 0;
-				while (ti < sedTokens.length) {
-					if (sedTokens[ti] === "-e" || sedTokens[ti] === "--expression") {
-						ti += 2;
-						hasExpressionFlag = true;
-					} else if (sedTokens[ti].startsWith("-e")) {
-						// -e'expr' concatenated form (GNU sed) — token IS flag + value, skip 1
-						ti += 1;
-						hasExpressionFlag = true;
-					} else if (sedTokens[ti].startsWith("--expression=")) {
-						ti += 1;
-						hasExpressionFlag = true;
-					} else {
-						filteredTokens.push(sedTokens[ti]);
-						ti++;
-					}
-				}
-				const args = nonOptionArgs(filteredTokens);
-				// -i may have a separate backup extension value (macOS: sed -i '' 's/.../.../' file).
-				// When present, it becomes the first non-option arg before the sed expression.
-				// Skip the extension (if present), then the expression.
-				// When expressions came via -e flags, there's no expression in non-option args.
-				const extArg = args.length > 0 ? stripMatchingQuotes(args[0]) : "";
-				if (args.length > 0 && (extArg === "" || /^[a-zA-Z0-9._-]{1,10}$/.test(extArg))) {
-					// First arg is the backup extension — skip it.
-					// If -e was used, expression is not in non-option args (already consumed by -e skip).
-					// Remaining args after the extension are targets.
-					if (hasExpressionFlag) {
-						// Only empty-string backup extension is valid with -e.
-						return extArg === "" ? args.slice(1) : args;
-					}
-					return args.slice(2);
-				}
-				// No backup extension.
-				// If -e was used, all non-option args are targets.
-				// Otherwise, first non-option arg is the expression, remaining are targets.
-				return hasExpressionFlag ? args : args.slice(1);
-			}
-			return null;
-		case "perl":
-		case "ruby":
-			if (tokens.slice(1).some((arg) => /^-p?i/.test(arg))) {
-				const args = nonOptionArgs(tokens.slice(1));
-				return args;
-			}
-			return null;
-		case "find":
-			return getFindMutationTargets(tokens.slice(1));
-		case "wget": {
-			const wArgs = tokens.slice(1);
-			let outputTarget: string | null = null;
-			for (let i = 0; i < wArgs.length; i++) {
-				if (wArgs[i] === "-O" && wArgs[i + 1]) {
-					outputTarget = wArgs[i + 1];
-					i++;
-					continue;
-				}
-				if (wArgs[i].startsWith("-O") && wArgs[i].length > 2) {
-					outputTarget = wArgs[i].slice(2);
-					continue;
-				}
-				if (wArgs[i] === "--output-document" && wArgs[i + 1]) {
-					outputTarget = wArgs[i + 1];
-					i++;
-					continue;
-				}
-				if (wArgs[i].startsWith("--output-document=")) {
-					outputTarget = wArgs[i].slice("--output-document=".length);
-				}
-			}
-			if (outputTarget !== null) {
-				return stripMatchingQuotes(outputTarget) === "-" ? ["/dev/null"] : [outputTarget];
-			}
-			const outputDir = getWgetOutputDir(tokens);
-			if (outputDir !== null) return [outputDir];
-			// wget without -O/--output-document writes to disk (URL basename in cwd) —
-			// this path is unreachable when called via getFilesystemMutationReason (which
-			// handles the no-flag case before calling getMutationTargets), but kept as a
-			// safety net for any other callers.
-			return ["."];
-		}
-		case "curl": {
-			const { hasRemoteName, outputs, outputDir } = getCurlWriteTargets(tokens);
-			// -o - and --output - write to stdout, not a file — map to /dev/null (safe)
-			const mapped = outputs.map((o) => stripMatchingQuotes(o) === "-" ? "/dev/null" : o);
-			const remoteNameTarget = outputDir ?? ".";
-			if (mapped.length > 0) {
-				return hasRemoteName ? [...mapped, remoteNameTarget] : mapped;
-			}
-			if (hasRemoteName) return [remoteNameTarget];
-			return null;
-		}
-		default:
-			return null;
+		case "rm": case "rmdir": case "unlink": case "mkdir": return getRmTargets(tokens);
+		case "truncate": return getTruncateTargets(tokens);
+		case "touch": return getTouchTargets(tokens);
+		case "chmod": case "chown": case "chgrp": return getChmodTargets(tokens);
+		case "cp": case "mv": case "install": case "ln": return getCpTargets(tokens);
+		case "tee": return getTeeTargets(tokens);
+		case "sed": return getSedTargets(tokens);
+		case "perl": case "ruby": return getPerlRubyTargets(tokens);
+		case "find": return getFindMutationTargets(tokens.slice(1));
+		case "wget": return getWgetTargets(tokens);
+		case "curl": return getCurlTargets(tokens);
+		default: return null;
 	}
 }
 
