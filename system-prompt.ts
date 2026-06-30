@@ -15,7 +15,8 @@ is one job. When the job changes, call the handoff tool.
 Before acting, deliberate internally. Does the work still fit the
 current topic? If yes, break it into phases, size each sub-task,
 and delegate >10k-token sub-tasks via spawn. If no, prefer handoff.
-Consider spawn for verification. End by presenting the concise plan.
+Consider spawn for verification. Plan idiomatic delegation for the specific task's
+scope. End by presenting the concise plan.
 
 ### The primacy-zone
 You use long context unevenly. Performance can degrade as context grows —
