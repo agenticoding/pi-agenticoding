@@ -12,7 +12,7 @@
  *   - state reset on /new
  */
 
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, Skill, SlashCommandInfo } from "@earendil-works/pi-coding-agent";
 import { DynamicBorder, isToolCallEventType } from "@earendil-works/pi-coding-agent";
 import {
 	Container,
@@ -33,6 +33,16 @@ import { registerHandoffCommand } from "./handoff/command.js";
 import { registerHandoffCompaction } from "./handoff/compact.js";
 import { registerSpawnTool } from "./spawn/index.js";
 import {
+	cacheLookupCommand,
+	cacheLookupCommandIssue,
+	cacheLookupSkill,
+	cacheLookupSkillIssue,
+	formatReadonlyFrontmatterIssue,
+	populateFromSkills,
+	populatePromptCacheFromResolvedCommandsAndDirs,
+	type ReadonlyCacheIssue,
+} from "./readonly-cache.js";
+import {
 	STATUS_KEY_HANDOFF,
 	STATUS_KEY_READONLY,
 	STATUS_KEY_TOPIC,
@@ -41,6 +51,117 @@ import {
 } from "./tui.js";
 import { applyReadonlyBashGuard } from "./readonly-bash.js";
 import { formatPagePreview } from "./notebook/store.js";
+
+// ── Helpers ────────────────────────────────────────────────────────────
+
+/**
+ * Populate the readonly frontmatter cache from loaded skills and prompt
+ * commands/directories. Always called before toggle resolution so the cache
+ * is fresh for the current input.
+ */
+function populateReadonlyCache(
+	state: AgenticodingState,
+	event: { systemPromptOptions?: { skills?: Skill[] } },
+	ctx: ExtensionContext,
+	pi: ExtensionAPI,
+): void {
+	populateFromSkills(state, event.systemPromptOptions?.skills ?? []);
+	populatePromptCacheFromResolvedCommandsAndDirs(state, pi.getCommands(), ctx.cwd, ctx.isProjectTrusted());
+}
+
+function isPromptCommand(commands: SlashCommandInfo[], name: string): boolean {
+	return commands.some((command) => command.name === name && command.source === "prompt");
+}
+
+const READONLY_BYPASS_COMMANDS = new Set(["readonly", "notebook", "handoff"]);
+
+function isBuiltinReadonlyBypassCommand(name: string): boolean {
+	return READONLY_BYPASS_COMMANDS.has(name);
+}
+
+function alignPendingReadonlyHandoff(state: AgenticodingState, readonly: boolean): void {
+	if (!state.pendingRequestedHandoff) return;
+	state.pendingRequestedHandoff.resumeReadonlyAfterHandoff = readonly;
+	state.pendingRequestedHandoff.readonlyBypassActive = readonly;
+}
+
+function formatReadonlyCommandRef(command: { type: "skill" | "command"; name: string }): string {
+	return command.type === "skill" ? `/skill:${command.name}` : `/${command.name}`;
+}
+
+function recordReadonlyFrontmatterIssue(
+	ctx: ExtensionContext,
+	pi: ExtensionAPI,
+	command: { type: "skill" | "command"; name: string },
+	issue: ReadonlyCacheIssue,
+): void {
+	pi.appendEntry("agenticoding-readonly-frontmatter-issue", { name: command.name, type: command.type, issue });
+	if (ctx.hasUI) {
+		ctx.ui.notify(formatReadonlyFrontmatterIssue(formatReadonlyCommandRef(command), issue), "warning");
+	}
+}
+
+/**
+ * Consume any deferred readonly toggle recorded by the `input` handler.
+ * Must be called after `populateReadonlyCache` so the cache is populated.
+ */
+function consumePendingReadonlyToggle(
+	state: AgenticodingState,
+	ctx: ExtensionContext,
+	pi: ExtensionAPI,
+): void {
+	const commands = pi.getCommands();
+	// Readonly is a TUI-only feature. Headless/RPC sessions must not inherit a
+	// queued slash-command toggle, so drop any deferred intents here.
+	if (!ctx.hasUI) {
+		state.pendingReadonlyCommands.length = 0;
+		return;
+	}
+
+	// Consume unknown/malformed queue entries until the first real readonly
+	// decision so a stale no-op slash command cannot delay the next valid toggle.
+	// Prompt commands may exist only on disk in Pi's standard prompt dirs, so
+	// command lookups trust the populated prompt cache instead of re-gating on
+	// the live registry here. Known non-prompt commands stay blocked because the
+	// cache builder marks their names as shadowed and never loads fallback files.
+	while (state.pendingReadonlyCommands.length > 0) {
+		const pendingCommand = state.pendingReadonlyCommands.shift();
+		if (!pendingCommand) return;
+
+		const readonly = pendingCommand.type === "skill"
+			? cacheLookupSkill(state, pendingCommand.name)
+			: cacheLookupCommand(state, pendingCommand.name);
+		if (readonly === null) {
+			const issue = pendingCommand.type === "skill"
+				? cacheLookupSkillIssue(state, pendingCommand.name)
+				: cacheLookupCommandIssue(state, pendingCommand.name);
+			if (issue) recordReadonlyFrontmatterIssue(ctx, pi, pendingCommand, issue);
+			continue;
+		}
+
+		// Keep pending handoff aligned with the latest user intent even when the
+		// resolved frontmatter matches the current mode and produces no UI/log noise.
+		alignPendingReadonlyHandoff(state, readonly);
+		if (state.readonlyEnabled === readonly) {
+			return;
+		}
+
+		state.readonlyEnabled = readonly;
+		state.readonlyNudgePending = true;
+		pi.appendEntry("agenticoding-readonly", { enabled: readonly });
+
+		if (ctx.hasUI) {
+			const commandRef = formatReadonlyCommandRef(pendingCommand);
+			ctx.ui.notify(
+				readonly
+					? `Readonly mode enabled via \`${commandRef}\` frontmatter`
+					: `Readonly mode disabled via \`${commandRef}\` frontmatter`,
+				"info",
+			);
+		}
+		return;
+	}
+}
 
 export default function (pi: ExtensionAPI): void {
 	const state: AgenticodingState = createState();
@@ -73,8 +194,7 @@ export default function (pi: ExtensionAPI): void {
 		// Keep a pending readonly handoff aligned with the current mode so the
 		// compacted task reflects the latest user intent.
 		if (state.pendingRequestedHandoff) {
-			state.pendingRequestedHandoff.resumeReadonlyAfterHandoff = state.readonlyEnabled;
-			state.pendingRequestedHandoff.readonlyBypassActive = state.readonlyEnabled;
+			alignPendingReadonlyHandoff(state, state.readonlyEnabled);
 			if (state.readonlyEnabled) {
 				ctx.ui.notify(
 					"Pending handoff updated — the fresh context will resume in readonly mode.",
@@ -162,6 +282,51 @@ export default function (pi: ExtensionAPI): void {
 				event.input.command = result.sandboxedCommand;
 			}
 		}
+	});
+
+	// ── Readonly: record slash-command intent for deferred toggle ─
+	// The readonly frontmatter cache is built in before_agent_start, after
+	// Pi resolves skills and exposes the current slash-command registry.
+	// Record intent here, then resolve it there.
+	pi.on("input", async (event, ctx) => {
+		// Only user-initiated slash-command input in TUI sessions should enqueue a
+		// readonly toggle. Headless/RPC runs preserve the existing contract:
+		// readonly is a UI-only feature.
+		// Extension-sourced inputs (e.g. pi.sendUserMessage) and plain-text user
+		// messages must NOT mutate the pending queue built from earlier queued
+		// commands (steer/followUp multi-message delivery).
+		if (!ctx.hasUI || event.source === "extension") return { action: "continue" };
+
+		const text = event.text;
+		// Capture the full first slash-command token and defer authority to the
+		// resolved registry in before_agent_start. This avoids drifting from Pi's
+		// naming rules when prompt/skill names include dots or suffixed segments.
+		const skillName = text.match(/^\/skill:([^\s/]+)/)?.[1];
+		if (skillName) {
+			state.pendingReadonlyCommands.push({ type: "skill", name: skillName });
+			return { action: "continue" };
+		}
+
+		const commandName = text.match(/^\/([^\s/]+)/)?.[1];
+		if (!commandName) return { action: "continue" };
+
+		// Prefer the live command registry when it's already available, but don't
+		// rely on it as the sole authority at input time: some runtimes surface
+		// prompt commands only later in before_agent_start. If the command is
+		// unknown here, defer it optimistically unless it's one of the builtin
+		// commands that must never create a stale no-op queue entry.
+		const commands = pi.getCommands();
+		if (isBuiltinReadonlyBypassCommand(commandName)) return { action: "continue" };
+		if (isPromptCommand(commands, commandName)) {
+			state.pendingReadonlyCommands.push({ type: "command", name: commandName });
+			return { action: "continue" };
+		}
+		if (commands.some((command) => command.name === commandName)) {
+			return { action: "continue" };
+		}
+
+		state.pendingReadonlyCommands.push({ type: "command", name: commandName });
+		return { action: "continue" };
 	});
 
 	// ── /notebook command — interactive page selector ────────────────
@@ -268,8 +433,15 @@ export default function (pi: ExtensionAPI): void {
 		},
 	});
 
-	// ── before_agent_start: inject context primer + notebook ───────
+	// ── before_agent_start: populate readonly cache, consume the deferred
+	//    queue until the first real readonly decision, then inject context
+	//    primer + notebook ─────────────────────────────────────────────
 	pi.on("before_agent_start", async (event, ctx: ExtensionContext) => {
+		if (state.pendingReadonlyCommands.length > 0) {
+			populateReadonlyCache(state, event, ctx, pi);
+		}
+		consumePendingReadonlyToggle(state, ctx, pi);
+
 		// Update TUI indicators before each user-prompt agent run
 		updateIndicators(ctx, state);
 

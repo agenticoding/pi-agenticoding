@@ -93,6 +93,7 @@ export function createTestPI() {
 	const _activeTools: string[] = [];
 	const _allToolNames: string[] = [];
 	const _toolSources = new Map<string, string>();
+	const _slashCommands: any[] = [];
 	const _sentUserMessages: Array<{ content: string; options: any }> = [];
 	const _appendedEntries: Array<{ customType: string; data: any }> = [];
 
@@ -146,7 +147,11 @@ export function createTestPI() {
 		setSessionName: () => {},
 		getSessionName: () => undefined,
 		exec: () => Promise.resolve({ exitCode: 0, stdout: "", stderr: "", code: 0, killed: false, signal: null } as any),
-		getCommands: () => [],
+		getCommands: () => [..._slashCommands],
+		setCommands: (commands: any[]) => {
+			_slashCommands.length = 0;
+			_slashCommands.push(...commands);
+		},
 		setModel: () => Promise.resolve(true),
 		registerProvider: () => {},
 		registerShortcut: (key: string, def: any) => { _shortcuts.set(key, def); },

@@ -31,6 +31,8 @@ test("readonly toggle off restores write, handoff, and bash access", async () =>
 
 test("readonly toggle is a no-op in headless mode", async () => {
 	const { pi, toolCall } = registerReadonlyPI();
+	const [inputHandler] = pi.handlers.get("input")!;
+	const [beforeStartHandler] = pi.handlers.get("before_agent_start")!;
 
 	// Toggle readonly via the command handler with hasUI: false.
 	// The handler guards on ctx.hasUI — in headless mode the toggle
@@ -40,7 +42,21 @@ test("readonly toggle is a no-op in headless mode", async () => {
 		getContextUsage: () => null,
 	} as any);
 
-	// Write should remain unblocked
+	await inputHandler({ text: "/review", source: "interactive" }, {
+		hasUI: false,
+		getContextUsage: () => null,
+	} as any);
+	await beforeStartHandler({
+		systemPrompt: "",
+		systemPromptOptions: { skills: [] },
+	}, {
+		hasUI: false,
+		cwd: process.cwd(),
+		isProjectTrusted: () => false,
+		getContextUsage: () => null,
+	} as any);
+
+	// Write should remain unblocked for both manual and deferred readonly paths.
 	assert.equal(await toolCall({ toolName: "write", input: { path: "/tmp/x", content: "x" } }, {}), undefined);
 });
 
