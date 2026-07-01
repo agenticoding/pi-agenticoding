@@ -4,6 +4,9 @@
 
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { join } from "node:path";
+import os from "node:os";
 import registerAgenticoding from "../../index.js";
 
 export const theme = {
@@ -220,6 +223,35 @@ export function makeReadonlyUICtx(overrides: Record<string, unknown> = {}) {
 		getContextUsage: () => null,
 		...overrides,
 	};
+}
+
+// ── Temp directory helpers ──────────────────────────────────────────
+
+export async function tmpDir(): Promise<string> {
+	return mkdtemp(join(os.tmpdir(), "pi-test-"));
+}
+
+export async function withTempHome<T>(run: (homeDir: string) => Promise<T>): Promise<T> {
+	const previousHome = process.env.HOME;
+	const previousUserProfile = process.env.USERPROFILE;
+	const homeDir = await tmpDir();
+	process.env.HOME = homeDir;
+	process.env.USERPROFILE = homeDir;
+	try {
+		return await run(homeDir);
+	} finally {
+		if (previousHome === undefined) {
+			delete process.env.HOME;
+		} else {
+			process.env.HOME = previousHome;
+		}
+		if (previousUserProfile === undefined) {
+			delete process.env.USERPROFILE;
+		} else {
+			process.env.USERPROFILE = previousUserProfile;
+		}
+		await rm(homeDir, { recursive: true, force: true });
+	}
 }
 
 export const EMPTY_USAGE = {

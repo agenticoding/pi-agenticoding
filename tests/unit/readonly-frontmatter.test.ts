@@ -7,35 +7,14 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import os from "node:os";
-import { registerReadonlyPI, makeReadonlyUICtx } from "./helpers.js";
-
-async function tmpDir(): Promise<string> {
-	return mkdtemp(join(os.tmpdir(), "readonly-frontmatter-"));
-}
+import { registerReadonlyPI, makeReadonlyUICtx, tmpDir, withTempHome } from "./helpers.js";
 
 async function writePrompt(dir: string, name: string, readonly: boolean): Promise<string> {
 	const filePath = join(dir, `${name}.md`);
 	await writeFile(filePath, `---\nreadonly: ${readonly}\ndescription: "Test"\n---\n\nBody content.\n`);
 	return filePath;
-}
-
-async function withTempHome<T>(run: (homeDir: string) => Promise<T>): Promise<T> {
-	const previousHome = process.env.HOME;
-	const homeDir = await tmpDir();
-	process.env.HOME = homeDir;
-	try {
-		return await run(homeDir);
-	} finally {
-		if (previousHome === undefined) {
-			delete process.env.HOME;
-		} else {
-			process.env.HOME = previousHome;
-		}
-		await rm(homeDir, { recursive: true, force: true });
-	}
 }
 
 function makeBeforeStartCtx(cwd = process.cwd()) {

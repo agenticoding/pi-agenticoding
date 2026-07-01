@@ -8,9 +8,9 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm, utimes, writeFile } from "node:fs/promises";
+import { mkdir, rm, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import os from "node:os";
+import { tmpDir, withTempHome } from "./helpers.js";
 import {
 	cacheLookupCommand,
 	cacheLookupCommandIssue,
@@ -25,10 +25,6 @@ import type { Skill } from "@earendil-works/pi-coding-agent";
 
 // ── Helpers ───────────────────────────────────────────────────────
 
-async function tmpDir(): Promise<string> {
-	return mkdtemp(join(os.tmpdir(), "readonly-cache-test-"));
-}
-
 async function writeMd(dir: string, name: string, frontmatter: Record<string, unknown>): Promise<string> {
 	const fm = Object.entries(frontmatter)
 		.map(([k, v]) => `${k}: ${JSON.stringify(v)}`)
@@ -36,22 +32,6 @@ async function writeMd(dir: string, name: string, frontmatter: Record<string, un
 	const filePath = join(dir, `${name}.md`);
 	await writeFile(filePath, `---\n${fm}\n---\n\nBody content.\n`);
 	return filePath;
-}
-
-async function withTempHome<T>(run: (homeDir: string) => Promise<T>): Promise<T> {
-	const previousHome = process.env.HOME;
-	const homeDir = await tmpDir();
-	process.env.HOME = homeDir;
-	try {
-		return await run(homeDir);
-	} finally {
-		if (previousHome === undefined) {
-			delete process.env.HOME;
-		} else {
-			process.env.HOME = previousHome;
-		}
-		await rm(homeDir, { recursive: true, force: true });
-	}
 }
 
 function makeSkill(name: string, filePath: string): Skill {
