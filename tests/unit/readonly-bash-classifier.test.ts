@@ -179,7 +179,7 @@ test("blocks hidden-file globs outside temp dir", async () => {
 	const { pi, toolCall } = registerReadonlyPI();
 	await enableReadonly(pi);
 	// Home dir already has hidden files (.gitconfig, .ssh, etc.) and is
-	// outside TEMP_DIR — no filesystem writes needed for the glob to match.
+	// outside the temp dir — no filesystem writes needed for the glob to match.
 	await assertBlocked(toolCall, "rm -f *", os.homedir());
 });
 

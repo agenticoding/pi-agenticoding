@@ -268,6 +268,46 @@ test("headless /name frontmatter stays a no-op through the deferred pipeline", a
 	}
 });
 
+test("extension input stays a no-op when hasUI is false", async () => {
+	const dir = await tmpDir();
+	try {
+		const filePath = await writePrompt(dir, "headless-extension", true);
+		const { pi, toolCall } = registerReadonlyPI();
+		const [inputHandler] = pi.handlers.get("input")!;
+		const [beforeStartHandler] = pi.handlers.get("before_agent_start")!;
+		pi.setCommands([makePromptCommand("headless-extension", filePath)]);
+
+		await inputHandler({ text: "/headless-extension", source: "extension" }, {
+			hasUI: false,
+			getContextUsage: () => null,
+		} as any);
+		await beforeStartHandler({ systemPrompt: "", systemPromptOptions: { skills: [] } }, {
+			hasUI: false,
+			cwd: process.cwd(),
+			isProjectTrusted: () => false,
+			getContextUsage: () => null,
+		} as any);
+
+		assert.equal(await toolCall({ toolName: "write", input: { path: "/tmp/x", content: "x" } }, {}), undefined);
+		assert.equal(pi.appendedEntries.find((entry: any) => entry.customType === "agenticoding-readonly"), undefined);
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("extension plain text without a slash stays a no-op", async () => {
+	const { pi, toolCall } = registerReadonlyPI();
+	const [inputHandler] = pi.handlers.get("input")!;
+	const [beforeStartHandler] = pi.handlers.get("before_agent_start")!;
+	const ctx = makeBeforeStartCtx();
+
+	await inputHandler({ text: "Proceed.", source: "extension" }, ctx);
+	await beforeStartHandler({ systemPrompt: "", systemPromptOptions: { skills: [] } }, ctx);
+
+	assert.equal(await toolCall({ toolName: "write", input: { path: "/tmp/x", content: "x" } }, {}), undefined);
+	assert.equal(pi.appendedEntries.find((entry: any) => entry.customType === "agenticoding-readonly"), undefined);
+});
+
 test("unresolved /name uses trusted cwd/.pi/prompts frontmatter via deferred fallback", async () => {
 	const workspace = await tmpDir();
 	try {
@@ -784,7 +824,7 @@ test("deferred readonly enable emits a one-shot context nudge", async () => {
 
 		const firstResult = await contextHook({ messages: [] }, { getContextUsage: () => ({ percent: 20 }) });
 		assert.equal(firstResult.messages.filter((message: any) => message.customType === "agenticoding-readonly-nudge").length, 1);
-		assert.match(firstResult.messages.find((message: any) => message.customType === "agenticoding-readonly-nudge")?.content ?? "", /Readonly mode is active/);
+		assert.match(firstResult.messages.find((message: any) => message.customType === "agenticoding-readonly-nudge")?.content ?? "", /\[readonly\]/);
 
 		const secondResult = await contextHook({ messages: [] }, { getContextUsage: () => ({ percent: 20 }) });
 		assert.equal(secondResult?.messages?.find((message: any) => message.customType === "agenticoding-readonly-nudge"), undefined);
@@ -810,7 +850,7 @@ test("deferred readonly disable emits a one-shot context nudge", async () => {
 
 		const firstResult = await contextHook({ messages: [] }, { getContextUsage: () => ({ percent: 40 }) });
 		assert.equal(firstResult.messages.filter((message: any) => message.customType === "agenticoding-readonly-nudge").length, 1);
-		assert.match(firstResult.messages.find((message: any) => message.customType === "agenticoding-readonly-nudge")?.content ?? "", /Readonly mode has been turned off/);
+		assert.match(firstResult.messages.find((message: any) => message.customType === "agenticoding-readonly-nudge")?.content ?? "", /\[readonly\] disabled/);
 
 		const secondResult = await contextHook({ messages: [] }, { getContextUsage: () => ({ percent: 40 }) });
 		assert.equal(secondResult?.messages?.filter((message: any) => message.customType === "agenticoding-readonly-nudge").length ?? 0, 0);
@@ -868,7 +908,10 @@ async function assertHandoffAlignment(name: string, readonly: boolean, task: str
 			{ task },
 			undefined,
 			undefined,
-			{ compact: () => {} },
+			{
+				getContextUsage: () => ({ tokens: 50000, percent: 25, contextWindow: 200000 }),
+				compact: () => {},
+			},
 		);
 		const compaction = await beforeCompactHandler(
 			{ preparation: { tokensBefore: 1 }, branchEntries: [{ id: "leaf-1" }] },

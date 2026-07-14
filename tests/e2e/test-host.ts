@@ -7,6 +7,14 @@
  * Protocol:
  *   → cmd <name> [arg]      — call a registered command
  *   → tool <name> <json>    — call a registered tool with JSON params
+ *   → toolcall <name> <json> — run the first tool_call hook directly
+ *   → context [json]        — run the first context hook
+ *   → usage <json|null>     — set getContextUsage() result for later calls
+ *   → ui / headless         — select UI mode for subsequent calls
+ *   → ui-events             — return current status values and emitted notifications
+ *   → compact-success       — run queued handoff compaction success path
+ *   → compact-fail [message] — run queued handoff compaction failure path
+ *   → session-tree          — navigate the active session tree branch
  *   → tools                 — list registered tool names
  *   → cmds                  — list registered command names
  *   → exit                  — graceful shutdown
@@ -14,8 +22,6 @@
  *   ← READY\n               — sent after extension registration
  *   ← OK[:payload]\n        — success
  *   ← ERR:message\n         — failure
- *
- * No TUI. All UI-dependent paths are skipped (hasUI=false).
  */
 
 import { createInterface } from "node:readline";
@@ -37,15 +43,23 @@ registerAgenticoding(pi);
 
 // ── Mock ExtensionContext for tool/command execution ──────────────
 
+type MockContextUsage = { tokens?: number | null; percent?: number | null; contextWindow?: number | null } | null;
+type CompactRequest = { onComplete?: () => void; onError?: (error: Error) => void };
+
+let currentUsage: MockContextUsage = null;
+let lastCompactRequest: CompactRequest | null = null;
+const statuses = new Map<string, string | undefined>();
+const notifications: Array<{ message: string; level: string }> = [];
+
 const mockCtx = {
-	hasUI: false,
+	hasUI: true,
 	mode: "non-interactive",
 	cwd: process.cwd(),
 	ui: {
-		notify: () => {},
-		setStatus: () => {},
+		notify: (message: string, level: string) => { notifications.push({ message, level }); },
+		setStatus: (key: string, value: string | undefined) => { statuses.set(key, value); },
 		setWidget: () => {},
-		theme: { fg: () => "" },
+		theme: { fg: (_name: string, text: string) => text },
 		select: () => Promise.resolve(undefined),
 		confirm: () => Promise.resolve(false),
 		input: () => Promise.resolve(""),
@@ -67,9 +81,10 @@ const mockCtx = {
 		getTheme: () => undefined,
 		setTheme: () => ({ ok: true }),
 	},
-	getContextUsage: () => null,
+	getContextUsage: () => currentUsage,
 	sessionManager: null,
 	modelRegistry: null,
+	isProjectTrusted: () => true,
 	// Required by spawn tool which checks ctx.model existence before using it
 	model: undefined,
 	isIdle: () => true,
@@ -77,7 +92,9 @@ const mockCtx = {
 	abort: () => {},
 	hasPendingMessages: () => false,
 	shutdown: () => process.exit(0),
-	compact: () => {},
+	compact: (request: { onComplete?: () => void; onError?: (error: Error) => void }) => {
+		lastCompactRequest = request;
+	},
 	getSystemPrompt: () => "",
 } as any; // Type assertion needed: mock intentionally omits some interface fields
 
@@ -92,12 +109,107 @@ for await (const line of rl) {
 
 	if (trimmed === "exit") {
 		process.exit(0);
+	} else if (trimmed === "ui" || trimmed === "headless") {
+		mockCtx.hasUI = trimmed === "ui";
+		process.stdout.write("OK\n");
+	} else if (trimmed === "ui-events") {
+		process.stdout.write("OK:" + JSON.stringify({ statuses: Object.fromEntries(statuses), notifications }) + "\n");
+	} else if (trimmed.startsWith("usage ")) {
+		const jsonArg = trimmed.slice(6).trim();
+		try {
+			currentUsage = JSON.parse(jsonArg);
+			process.stdout.write("OK\n");
+		} catch (e: unknown) {
+			process.stdout.write("ERR:invalid json: " + (e instanceof Error ? e.message : String(e)) + "\n");
+		}
+	} else if (trimmed === "compact-success" || trimmed.startsWith("compact-fail")) {
+		const [beforeCompact] = pi.handlers.get("session_before_compact") ?? [];
+		const compactRequest = lastCompactRequest as any;
+		if (!beforeCompact || !compactRequest) {
+			process.stdout.write("ERR:no queued compaction\n");
+			continue;
+		}
+		if (trimmed === "compact-success") {
+			if (typeof compactRequest.onComplete !== "function") {
+				process.stdout.write("ERR:no success callback\n");
+				continue;
+			}
+			const result = await beforeCompact(
+				{ preparation: { tokensBefore: 1 }, branchEntries: [{ id: "leaf-e2e" }] },
+				mockCtx,
+			);
+			lastCompactRequest = null;
+			if (!result?.compaction) {
+				process.stdout.write("OK:null\n");
+				continue;
+			}
+			compactRequest.onComplete();
+			process.stdout.write("OK:" + JSON.stringify(result.compaction) + "\n");
+		} else {
+			if (typeof compactRequest.onError !== "function") {
+				process.stdout.write("ERR:no failure callback\n");
+				continue;
+			}
+			compactRequest.onError(new Error(trimmed.slice("compact-fail".length).trim() || "simulated compaction failure"));
+			lastCompactRequest = null;
+			const lastMessage = pi.sentUserMessages.at(-1)?.content ?? "";
+			process.stdout.write("OK:compaction failed:" + lastMessage + "\n");
+		}
+	} else if (trimmed === "session-tree") {
+		const [sessionTree] = pi.handlers.get("session_tree") ?? [];
+		if (!sessionTree) {
+			process.stdout.write("ERR:no session_tree handler\n");
+			continue;
+		}
+		await sessionTree({ newLeafId: "fresh-leaf", oldLeafId: "old-leaf" }, mockCtx);
+		process.stdout.write("OK\n");
 	} else if (trimmed === "tools") {
 		const names = Array.from(tools.keys()).sort().join(",");
 		process.stdout.write("OK:" + names + "\n");
 	} else if (trimmed === "cmds") {
 		const names = Array.from(commands.keys()).sort().join(",");
 		process.stdout.write("OK:" + names + "\n");
+	} else if (trimmed.startsWith("toolcall ")) {
+		const rest = trimmed.slice(9).trim();
+		const spaceIdx = rest.indexOf(" ");
+		if (spaceIdx === -1) {
+			process.stdout.write("ERR:usage toolcall <name> <json-args>\n");
+			continue;
+		}
+		const toolName = rest.slice(0, spaceIdx);
+		const jsonArgs = rest.slice(spaceIdx + 1);
+		let input;
+		try { input = JSON.parse(jsonArgs); }
+		catch (e: unknown) {
+			process.stdout.write("ERR:invalid json: " + (e instanceof Error ? e.message : String(e)) + "\n");
+			continue;
+		}
+		try {
+			const [handler] = pi.handlers.get("tool_call") ?? [];
+			const result = await handler({ toolName, input }, { cwd: mockCtx.cwd });
+			process.stdout.write("OK:" + JSON.stringify(result ?? null) + "\n");
+		} catch (e) {
+			const msg = e instanceof Error ? e.message : String(e);
+			process.stdout.write("ERR:" + msg + "\n");
+		}
+	} else if (trimmed.startsWith("context")) {
+		let payload;
+		try {
+			payload = trimmed === "context"
+				? { messages: [{ role: "user", content: "e2e", timestamp: Date.now() }] }
+				: JSON.parse(trimmed.slice(7).trim());
+		} catch (e: unknown) {
+			process.stdout.write("ERR:invalid json: " + (e instanceof Error ? e.message : String(e)) + "\n");
+			continue;
+		}
+		try {
+			const [handler] = pi.handlers.get("context") ?? [];
+			const result = await handler(payload, mockCtx);
+			process.stdout.write("OK:" + JSON.stringify(result ?? null) + "\n");
+		} catch (e) {
+			const msg = e instanceof Error ? e.message : String(e);
+			process.stdout.write("ERR:" + msg + "\n");
+		}
 	} else if (trimmed.startsWith("tool ")) {
 		const rest = trimmed.slice(5).trim();
 		const spaceIdx = rest.indexOf(" ");

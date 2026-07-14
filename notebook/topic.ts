@@ -6,6 +6,8 @@ export interface NotebookTopicBoundaryHint {
 	from: string | null;
 	to: string;
 	source: NotebookTopicSource;
+	/** Prevent repeated advisory nudges while waiting for handoff eligibility. */
+	advisoryDelivered?: boolean;
 }
 
 export function normalizeNotebookTopic(input: string): string {
@@ -33,7 +35,7 @@ export function setActiveNotebookTopic(
 	state.activeNotebookTopicSource = source;
 
 	const boundaryHint = changed && previous !== null
-		? { from: previous, to: normalized, source }
+		? { from: previous, to: normalized, source, advisoryDelivered: false }
 		: null;
 	state.pendingTopicBoundaryHint = boundaryHint;
 

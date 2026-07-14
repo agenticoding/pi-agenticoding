@@ -348,6 +348,32 @@ test("/notebook <topic> notifies with info on first set and warning on boundary 
 	assert.equal(widgets.get(WIDGET_KEY_WARNING), undefined);
 });
 
+test("readonly /notebook boundary notification explains deferred handoff eligibility", async () => {
+	const pi = createTestPI();
+	registerAgenticoding(pi as any);
+	const notifications: Array<{ message: string; level: string }> = [];
+	const ctx = {
+		hasUI: true,
+		getContextUsage: () => ({ percent: 20 }),
+		ui: {
+			theme: { fg: (_name: string, text: string) => text },
+			notify: (message: string, level: string) => { notifications.push({ message, level }); },
+			setStatus: () => {},
+			setWidget: () => {},
+		},
+	};
+
+	await pi.commands.get("readonly")!.handler("", ctx as any);
+	await pi.commands.get("notebook")!.handler("oauth", ctx as any);
+	await pi.commands.get("notebook")!.handler("billing", ctx as any);
+
+	assert.match(notifications.at(-1)?.message ?? "", /handoff exception/i);
+	assert.match(notifications.at(-1)?.message ?? "", /~30K-token handoff guard is eligible/i);
+	assert.match(notifications.at(-1)?.message ?? "", /otherwise this remains advisory/i);
+	assert.doesNotMatch(notifications.at(-1)?.message ?? "", /ask the user for an explicit \/handoff/i);
+});
+
+
 test("/notebook empty overlay renders empty state and closes on input", async () => {
 	const pi = createTestPI();
 	registerAgenticoding(pi as any);
@@ -374,7 +400,6 @@ test("/notebook empty overlay renders empty state and closes on input", async ()
 test("/notebook selection previews the chosen entry", async () => {
 	const pi = createTestPI();
 	registerAgenticoding(pi as any);
-	const notifications: string[] = [];
 	const notebookWrite = pi.tools.get("notebook_write");
 	await notebookWrite.execute("1", { name: "alpha", content: "body line\nsecond line" }, undefined, undefined, makeTUICtx());
 	let overlay: any;
@@ -387,7 +412,6 @@ test("/notebook selection previews the chosen entry", async () => {
 			custom: async (build: any) => {
 				overlay = build({ requestRender: () => {} }, theme, {}, () => { doneCalls++; });
 			},
-			notify: (message: string) => { notifications.push(message); },
 		},
 	});
 
@@ -397,7 +421,6 @@ test("/notebook selection previews the chosen entry", async () => {
 	const bodyLines = stripAnsi(overlay.render(120).join("\n"));
 	assert.match(bodyLines, /body line/);
 	assert.match(bodyLines, /alpha/);
-
 	// Second keypress closes the overlay
 	overlay.handleInput("\r");
 	assert.equal(doneCalls, 1);
@@ -418,7 +441,6 @@ test("/notebook overlay sorts entries consistently", async () => {
 			custom: async (build: any) => {
 				overlay = build({ requestRender: () => {} }, theme, {}, () => {});
 			},
-			notify: () => {},
 		},
 	});
 
