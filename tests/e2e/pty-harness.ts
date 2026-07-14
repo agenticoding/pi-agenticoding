@@ -43,6 +43,12 @@ export class ProcessHarness {
 			},
 		});
 
+		// EPIPE is expected when the child exits — the Node.js project
+		// considers this by-design OS behavior, not a bug. Without a
+		// listener the error crashes the process (delivered async via
+		// IOCP on Windows, potentially after the test promise settles).
+		this.child.stdin.on("error", () => {});
+
 		const append = (chunk: string | Buffer) => {
 			this.output += chunk.toString();
 			for (const wake of this.waiters) wake();
