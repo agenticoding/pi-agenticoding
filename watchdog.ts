@@ -1,5 +1,5 @@
 /**
- * Watchdog: primacy-zone reminder plus sticky enforcement for user-requested handoff.
+ * Watchdog: primacy-zone reminder plus sticky enforcement for required handoff.
  *
  * Exposes nudge text generation and records the latest context usage at
  * `agent_end` for UI/state purposes. Actual reminder injection happens in the
@@ -8,63 +8,51 @@
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AgenticodingState } from "./state.js";
+import { isHandoffEligible, normalizeContextPercent } from "./handoff/eligibility.js";
+import {
+	READONLY_HANDOFF_RETRY_ADVICE,
+	buildReadonlyHandoffWaitNotice,
+	buildReadonlyRequestedHandoffContinuation,
+} from "./readonly-copy.js";
 import { STATUS_KEY_HANDOFF } from "./tui.js";
 
-/** Max turns a user-requested handoff remains sticky before auto-clear.
- * 5 turns gives the LLM ~2-3 response cycles to draft and execute
- * a handoff brief before we give up and notify the user. */
-const MAX_HANDOFF_ATTEMPTS = 5;
+/** Max turns a required handoff stays sticky before auto-clear.
+ * 5 eligible turns gives the LLM ~2-3 response cycles to draft and execute a brief,
+ * including one async compaction retry path where handoff/tool.ts resets
+ * toolCalled=false after failure so enforcement can resume. */
+export const MAX_HANDOFF_ATTEMPTS = 5;
 
-export function buildNudge(
-	state: Pick<AgenticodingState, "activeNotebookTopic" | "pendingTopicBoundaryHint" | "readonlyEnabled" | "pendingRequestedHandoff">,
-	percent: number | null,
-): string {
-	const pct = percent === null ? null : Math.round(percent);
-	const topic = state.activeNotebookTopic;
-	const boundary = state.pendingTopicBoundaryHint;
-	const readonly = state.readonlyEnabled;
-	const requestedHandoff = state.pendingRequestedHandoff;
+type NudgeState = Pick<AgenticodingState, "activeNotebookTopic" | "pendingTopicBoundaryHint" | "readonlyEnabled" | "pendingRequestedHandoff">;
 
-	if (requestedHandoff) {
-		const readonlyContinuation = requestedHandoff.resumeReadonlyAfterHandoff
-			? "Readonly remains active for normal mutations. A temporary exception allows only the handoff tool for this request. After handoff, the fresh context will resume in readonly mode and the exception will be cleared. Draft the brief for readonly continuation."
-			: "Complete a real handoff now rather than continuing normal work. Draft the brief so the next context can start cleanly.";
-		return `User explicitly requested /handoff.
-You must complete a real handoff in this session now.
+function buildRequestedHandoffNudge(state: NudgeState, eligible: boolean): string {
+	if (!eligible) {
+		const readonlyWait = state.pendingRequestedHandoff?.resumeReadonlyAfterHandoff
+			? buildReadonlyHandoffWaitNotice()
+			: "";
+		return "A handoff is requested, but context usage is not yet eligible for compaction. Continue inline or use spawn; retry handoff once usage is measurable and at least 30K tokens." + readonlyWait;
+	}
+	const requestedHandoff = state.pendingRequestedHandoff!;
+	const readonlyContinuation = requestedHandoff.resumeReadonlyAfterHandoff
+		? buildReadonlyRequestedHandoffContinuation()
+		: "Draft the brief so the next context can start cleanly.";
+	return `A real handoff is required in this session now.
+You must complete it before continuing normal work.
 Save durable findings to the notebook if needed, then call handoff.
 ${readonlyContinuation}`;
-	}
+}
 
-	if (boundary) {
-		if (readonly) {
-			return `Notebook topic changed from ${boundary.from ?? "(unset)"} to ${boundary.to}.
-Readonly mode is active. Use spawn only for subtasks that still fit the current topic. If the user explicitly requests /handoff, complete it and ensure the brief says the fresh context resumes in readonly mode.`;
-		}
-		return `Notebook topic changed from ${boundary.from ?? "(unset)"} to ${boundary.to}.
-Treat this as a strong task-boundary signal. Prefer a deliberate handoff before
-continuing under the new topic: save durable findings to the notebook, draft a
-concise situational brief, and call handoff. Only continue inline if this was
-merely a rename rather than a real pivot.`;
-	}
+function buildBoundaryNudge(state: NudgeState, eligible: boolean): string {
+	const boundary = state.pendingTopicBoundaryHint!;
+	const action = eligible
+		? "Prefer a deliberate handoff before continuing under the new topic: save durable findings to the notebook, draft a concise situational brief, and call handoff."
+		: "Continue inline or use spawn until context usage is measurable and at least 30K tokens; handoff remains advisory for now.";
+	return `Notebook topic changed from ${boundary.from ?? "(unset)"} to ${boundary.to}.
+Treat this as a strong task-boundary signal. ${action}
+Only continue inline if this was merely a rename rather than a real pivot.`;
+}
 
-	if (readonly) {
-		const contextLead = pct === null
-			? "Readonly mode is active."
-			: `Context at ${pct}% — readonly mode is active.`;
 
-		const readonlyAdvice = "Use spawn only for same-topic delegation. If the user explicitly requests /handoff, complete it and ensure the brief says the fresh context resumes in readonly mode.";
-		if (topic) {
-			return `${contextLead}
-Active notebook topic: ${topic}.
-${readonlyAdvice}
-Save durable findings to the notebook before moving on.`;
-		}
-		return `${contextLead}
-${readonlyAdvice}
-Assign a short stable topic with notebook_topic_set to track the current frame.`;
-	}
-
-	// ── Not readonly — existing logic unchanged ──────────────────────
+function buildDefaultNudge(pct: number | null, topic: string | null, eligible: boolean): string {
 	const contextLead = pct === null
 		? "Topic-aware context reminder."
 		: pct >= 70
@@ -72,11 +60,14 @@ Assign a short stable topic with notebook_topic_set to track the current frame.`
 			: pct >= 50
 				? `Context at ${pct}% — topic discipline matters now.`
 				: `Context at ${pct}% — choose your next step by topic fit.`;
+	const pivotAdvice = eligible
+		? "prefer a deliberate handoff"
+		: "continue inline or use spawn until context usage is measurable and at least 30K tokens";
 
 	if (topic) {
 		const urgency = pct !== null && pct >= 70
-			? "If the work no longer fits this topic, prefer a deliberate handoff now. If it still fits and only a focused noisy branch is needed, spawn it instead of polluting the parent context."
-			: "If the current work still fits this topic, prefer spawn for isolated noisy subtasks. If it no longer fits, prefer handoff instead of dragging stale context forward.";
+			? `If the work no longer fits this topic, ${pivotAdvice}. If it still fits and only a focused noisy branch is needed, spawn it instead of polluting the parent context.`
+			: `If the current work still fits this topic, prefer spawn for isolated noisy subtasks. If it no longer fits, ${pivotAdvice} instead of dragging stale context forward.`;
 		return `${contextLead}
 Active notebook topic: ${topic}.
 Use the topic as the current semantic frame. ${urgency}
@@ -84,10 +75,20 @@ Save durable findings to the notebook before handoff.`;
 	}
 
 	const noTopicUrgency = pct !== null && pct >= 70
-		? "Assign a fresh topic in the next clean context after handoff."
-		: "Assign a short stable topic soon. If the work stays within that topic, prefer spawn for noisy subtasks. If the work shifts beyond it, prefer handoff.";
+		? eligible
+			? "Assign a fresh topic in the next clean context after handoff."
+			: "Assign a fresh topic now; continue inline or use spawn until context usage is eligible for handoff."
+		: `Assign a short stable topic soon. If the work stays within that topic, prefer spawn for noisy subtasks. If the work shifts beyond it, ${pivotAdvice}.`;
 	return `${contextLead}
 No active notebook topic is set. ${noTopicUrgency}`;
+}
+
+/** Build a watchdog message using the caller's current handoff eligibility. */
+export function buildNudge(state: NudgeState, percent: number | null, eligible: boolean): string {
+	const pct = percent === null ? null : Math.round(percent);
+	if (state.pendingRequestedHandoff) return buildRequestedHandoffNudge(state, eligible);
+	if (state.pendingTopicBoundaryHint) return buildBoundaryNudge(state, eligible);
+	return buildDefaultNudge(pct, state.activeNotebookTopic, eligible);
 }
 
 /**
@@ -98,15 +99,22 @@ No active notebook topic is set. ${noTopicUrgency}`;
 export function registerWatchdog(pi: ExtensionAPI, state: AgenticodingState): void {
 	pi.on("agent_end", async (_event: unknown, ctx: ExtensionContext) => {
 		// ── Enforcement counter: prevent infinite handoff nudges ──
+		// pendingRequestedHandoff is the sticky "user still expects a real
+		// handoff" contract. It survives normal turns and even compaction-prep
+		// failure recovery; only a successful handoff completion, reset, or maxed
+		// retries should clear it.
 		const requestedHandoff = state.pendingRequestedHandoff;
-		if (requestedHandoff && !requestedHandoff.toolCalled) {
+		if (requestedHandoff && !requestedHandoff.toolCalled && isHandoffEligible(ctx.getContextUsage())) {
 			requestedHandoff.enforcementAttempts += 1;
 			if (requestedHandoff.enforcementAttempts >= MAX_HANDOFF_ATTEMPTS) {
 				state.pendingRequestedHandoff = null;
 				if (ctx.hasUI) {
 					ctx.ui.setStatus(STATUS_KEY_HANDOFF, undefined);
+					const retryAdvice = state.readonlyEnabled
+						? READONLY_HANDOFF_RETRY_ADVICE
+						: "Use /handoff <direction> again to retry.";
 					ctx.ui.notify(
-						`User-requested /handoff cancelled after ${MAX_HANDOFF_ATTEMPTS} turns without completion. Use /handoff <direction> again to retry.`,
+						`Required handoff cancelled after ${MAX_HANDOFF_ATTEMPTS} turns without completion. ${retryAdvice}`,
 						"warning",
 					);
 				}
@@ -115,14 +123,16 @@ export function registerWatchdog(pi: ExtensionAPI, state: AgenticodingState): vo
 
 		// ── Primacy-zone nudge ──────────────────────────────────────
 		const usage = ctx.getContextUsage();
+		const percent = normalizeContextPercent(usage?.percent);
 
-		// Null usage / null percent — right after compaction, before next LLM response.
-		if (!usage || usage.percent === null) {
+		// Null or malformed usage — right after compaction or when the host cannot
+		// provide a real percentage. Do not persist or display invalid values.
+		if (percent === null) {
 			state.lastContextPercent = null;
 			return;
 		}
 
-		state.lastContextPercent = usage.percent;
+		state.lastContextPercent = percent;
 
 	});
 }

@@ -9,42 +9,128 @@
  * remain durable grounding fetched on demand in the next context.
  */
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { clearActiveNotebookTopic } from "../notebook/topic.js";
+import {
+	HANDOFF_IN_PROGRESS_STATUS,
+	HANDOFF_REQUESTED_STATUS,
+	HANDOFF_REQUIRED_STATUS,
+} from "./copy.js";
+import { buildEnrichedTask } from "./format.js";
+import {
+	MIN_HANDOFF_TOKENS,
+	estimateHandoffContextTokens,
+	formatHandoffContextUsage,
+	isHandoffEligible,
+	normalizeContextPercent,
+} from "./eligibility.js";
 import type { AgenticodingState } from "../state.js";
 import { STATUS_KEY_HANDOFF } from "../tui.js";
 
-/**
- * Build the enriched task that becomes the compaction summary.
- *
- * Shape: handoff primer + original task.
- */
-export function buildEnrichedTask(task: string, options?: { resumeReadonlyAfterHandoff?: boolean }): string {
-	const parts: string[] = [
-		"## Handoff — Continue Previous Work",
-		"",
-		"You are continuing a previous agent's work in a clean context. Use the available knowledge correctly:",
-		"- Notebook pages hold durable grounding knowledge; fetch them with `notebook_read`",
-		"- This handoff brief holds the distilled next task and immediate situational context",
-		"- Use `notebook_index` to scan available pages when needed",
-		"- Use `spawn` to delegate isolated subtasks to child agents",
-		"- Build on notebook grounding and this brief rather than reconstructing old context",
-	];
-
-	if (options?.resumeReadonlyAfterHandoff) {
-		parts.push(
-			"",
-			"## Execution Constraints",
-			"",
-			"- Fresh context resumes in readonly mode.",
-			"- The temporary handoff-only exception used to reach this context is no longer active.",
-			"- Write, edit, and non-temp bash filesystem mutations remain blocked unless the user changes readonly mode.",
+function validateHandoffTask(task: string, ctx: ExtensionContext): void {
+	const trimmed = task.trim();
+	if (!trimmed) {
+		const pct = normalizeContextPercent(ctx.getContextUsage()?.percent);
+		throw new Error(
+			`Context at ${pct === null ? "?" : Math.round(pct) + "%"}. Empty handoff rejected. Save findings to notebook, then draft a substantive brief.`,
 		);
 	}
 
-	parts.push("", "## Task", "", task);
-	return parts.join("\n");
+	const usage = ctx.getContextUsage();
+	const approximateTokens = estimateHandoffContextTokens(usage);
+	if (approximateTokens === null) {
+		throw new Error(
+			"Context usage unavailable. Handoff requires an estimated session size of at least 30K tokens before compaction can work, so this handoff is rejected until context usage can be measured. Continue working in the current context.",
+		);
+	}
+	if (approximateTokens < MIN_HANDOFF_TOKENS) {
+		const tokenLabel = formatHandoffContextUsage(usage);
+		const percent = normalizeContextPercent(usage?.percent);
+		const pctLabel = percent === null ? "?" : `~${Math.round(percent)}%`;
+		throw new Error(
+			`Context at ${pctLabel} (${tokenLabel}). Session is too small for handoff — this extension requires at least 30K tokens before compaction can work. Continue working in the current context.`,
+		);
+	}
+}
+
+function completeHandoff(pi: ExtensionAPI, state: AgenticodingState, ctx: ExtensionContext): void {
+	// Finalize the two-phase clear: pendingHandoff was already cleared by compact.ts;
+	// this is the sole path that clears pendingRequestedHandoff after successful compaction.
+	state.pendingHandoff = null;
+	clearActiveNotebookTopic(state);
+	state.pendingRequestedHandoff = null;
+	if (ctx.hasUI) {
+		ctx.ui.setStatus(STATUS_KEY_HANDOFF, undefined);
+		ctx.ui.notify("Handoff complete. Fresh context will resume with the queued brief.", "info");
+	}
+	pi.sendUserMessage("Proceed.");
+}
+
+function notifyHandoffFailure(ctx: ExtensionContext, error: Error, pendingRequest: AgenticodingState["pendingRequestedHandoff"]): void {
+	if (!ctx.hasUI) return;
+	if (pendingRequest && ctx.ui.theme) {
+		const status = isHandoffEligible(ctx.getContextUsage())
+			? HANDOFF_REQUIRED_STATUS
+			: HANDOFF_REQUESTED_STATUS;
+		ctx.ui.setStatus(STATUS_KEY_HANDOFF, ctx.ui.theme.fg("accent", status));
+	} else {
+		ctx.ui.setStatus(STATUS_KEY_HANDOFF, undefined);
+	}
+	ctx.ui.notify(`Handoff compaction failed: ${error.message}. The handoff can be retried.`, "error");
+}
+
+function sendHandoffFailure(pi: ExtensionAPI, error: Error, pendingRequest: AgenticodingState["pendingRequestedHandoff"]): void {
+	const nextStep = pendingRequest
+		? "The required handoff remains pending; retry when context usage is eligible. "
+		: "No required handoff remains pending; retry when ready. ";
+	pi.sendUserMessage(`Handoff failed — ${error.message}. ${nextStep}Continue working in the current context.`);
+}
+
+function failHandoff(
+	pi: ExtensionAPI,
+	state: AgenticodingState,
+	ctx: ExtensionContext,
+	rawError: unknown,
+): void {
+	const error = rawError instanceof Error ? rawError : new Error(String(rawError));
+	state.pendingHandoff = null;
+	const pendingRequest = state.pendingRequestedHandoff;
+	if (pendingRequest) pendingRequest.toolCalled = false;
+	notifyHandoffFailure(ctx, error, pendingRequest);
+	sendHandoffFailure(pi, error, pendingRequest);
+}
+
+function createHandoffCallbacks(
+	pi: ExtensionAPI,
+	state: AgenticodingState,
+	ctx: ExtensionContext,
+	generation: number,
+): { onComplete: () => void; onError: (error: unknown) => void } {
+	let settled = false;
+	const clearInFlight = () => {
+		// Pair generation with handoffCompactionGeneration: only clear this
+		// reservation if it is still the active one. A newer handoff will have
+		// bumped handoffGeneration and set its own reservation.
+		if (state.handoffCompactionGeneration !== generation) return;
+		state.handoffCompactionGeneration = null;
+		if (state.pendingHandoff?.generation === generation) state.pendingHandoff = null;
+	};
+	const isCurrent = () => state.handoffGeneration === generation;
+	return {
+		onComplete: () => {
+			if (settled) return;
+			settled = true;
+			clearInFlight();
+			if (isCurrent()) completeHandoff(pi, state, ctx);
+		},
+		onError: (error) => {
+			if (settled) return;
+			settled = true;
+			clearInFlight();
+			if (isCurrent()) failHandoff(pi, state, ctx, error);
+		},
+	};
 }
 
 export function registerHandoffTool(
@@ -58,12 +144,15 @@ export function registerHandoffTool(
 			"Replace the active context with a compact task brief at the end of " +
 			"the current turn while keeping full history in the session file. Handoff clears the active notebook topic so the next clean context can assign a fresh one.\n\n" +
 			"WHEN TO USE:\n" +
-			"  1. Context past ~30% and the current job is no longer cleanly " +
+			"  1. Context is eligible (measurable and at least 30K tokens) and the current job is no longer cleanly " +
 			"represented near the front of attention.\n" +
 			"  2. Context is filled with mechanics irrelevant to what comes " +
 			"next (research traces, planning deliberation, dead ends).\n" +
-			"  3. The current job is complete and a new distinct task starts.\n\n" +
-			"Rule: one context, one job. When the job changes, call handoff.\n\n" +
+			"  3. The current job is complete and a new distinct task starts.\n" +
+			"  4. This extension's handoff guard requires at least 30K tokens before compaction can work, and rejects handoff when that size cannot be estimated. " +
+			"That is roughly the mid-teens percent range in common context windows, " +
+			"so treat any percentage wording here as approximate.\n\n" +
+			"Rule: one context, one job. When the job changes, call handoff only when eligible; otherwise continue inline or use spawn.\n\n" +
 			"AFTER HANDOFF the LLM sees:\n" +
 			"  • System prompt + context primer\n" +
 			"  • The handoff task — the distilled next work at the top of context\n" +
@@ -73,6 +162,9 @@ export function registerHandoffTool(
 		promptGuidelines: [
 			"Before handoff, promote any missing durable grounding knowledge that the next context will need to the notebook. " +
 				"Then draft a concise but sufficiently detailed brief with the distilled next task and immediate starting state for the next clean context. The active notebook topic will reset after handoff, so the next context should assign a fresh topic from the brief or user direction.",
+			"Do not call handoff when the session is below this extension's ~30K-token minimum threshold or when context usage cannot be estimated yet. " +
+				"In common context windows that is only an approximate mid-teens percentage, so prefer the token rule when known. " +
+				"Use spawn for subtasks or continue inline until the context grows.",
 		],
 
 		executionMode: "sequential",
@@ -88,33 +180,39 @@ export function registerHandoffTool(
 		}),
 
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const requestedHandoff = state.pendingRequestedHandoff;
-			const enrichedTask = buildEnrichedTask(params.task, {
-				resumeReadonlyAfterHandoff: requestedHandoff?.resumeReadonlyAfterHandoff === true,
-			});
-			state.pendingHandoff = { task: enrichedTask, source: "tool" };
-			if (requestedHandoff) {
-				requestedHandoff.toolCalled = true;
+			if (state.handoffCompactionGeneration !== null) {
+				throw new Error("Handoff compaction already in progress; retry after it completes.");
 			}
-			ctx.compact({
-				onComplete: () => {
-					clearActiveNotebookTopic(state);
-					state.pendingRequestedHandoff = null;
-					if (ctx.hasUI) {
-						ctx.ui.setStatus(STATUS_KEY_HANDOFF, undefined);
-					}
-					pi.sendUserMessage("Proceed.");
-				},
-				onError: () => {
-					state.pendingHandoff = null;
-					if (state.pendingRequestedHandoff) {
-						state.pendingRequestedHandoff.toolCalled = false;
-					}
-					if (ctx.hasUI) {
-						ctx.ui.setStatus(STATUS_KEY_HANDOFF, undefined);
-					}
-				},
-			});
+			// validateHandoffTask throws with a user-facing reason. Before the throw
+			// reaches Pi (which will render a generic tool-error), send the richer
+			// sendHandoffFailure message so the LLM gets actionable guidance. The
+			// throw after this ensures Pi's tool-call lifecycle sees the rejection.
+			try {
+				validateHandoffTask(params.task, ctx);
+			} catch (error) {
+				sendHandoffFailure(pi, error instanceof Error ? error : new Error(String(error)), state.pendingRequestedHandoff);
+				throw error;
+			}
+			const requestedHandoff = state.pendingRequestedHandoff;
+			const generation = ++state.handoffGeneration;
+			state.pendingHandoff = {
+				task: params.task,
+				source: "tool",
+				generation,
+			};
+			state.handoffCompactionGeneration = generation;
+			if (requestedHandoff) requestedHandoff.toolCalled = true;
+			if (ctx.hasUI && ctx.ui.theme) {
+				ctx.ui.setStatus(STATUS_KEY_HANDOFF, ctx.ui.theme.fg("accent", HANDOFF_IN_PROGRESS_STATUS));
+			}
+
+			const callbacks = createHandoffCallbacks(pi, state, ctx, generation);
+			try {
+				ctx.compact(callbacks);
+			} catch (error) {
+				callbacks.onError(error);
+				throw error;
+			}
 
 			return {
 				content: [{ type: "text", text: "Handoff started." }],

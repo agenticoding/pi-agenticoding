@@ -7,6 +7,7 @@
 
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import type { ReadonlyCacheEntry, ReadonlyCacheIssue } from "./readonly-cache.js";
+import type { NotebookTopicBoundaryHint } from "./notebook/topic.js";
 
 export interface AgenticodingState {
 	/** Compact notebook pages keyed by kebab-case name */
@@ -21,27 +22,35 @@ export interface AgenticodingState {
 	/** Whether the current topic came from the human or the agent. */
 	activeNotebookTopicSource: "human" | "agent" | null;
 
-	/** One-shot boundary cue consumed by the next LLM call after a topic change. */
-	pendingTopicBoundaryHint: {
-		from: string | null;
-		to: string;
-		source: "human" | "agent";
-	} | null;
+	/**
+	 * Boundary cue consumed after a topic change. Human readonly boundaries remain
+	 * queued while context usage is unavailable or below the handoff threshold so a
+	 * later eligible context hook can promote them to the handoff bypass.
+	 */
+	pendingTopicBoundaryHint: NotebookTopicBoundaryHint | null;
 
 	/** Last context usage percent from getContextUsage() */
 	lastContextPercent: number | null;
 
-	/** Handoff task queued by the tool until the compaction hook consumes it. */
-	pendingHandoff: { task: string; source: "tool" } | null;
+	/** Handoff task queued by the tool until the matching compaction hook consumes it. */
+	pendingHandoff: { task: string; source: "tool"; generation: number } | null;
 
-	/** User-requested handoff that must result in a real tool-driven compaction. */
+	/** Monotonically increasing identity used to ignore stale compaction callbacks. */
+	handoffGeneration: number;
+
+	/** Generation of the compaction currently in flight, if any. */
+	handoffCompactionGeneration: number | null;
+
+	/**
+	 * Required handoff request that stays alive until a real tool-driven compaction
+	 * succeeds, is explicitly reset, or ages out via watchdog enforcement.
+	 */
 	pendingRequestedHandoff: {
+		/** True only after the current session has actually called the handoff tool. */
 		toolCalled: boolean;
-		/** Temporary readonly exception: allow only the handoff tool for this request. */
-		readonlyBypassActive: boolean;
-		/** Fresh context after compaction resumes in readonly mode. */
+		/** Fresh context after successful compaction resumes in readonly mode. */
 		resumeReadonlyAfterHandoff: boolean;
-		/** Turn counter for enforcement nudge. Cleared after N consecutive failed attempts. */
+		/** Turn counter for repeated "you still owe the user a handoff" nudges. */
 		enforcementAttempts: number;
 	} | null;
 
@@ -69,7 +78,7 @@ export interface AgenticodingState {
 	 */
 	childSessionEpoch: number;
 
-	/** Whether readonly mode is active — blocks write/edit and bash writes outside temp; handoff requires explicit /handoff. */
+	/** Whether readonly mode is active — write/edit blocked; handoff needs explicit /handoff or a human topic boundary; bash writes limited to temp. */
 	readonlyEnabled: boolean;
 
 	/** One-shot flag: deliver a readonly ON or OFF nudge via context hook, then clear. */
@@ -124,6 +133,8 @@ export function createState(): AgenticodingState {
 		pendingTopicBoundaryHint: null,
 		lastContextPercent: null,
 		pendingHandoff: null,
+		handoffGeneration: 0,
+		handoffCompactionGeneration: null,
 		pendingRequestedHandoff: null,
 		childSessions,
 		liveChildSessions,
@@ -162,10 +173,11 @@ export function resetState(state: AgenticodingState): void {
 	state.epoch = 0; // sentinel: 0 = not yet initialized; set to Date.now() on first write
 	state.activeNotebookTopic = null;
 	state.activeNotebookTopicSource = null;
-	state.pendingTopicBoundaryHint = null;
 	state.lastContextPercent = null;
-	state.pendingHandoff = null;
-	state.pendingRequestedHandoff = null;
+	invalidateHandoffState(state);
+	// /new abandons the previous session completely; do not carry its in-flight
+	// reservation into the fresh session.
+	state.handoffCompactionGeneration = null;
 	state.readonlyEnabled = false;
 	state.readonlyNudgePending = false;
 	state.readonlySkillCache.clear();
@@ -173,8 +185,20 @@ export function resetState(state: AgenticodingState): void {
 	state.readonlySkillIssues.clear();
 	state.readonlyPromptIssues.clear();
 	state.pendingReadonlyCommands.length = 0;
-	state.lastWatchdogBand = null;
 	abortAndClearChildSessions(state);
+}
+
+/** Invalidate handoff work that belongs to a previous session-tree branch. */
+export function invalidateHandoffState(state: AgenticodingState): void {
+	state.handoffGeneration++;
+	state.pendingHandoff = null;
+	state.handoffCompactionGeneration = null;
+	state.pendingRequestedHandoff = null;
+	state.pendingTopicBoundaryHint = null;
+	state.lastWatchdogBand = null;
+	// A branch switch abandons the old compaction path completely. Release the
+	// overlap guard now so the new branch cannot get stuck waiting on callbacks
+	// from work that no longer belongs to the active session tree.
 }
 
 /** Abort all active child sessions and clear both registries. Called on /new (session reset). */

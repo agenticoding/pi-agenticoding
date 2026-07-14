@@ -30,6 +30,10 @@ test("CONTEXT_PRIMER states the notebook, topic, and handoff contracts", () => {
 	assert.match(topicSection, /prefer handoff/i);
 	assert.match(handoffSection, /handoff/i);
 	assert.match(handoffSection, /notebook/i);
+	assert.match(handoffSection, /measurable context usage of at least 30K tokens/i);
+	assert.match(rulesSection, /measurable context usage of at least 30K tokens/i);
+	assert.doesNotMatch(CONTEXT_PRIMER, /When the job changes, call the handoff tool\./i);
+	assert.doesNotMatch(CONTEXT_PRIMER, /Call handoff at job boundaries:/i);
 	assert.match(rulesSection, /one subject, thread, or subsystem/i);
 });
 

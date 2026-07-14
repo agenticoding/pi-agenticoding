@@ -9,12 +9,13 @@ export const CONTEXT_PRIMER = `
 ## Context management
 
 One context, one job. Research is one job. Planning is one job. Execution
-is one job. When the job changes, call the handoff tool.
+is one job. When the job changes, handoff only when context usage is measurable and
+at least 30K tokens; otherwise continue inline or use spawn.
 
 ### Plan then execute
 Before acting, deliberate internally. Does the work still fit the
 current topic? If yes, break it into phases, size each sub-task,
-and delegate >10k-token sub-tasks via spawn. If no, prefer handoff.
+and delegate >10k-token sub-tasks via spawn. If no, prefer handoff when eligible; otherwise continue inline or use spawn.
 Consider spawn for verification. When planning, the plan must include full
 delegation plan if relevant for the task at hand.
 End by presenting the concise plan optimized for a human checkpoint.
@@ -46,13 +47,14 @@ bodies.
 The active notebook topic names the current high-level frame for this session.
 If the current work still fits that topic, prefer spawn for isolated noisy
 subtasks so the parent stays focused. If the work no longer fits that topic,
-prefer handoff over dragging stale context forward. After handoff, assign a
-fresh topic again in the next context.
+prefer handoff when eligible over dragging stale context forward; otherwise continue
+inline or use spawn. After handoff, assign a fresh topic again in the next context.
 
 ### Handoff — distilled next task
 When the job changes, or when context is noisy past the ~30% heuristic, use
-handoff to finish extracting what matters from the current context before the
-cut. Save durable reusable knowledge to the notebook first, then draft a
+handoff only with measurable context usage of at least 30K tokens. Otherwise
+continue inline or use spawn until handoff can work. Before the cut, save durable
+reusable knowledge to the notebook first, then draft a
 handoff brief that carries only the situational context still missing: current
 state, blockers, unresolved questions, failed paths worth avoiding, and next
 steps. Handoff compacts the active session around that brief so the next turn
@@ -74,8 +76,8 @@ re-deriving what you already learned.
 - Use compact sections such as Facts / Architecture / Decisions / Constraints / Open questions when helpful
 - Separate facts, guesses, and decisions when useful
 - Use spawn to delegate isolated subtasks when it helps; parent orchestrates and merges results
-- Treat the active notebook topic as the current semantic frame: same topic → spawn bias, different topic → handoff bias
-- Call handoff at job boundaries: research→execution, planning→execution
+- Treat the active notebook topic as the current semantic frame: same topic → spawn bias, different topic → eligible handoff bias
+- Call handoff at job boundaries only with measurable context usage of at least 30K tokens; otherwise continue inline or spawn
 - Use handoff to pass the distilled next task and immediate starting state
 - After handoff, fetch only the pages you need and assign a fresh topic again
 `.trim();

@@ -6,6 +6,7 @@
  */
 
 import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
+import { buildEnrichedTask } from "./format.js";
 import type { AgenticodingState } from "../state.js";
 
 function getImpossibleKeptId(branchEntries: SessionEntry[]): string {
@@ -16,20 +17,27 @@ function getImpossibleKeptId(branchEntries: SessionEntry[]): string {
 export function registerHandoffCompaction(pi: ExtensionAPI, state: AgenticodingState): void {
 	pi.on("session_before_compact", async (event, _ctx: ExtensionContext) => {
 		const pending = state.pendingHandoff;
-		if (!pending) {
+		if (!pending || pending.generation !== state.handoffGeneration) {
 			return;
 		}
 
 		state.pendingHandoff = null;
-		// Keep pendingRequestedHandoff — compaction must complete successfully first.
-		// onComplete in handoff/tool.ts clears it after success; onError preserves it for retry.
+		// Two-phase clear contract:
+		//   pendingHandoff — cleared here (the compaction hook consumed the queued task)
+		//   pendingRequestedHandoff — kept; cleared later by completeHandoff in tool.ts
+		//                              (on success) or preserved for retry (on error).
+		// Read readonlyEnabled at the cut so the brief reflects a toggle made after
+		// the handoff tool was called but before Pi consumes the queued task.
+		const task = buildEnrichedTask(pending.task, {
+			resumeReadonlyAfterHandoff: state.readonlyEnabled,
+		});
 
 		return {
 			compaction: {
-				summary: pending.task,
+				summary: task,
 				firstKeptEntryId: getImpossibleKeptId(event.branchEntries),
 				tokensBefore: event.preparation.tokensBefore,
-				details: { handoff: true, task: pending.task },
+				details: { handoff: true, task },
 			},
 		};
 	});

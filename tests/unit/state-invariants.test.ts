@@ -9,7 +9,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import * as fc from "fast-check";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { createState, resetState, abortAndClearChildSessions } from "../../state.js";
+import { createState, resetState, abortAndClearChildSessions, invalidateHandoffState } from "../../state.js";
 import type { AgenticodingState } from "../../state.js";
 import {
 	setActiveNotebookTopic,
@@ -337,6 +337,32 @@ test("Property 5: Epoch monotonicity — non-zero after savePage", async () => {
 	} finally {
 		h.teardown();
 	}
+});
+
+test("reset increments handoffGeneration and clears compaction reservations", () => {
+	const state = createState();
+	const initial = state.handoffGeneration;
+	state.handoffCompactionGeneration = 7;
+	setActiveNotebookTopic(state, "topic", "agent");
+	assert.equal(state.handoffGeneration, initial);
+	resetState(state);
+	assert.equal(state.handoffGeneration, initial + 1);
+	assert.equal(state.handoffCompactionGeneration, null);
+	resetState(state);
+	assert.equal(state.handoffGeneration, initial + 2);
+});
+
+test("invalidateHandoffState clears branch-local compaction reservations", () => {
+	const state = createState();
+	state.handoffCompactionGeneration = 7;
+	setActiveNotebookTopic(state, "topic", "agent");
+	state.pendingRequestedHandoff = { toolCalled: false, resumeReadonlyAfterHandoff: true, enforcementAttempts: 1 };
+	const initial = state.handoffGeneration;
+	invalidateHandoffState(state);
+	assert.equal(state.handoffGeneration, initial + 1);
+	assert.equal(state.handoffCompactionGeneration, null);
+	assert.equal(state.pendingRequestedHandoff, null);
+	assert.equal(state.pendingTopicBoundaryHint, null);
 });
 
 test("Property 6: childSessionEpoch monotonicity (never decreases)", async () => {

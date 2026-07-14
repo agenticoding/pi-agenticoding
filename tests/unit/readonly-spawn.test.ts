@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
+import { access, rm } from "node:fs/promises";
 import { createState } from "../../state.js";
 import { registerSpawnTool } from "../../spawn/index.js";
 import { createTestPI } from "./helpers.js";
@@ -49,7 +50,8 @@ test("readonly spawn child prompt tells the child it inherits readonly authority
 	});
 
 	assert.match(prompt, /inherit readonly authority/i);
-	assert.match(prompt, /readonly restrictions apply/i);
+	assert.match(prompt, /\[readonly\] write\/edit blocked/i);
+	assert.match(prompt, /bash writes\/deletions outside temp blocked/i);
 });
 
 test("non-readonly spawn child prompt keeps normal authority", async () => {
@@ -60,23 +62,29 @@ test("non-readonly spawn child prompt keeps normal authority", async () => {
 	});
 
 	assert.match(prompt, /same authority as the parent/i);
-	assert.doesNotMatch(prompt, /readonly restrictions apply/i);
+	assert.doesNotMatch(prompt, /\[readonly\] write\/edit blocked; bash writes\/deletions outside temp blocked\./i);
 });
 
 test("readonly spawn child bash tool blocks non-temp writes and allows temp writes", async () => {
-	const outsideTemp = path.join(os.homedir(), "readonly-child-test");
+	const outsideTemp = path.join(os.homedir(), `readonly-child-test-${process.pid}-${Date.now()}`);
 	const insideTemp = path.join(os.tmpdir(), `readonly-child-test-${Date.now()}`);
+	await rm(outsideTemp, { force: true });
 
-	await spawnWithCapture(true, async (config) => {
-		const bashTool = config.customTools.find((tool: any) => tool.name === "bash");
+	try {
+		await spawnWithCapture(true, async (config) => {
+			const bashTool = config.customTools.find((tool: any) => tool.name === "bash");
 
-		assert.ok(bashTool, "readonly child should receive a bash tool");
-		await assert.rejects(
-			() => bashTool.execute("bash-1", { command: `touch ${outsideTemp}` }),
-			/Readonly mode:/,
-		);
-		await assert.doesNotReject(
-			() => bashTool.execute("bash-2", { command: `touch ${insideTemp} && rm ${insideTemp}` }),
-		);
-	});
+			assert.ok(bashTool, "readonly child should receive a bash tool");
+			await assert.rejects(
+				() => bashTool.execute("bash-1", { command: `touch ${outsideTemp}` }),
+				/Readonly mode:/,
+			);
+			await assert.rejects(() => access(outsideTemp), /ENOENT/);
+			await assert.doesNotReject(
+				() => bashTool.execute("bash-2", { command: `touch ${insideTemp} && rm ${insideTemp}` }),
+			);
+		});
+	} finally {
+		await rm(outsideTemp, { force: true });
+	}
 });

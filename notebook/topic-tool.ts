@@ -17,7 +17,7 @@ export function registerNotebookTopicTool(
 		promptSnippet: "Set the active notebook topic for the current session",
 		promptGuidelines: [
 			"Use this early in a fresh session when no active notebook topic exists yet.",
-			"Do not use this to override a human-set topic. If the work no longer fits the current topic, prefer handoff instead.",
+			"Do not use this to override a human-set topic. If the work no longer fits the current topic, prefer handoff when eligible; otherwise continue inline or use spawn.",
 		],
 		parameters: Type.Object({
 			topic: Type.String({

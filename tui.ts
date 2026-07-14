@@ -6,6 +6,8 @@
  */
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { normalizeContextPercent } from "./handoff/eligibility.js";
+import { READONLY_HANDOFF_TRIGGER } from "./readonly-copy.js";
 import type { AgenticodingState } from "./state.js";
 
 // ── TUI status / widget keys ─────────────────────────────────────────
@@ -36,8 +38,9 @@ export function updateIndicators(ctx: ExtensionContext, state: AgenticodingState
 
 	// Context usage
 	const usage = ctx.getContextUsage();
-	if (usage && usage.percent !== null) {
-		const pct = Math.round(usage.percent);
+	const percent = normalizeContextPercent(usage?.percent);
+	if (percent !== null) {
+		const pct = Math.round(percent);
 		const tone = pct >= 70 ? "error" : pct >= 50 ? "warning" : pct >= 30 ? "accent" : "dim";
 		ctx.ui.setStatus(STATUS_KEY_CTX, theme.fg("dim", "ctx ") + theme.fg(tone, `${pct}%`));
 	} else {
@@ -66,10 +69,10 @@ export function updateIndicators(ctx: ExtensionContext, state: AgenticodingState
 	);
 
 	// High-context warning widget (above editor)
-	if (usage && usage.percent !== null && usage.percent >= 70) {
-		const pct = Math.round(usage.percent);
+	if (percent !== null && percent >= 70) {
+		const pct = Math.round(percent);
 		const warning = state.readonlyEnabled
-			? `Context at ${pct}% — readonly: same topic → spawn; different topic → use /handoff for a real pivot; fresh context resumes readonly`
+			? `Context at ${pct}% — readonly: same topic → spawn; different topic → ${READONLY_HANDOFF_TRIGGER}`
 			: state.activeNotebookTopic
 				? `Context at ${pct}% — use topic fit: same topic → spawn, different topic → handoff`
 				: `Context at ${pct}% — no active topic; handoff soon unless you can assign one cleanly`;
