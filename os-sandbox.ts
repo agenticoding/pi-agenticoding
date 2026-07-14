@@ -159,6 +159,11 @@ function generateDelimiter(): string {
 	return `PI_SANDBOX_INNER_${suffix}`;
 }
 
+/** Quote a dynamic argument for the outer bash that launches the sandbox. */
+export function quoteShellArgument(value: string): string {
+	return `'${value.replace(/'/g, `'"'"'`)}'`;
+}
+
 /**
  * Wrap a bash command with sandbox-exec on macOS.
  *
@@ -214,13 +219,13 @@ ${delim}`;
  * --unshare-all --share-net for isolation while allowing network
  * --die-with-parent --new-session for clean termination
  */
-export function wrapWithBwrap(command: string): string {
-	const canon = getCanonicalTempDir();
+export function wrapWithBwrap(command: string, tempDir: string = getCanonicalTempDir()): string {
+	const canon = resolveRealPath(tempDir);
 	const delim = generateDelimiter();
 	const flags = [
 		"--ro-bind / /",
 		"--tmpfs /tmp",
-		`--bind "${canon}" "${canon}"`,
+		`--bind ${quoteShellArgument(canon)} ${quoteShellArgument(canon)}`,
 		"--proc /proc",
 		"--dev /dev",
 		"--unshare-all",

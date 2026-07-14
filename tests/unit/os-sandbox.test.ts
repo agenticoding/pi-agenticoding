@@ -4,7 +4,14 @@ import path from "node:path";
 import os from "node:os";
 import fs from "node:fs";
 import { execFileSync } from "node:child_process";
-import { canUseOsSandbox, wrapCommandWithOsSandbox, buildMacProfile } from "../../os-sandbox.js";
+import {
+	buildMacProfile,
+	canUseOsSandbox,
+	quoteShellArgument,
+	wrapCommandWithOsSandbox,
+	wrapWithBwrap,
+} from "../../os-sandbox.js";
+import { resolveRealPath } from "../../resolve-path.js";
 
 test("wrapped command blocks non-temp writes and allows temp writes", () => {
 	if (!canUseOsSandbox()) return;
@@ -33,6 +40,47 @@ test("wrapped command blocks non-temp writes and allows temp writes", () => {
 test("buildMacProfile rejects paths containing quotes", () => {
 	assert.throws(() => buildMacProfile("/tmp/evil'"), /contain.*quote/);
 	assert.throws(() => buildMacProfile('/tmp/evil"'), /contain.*quote/);
+});
+
+test("quotes dynamic Linux sandbox paths for the outer shell", () => {
+	const tempPath = "/tmp/readonly' ; echo injected; #";
+	const canonicalPath = resolveRealPath(tempPath);
+	const quotedPath = quoteShellArgument(canonicalPath);
+	const wrapped = wrapWithBwrap("true", tempPath);
+
+	assert.equal(quoteShellArgument("a'b"), `'a'"'"'b'`);
+	assert.ok(wrapped.includes(`--bind ${quotedPath} ${quotedPath}`));
+	assert.equal(wrapped.includes(`--bind "${canonicalPath}" "${canonicalPath}"`), false);
+});
+
+test("bwrap executes a quoted bind path without shell injection", () => {
+	if (process.platform !== "linux" || !canUseOsSandbox()) return;
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-readonly-quote'-"));
+	const target = path.join(dir, "result.txt");
+	try {
+		execFileSync(
+			"/bin/bash",
+			["-c", wrapWithBwrap(`printf wrapped > ${quoteShellArgument(target)}`, dir)],
+			{ encoding: "utf8", timeout: 5000 },
+		);
+		assert.equal(fs.readFileSync(target, "utf8"), "wrapped");
+	} finally {
+		try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort cleanup */ }
+	}
+});
+
+test("quoteShellArgument handles all input shapes", () => {
+	// Structural checks — escaping pattern invariants
+	assert.equal(quoteShellArgument(""), "''");
+	assert.equal(quoteShellArgument("normal"), "'normal'");
+	assert.equal(quoteShellArgument("'"), `''"'"''`);
+
+	// Round-trip through bash — verify safe execution for all edge cases
+	for (const raw of ["normal", "spaces", "dollar$ign", "backtick`", "line1\nline2", "'mixed' quotes", "'"]) {
+		const quoted = quoteShellArgument(raw);
+		const result = execFileSync("/bin/bash", ["-c", `printf '%s' ${quoted}`], { encoding: "utf8", timeout: 2000 });
+		assert.equal(result, raw, `quoteShellArgument(${JSON.stringify(raw)}) should round-trip`);
+	}
 });
 
 // ── Behavioral contract: observable sandbox effects ──────────────
