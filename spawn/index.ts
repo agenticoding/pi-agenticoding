@@ -18,6 +18,10 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import type { TextContent } from "@earendil-works/pi-ai";
 import {
+	READONLY_CHILD_AUTHORITY_NOTE,
+	READONLY_WRITE_EDIT_SUMMARY,
+} from "../readonly-copy.js";
+import {
 	AuthStorage,
 	createAgentSession,
 	createBashToolDefinition,
@@ -282,10 +286,10 @@ export async function executeSpawn(
 		? "Available notebook pages:\n" + listing
 		: "No notebook pages.";
 	const readonlyNotice = state.readonlyEnabled
-		? "\n\nReadonly restrictions apply. Do not attempt filesystem writes or deletions outside the OS temp dir. Environment inheritance is allowed."
+		? `\n\n${READONLY_WRITE_EDIT_SUMMARY}.`
 		: "";
 	const authorityNote = state.readonlyEnabled
-		? "You inherit readonly authority in this session."
+		? READONLY_CHILD_AUTHORITY_NOTE
 		: "You have the same authority as the parent.";
 	const fullPrompt =
 		`You are a focused child agent spawned by a parent agent. ` +

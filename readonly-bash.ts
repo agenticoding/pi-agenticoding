@@ -2,6 +2,10 @@ import path from "node:path";
 import os from "node:os";
 import { globSync } from "node:fs";
 import { canUseOsSandbox, wrapCommandWithOsSandbox } from "./os-sandbox.js";
+import {
+	buildReadonlyBashBlockReason,
+	buildReadonlyPackageManagerBlockReason,
+} from "./readonly-copy.js";
 import { resolveRealPath } from "./resolve-path.js";
 import { TEMP_DIR } from "./temp-dir.js";
 
@@ -286,7 +290,7 @@ function classifyPackageManager(command: string, tokens: string[]): string | nul
 	if (!PACKAGE_MANAGERS.has(command)) return null;
 	if (!isPackageMutation(tokens.slice(1))) return null;
 	const args = tokens.slice(1).join(" ");
-	return `${command} ${args} is blocked in readonly mode`;
+	return buildReadonlyPackageManagerBlockReason(command, args);
 }
 
 function skipFlagValues(args: string[], flagsWithValues: Set<string>): string[] {
@@ -1089,7 +1093,7 @@ export function applyReadonlyBashGuard(cmd: string, cwd: string): ReadonlyBashGu
 	if (canUseOsSandbox()) {
 		const verdict = classifyBashCommand(cmd, cwd);
 		if (verdict.ok === false) {
-			return { action: "block", reason: `Readonly mode: command blocked.\nReason: ${verdict.reason}\nCommand: ${cmd}` };
+			return { action: "block", reason: buildReadonlyBashBlockReason(verdict.reason, cmd) };
 		}
 		return { action: "sandbox", sandboxedCommand: wrapCommandWithOsSandbox(cmd) };
 	}
@@ -1097,7 +1101,7 @@ export function applyReadonlyBashGuard(cmd: string, cwd: string): ReadonlyBashGu
 	// L2: Pattern inspection fallback (no sandbox available)
 	const verdict = classifyBashCommand(cmd, cwd);
 	if (verdict.ok === false) {
-		return { action: "block", reason: `Readonly mode: command blocked.\nReason: ${verdict.reason}\nCommand: ${cmd}` };
+		return { action: "block", reason: buildReadonlyBashBlockReason(verdict.reason, cmd) };
 	}
 	return { action: "allow" };
 }

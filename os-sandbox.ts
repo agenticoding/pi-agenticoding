@@ -16,6 +16,10 @@ import crypto from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 
+import {
+	READONLY_SANDBOX_BLOCK_NOTICE,
+	buildReadonlySandboxPathError,
+} from "./readonly-copy.js";
 import { TEMP_DIR } from "./temp-dir.js";
 import { resolveRealPath } from "./resolve-path.js";
 
@@ -130,7 +134,7 @@ export function buildMacProfile(tempDir: string): string {
 	//  - Double quotes (") break Seatbelt (subpath "...") literal syntax
 	for (const p of writePaths) {
 		if (p.includes("'") || p.includes('"')) {
-			throw new Error(`[readonly] Sandbox profile path contains quote — cannot safely escape: ${p}`);
+			throw new Error(buildReadonlySandboxPathError(p));
 		}
 	}
 
@@ -186,8 +190,7 @@ if [ \$rc -ne 0 ]; then
   case "\$output" in
     *"Operation not permitted"*|*"Permission denied"*|*"denying file-write"*)
       echo ""
-      echo "[readonly mode] The OS sandbox blocked a filesystem write outside the OS temp dir."
-      echo "Use /readonly to disable, or write within the OS temp dir."
+      echo "${READONLY_SANDBOX_BLOCK_NOTICE}"
       echo ""
       ;;
   esac
@@ -235,8 +238,7 @@ if [ \$rc -ne 0 ]; then
   case "\$output" in
     *"Operation not permitted"*|*"Permission denied"*|*"denying file-write"*)
       echo ""
-      echo "[readonly mode] The OS sandbox blocked a filesystem write outside the OS temp dir."
-      echo "Use /readonly to disable, or write within the OS temp dir."
+      echo "${READONLY_SANDBOX_BLOCK_NOTICE}"
       echo ""
       ;;
   esac
