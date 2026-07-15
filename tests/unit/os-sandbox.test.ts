@@ -69,13 +69,16 @@ test("bwrap executes a quoted bind path without shell injection", () => {
 	}
 });
 
-test("quoteShellArgument handles all input shapes", () => {
-	// Structural checks — escaping pattern invariants
+test("quoteShellArgument emits POSIX single-quoted arguments", () => {
+	// POSIX shell single-quote invariant: input is wrapped in single quotes.
+	// Embedded single quotes close, quote, and reopen the outer argument.
 	assert.equal(quoteShellArgument(""), "''");
 	assert.equal(quoteShellArgument("normal"), "'normal'");
 	assert.equal(quoteShellArgument("'"), `''"'"''`);
+});
 
-	// Round-trip through bash — verify safe execution for all edge cases
+test("quoteShellArgument round-trips through a POSIX shell", () => {
+
 	for (const raw of ["normal", "spaces", "dollar$ign", "backtick`", "line1\nline2", "'mixed' quotes", "'"]) {
 		const quoted = quoteShellArgument(raw);
 		const result = execFileSync("/bin/bash", ["-c", `printf '%s' ${quoted}`], { encoding: "utf8", timeout: 2000 });
