@@ -13,6 +13,16 @@ import {
 } from "../../os-sandbox.js";
 import { resolveRealPath } from "../../resolve-path.js";
 
+function hasPosixShell(): boolean {
+	if (process.platform === "win32") return false;
+	try {
+		execFileSync("/bin/sh", ["-c", "true"], { stdio: "ignore", timeout: 2000 });
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 test("wrapped command blocks non-temp writes and allows temp writes", () => {
 	if (!canUseOsSandbox()) return;
 
@@ -78,10 +88,11 @@ test("quoteShellArgument emits POSIX single-quoted arguments", () => {
 });
 
 test("quoteShellArgument round-trips through a POSIX shell", () => {
+	if (!hasPosixShell()) return;
 
 	for (const raw of ["normal", "spaces", "dollar$ign", "backtick`", "line1\nline2", "'mixed' quotes", "'"]) {
 		const quoted = quoteShellArgument(raw);
-		const result = execFileSync("/bin/bash", ["-c", `printf '%s' ${quoted}`], { encoding: "utf8", timeout: 2000 });
+		const result = execFileSync("/bin/sh", ["-c", `printf '%s' ${quoted}`], { encoding: "utf8", timeout: 2000 });
 		assert.equal(result, raw, `quoteShellArgument(${JSON.stringify(raw)}) should round-trip`);
 	}
 });
