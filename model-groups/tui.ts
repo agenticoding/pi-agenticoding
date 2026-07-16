@@ -98,7 +98,6 @@ export function createModelGroupsComponent(
 		modelEditIndex: 0,
 		wizardProvider: "",
 		wizardModelId: "",
-		wizardThinking: undefined as ModelThinkingLevel | undefined,
 		deleteKey: null as string | null,
 		finished: false,
 	};
