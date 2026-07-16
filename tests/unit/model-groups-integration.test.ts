@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import registerAgenticoding from "../../index.js";
+import { escapeDisplayLabel } from "../../model-groups/display.js";
 import { __setModelGroupsFsForTests, modelGroupsPath } from "../../model-groups/store.js";
 import { createTestPI, theme } from "./helpers.js";
 import { withTemp } from "./model-groups-helpers.js";
@@ -124,7 +125,7 @@ test("index session_start notifies schema-invalid load issues", async () => with
 	await handler({ reason: "load" }, ctx);
 	assert.ok(notifications.some((m) => /schema-invalid/.test(m)));
 	assert.ok(notifications.some((m) => /project scope/.test(m)));
-	assert.ok(notifications.some((m) => m.includes(modelGroupsPath("project", cwd))));
+	assert.ok(notifications.some((m) => m.includes(escapeDisplayLabel(modelGroupsPath("project", cwd)))));
 }));
 
 test("index session_start includes backup-failure detail in load issue notifications", async () => withTemp(async ({ cwd }) => {
@@ -145,7 +146,7 @@ test("index session_start includes backup-failure detail in load issue notificat
 	};
 	const handler = pi.handlers.get("session_start")!.at(-1)!;
 	await handler({ reason: "load" }, ctx);
-	assert.ok(notifications.some((m) => /corrupt-json/.test(m) && /backup failed.*original file left untouched/.test(m) && m.includes(modelGroupsPath("project", cwd))));
+	assert.ok(notifications.some((m) => /corrupt-json/.test(m) && /backup failed.*original file left untouched/.test(m) && m.includes(escapeDisplayLabel(modelGroupsPath("project", cwd)))));
 }));
 
 test("before_agent_start injects fresh names-only Model Groups guidance", async () => withTemp(async ({ cwd }) => {
@@ -261,9 +262,11 @@ test("model groups untrusted root flow never probes project data and publishes g
 test("model groups boot load-issue notifications escape hostile source, backup, and error detail fields", async () => withTemp(async ({ cwd }) => {
 	const hostileCwd = `${cwd}\n\u001b]8;;https://example.test\u0007path`;
 	const projectPath = modelGroupsPath("project", hostileCwd);
-	fs.mkdirSync(path.dirname(projectPath), { recursive: true });
-	fs.writeFileSync(projectPath, "{bad", "utf8");
-	__setModelGroupsFsForTests({ copyFileSync: () => { throw new Error("backup\n\u001b[31mfailed\u0007"); } });
+	__setModelGroupsFsForTests({
+		existsSync: (candidate) => String(candidate) === projectPath,
+		readFileSync: () => { throw new Error("invalid JSON"); },
+		copyFileSync: () => { throw new Error("backup\n\u001b[31mfailed\u0007"); },
+	});
 	const pi = createTestPI();
 	registerAgenticoding(pi as any);
 	const notifications: string[] = [];
@@ -272,7 +275,8 @@ test("model groups boot load-issue notifications escape hostile source, backup, 
 		ui: { theme, notify: (message: string) => notifications.push(message), setStatus: () => {}, setWidget: () => {}, addAutocompleteProvider: () => {} },
 	});
 	const notification = notifications.find((message) => message.includes("corrupt-json"))!;
-	assert.match(notification, /\\n\\x1B\]8;;https:\/example\.test\\x07path/);
+	assert.ok(notification.includes(`project scope (${escapeDisplayLabel(projectPath)})`));
+	assert.ok(notification.includes(`backup failed (${escapeDisplayLabel(`${projectPath}.bak`)}), original file left untouched`));
 	assert.match(notification, /backup\\n\\x1B\[31mfailed\\x07/);
 	assert.doesNotMatch(notification, /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/);
 }));
