@@ -30,9 +30,11 @@ test("CONTEXT_PRIMER states the notebook, topic, and handoff contracts", () => {
 	assert.match(topicSection, /prefer handoff/i);
 	assert.match(handoffSection, /handoff/i);
 	assert.match(handoffSection, /notebook/i);
+	assert.match(rulesSection, /planning→execution/i);
+	assert.match(CONTEXT_PRIMER, /When the job changes, call the handoff tool\./i);
+	assert.match(CONTEXT_PRIMER, /Call handoff at job boundaries:/i);
 	assert.match(rulesSection, /one subject, thread, or subsystem/i);
 });
-
 
 test("before_agent_start injects notebook contracts plus live topic and page data", async () => {
 	const pi = createTestPI();
@@ -42,7 +44,8 @@ test("before_agent_start injects notebook contracts plus live topic and page dat
 	await notebookWrite.execute("1", { name: "alpha", content: "first line\nsecond line" }, undefined, undefined, makeTUICtx());
 
 	const [handler] = pi.handlers.get("before_agent_start")!;
-	const result = await handler({ systemPrompt: "Base system prompt." }, makeTUICtx({ hasUI: false }));
+	const ctx = { ...makeTUICtx({ hasUI: false }), cwd: process.cwd(), isProjectTrusted: () => false };
+	const result = await handler({ systemPrompt: "Base system prompt." }, ctx);
 
 	assert.match(result.systemPrompt, /Base system prompt\./);
 	assert.match(result.systemPrompt, /## Context management/);
@@ -54,12 +57,12 @@ test("before_agent_start injects notebook contracts plus live topic and page dat
 	assert.match(result.systemPrompt, /alpha: first line/);
 });
 
-
 test("before_agent_start injects no-topic guidance when the topic is unset", async () => {
 	const pi = createTestPI();
 	registerAgenticoding(pi as any);
 	const [handler] = pi.handlers.get("before_agent_start")!;
-	const result = await handler({ systemPrompt: "Base system prompt." }, makeTUICtx({ hasUI: false }));
+	const ctx = { ...makeTUICtx({ hasUI: false }), cwd: process.cwd(), isProjectTrusted: () => false };
+	const result = await handler({ systemPrompt: "Base system prompt." }, ctx);
 
 	assert.match(result.systemPrompt, /## Active Notebook Topic/);
 	assert.match(result.systemPrompt, /No active notebook topic is set\./);

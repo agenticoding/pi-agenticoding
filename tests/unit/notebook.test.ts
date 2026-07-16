@@ -87,6 +87,31 @@ test("notebook rehydration clears stale in-memory notebook state when persisted 
 	assert.deepEqual(pi.activeTools, ["notebook_read", "notebook_index"]);
 });
 
+test("notebook rehydration ignores null and malformed branch entries", async () => {
+	const pi = createTestPI();
+	const state = createState();
+	registerNotebookRehydration(pi as any, state);
+	const [handler] = pi.handlers.get("session_start")!;
+
+	await handler(
+		{},
+		{
+			sessionManager: {
+				getBranch: () => [
+					null,
+					undefined,
+					"bad-string",
+					{ type: "custom", customType: "notebook-entry", data: { epoch: 1, name: "keep", content: "valid" } },
+					null,
+					{ customType: "notebook-entry" },
+				],
+			},
+		},
+	);
+
+	assert.equal(state.epoch, 1);
+	assert.deepEqual(Array.from(state.notebookPages.entries()), [["keep", "valid"]]);
+});
 
 test("session_start rehydrates the latest persisted notebook state through the full hook chain", async () => {
 	const pi = createTestPI();
@@ -323,6 +348,31 @@ test("/notebook <topic> notifies with info on first set and warning on boundary 
 	assert.equal(widgets.get(WIDGET_KEY_WARNING), undefined);
 });
 
+test("readonly /notebook boundary notification explains deferred handoff eligibility", async () => {
+	const pi = createTestPI();
+	registerAgenticoding(pi as any);
+	const notifications: Array<{ message: string; level: string }> = [];
+	const ctx = {
+		hasUI: true,
+		getContextUsage: () => ({ percent: 20 }),
+		ui: {
+			theme: { fg: (_name: string, text: string) => text },
+			notify: (message: string, level: string) => { notifications.push({ message, level }); },
+			setStatus: () => {},
+			setWidget: () => {},
+		},
+	};
+
+	await pi.commands.get("readonly")!.handler("", ctx as any);
+	await pi.commands.get("notebook")!.handler("oauth", ctx as any);
+	await pi.commands.get("notebook")!.handler("billing", ctx as any);
+
+	assert.match(notifications.at(-1)?.message ?? "", /handoff exception activates.*once the context is ready/i);
+	assert.match(notifications.at(-1)?.message ?? "", /until then this boundary is advisory/i);
+	assert.doesNotMatch(notifications.at(-1)?.message ?? "", /ask the user for an explicit \/handoff/i);
+});
+
+
 test("/notebook empty overlay renders empty state and closes on input", async () => {
 	const pi = createTestPI();
 	registerAgenticoding(pi as any);
@@ -349,7 +399,6 @@ test("/notebook empty overlay renders empty state and closes on input", async ()
 test("/notebook selection previews the chosen entry", async () => {
 	const pi = createTestPI();
 	registerAgenticoding(pi as any);
-	const notifications: string[] = [];
 	const notebookWrite = pi.tools.get("notebook_write");
 	await notebookWrite.execute("1", { name: "alpha", content: "body line\nsecond line" }, undefined, undefined, makeTUICtx());
 	let overlay: any;
@@ -362,7 +411,6 @@ test("/notebook selection previews the chosen entry", async () => {
 			custom: async (build: any) => {
 				overlay = build({ requestRender: () => {} }, theme, {}, () => { doneCalls++; });
 			},
-			notify: (message: string) => { notifications.push(message); },
 		},
 	});
 
@@ -372,7 +420,6 @@ test("/notebook selection previews the chosen entry", async () => {
 	const bodyLines = stripAnsi(overlay.render(120).join("\n"));
 	assert.match(bodyLines, /body line/);
 	assert.match(bodyLines, /alpha/);
-
 	// Second keypress closes the overlay
 	overlay.handleInput("\r");
 	assert.equal(doneCalls, 1);
@@ -393,7 +440,6 @@ test("/notebook overlay sorts entries consistently", async () => {
 			custom: async (build: any) => {
 				overlay = build({ requestRender: () => {} }, theme, {}, () => {});
 			},
-			notify: () => {},
 		},
 	});
 

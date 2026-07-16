@@ -57,7 +57,7 @@ jobs:
         run: npx tsc --noEmit
 
       - name: Security audit
-        run: npm audit --audit-level=moderate
+        run: npx audit-ci --config audit-ci.jsonc
 
       # Unit suite (unit tests + snapshot tests + property-based tests)
       - name: Unit tests

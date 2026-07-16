@@ -47,6 +47,12 @@ web_modules/
 # TypeScript cache
 *.tsbuildinfo
 
+# TypeScript compilation output
+*.js
+*.d.ts
+*.d.cts
+*.d.mts
+
 # Optional npm cache directory
 .npm
 
@@ -148,3 +154,10 @@ vite.config.ts.timestamp-*
 .chunkhound.json
 .chunkhound/
 .mcp.json
+
+# macOS
+.DS_Store
+
+# PR review artifacts
+AGENT_REVIEW.md
+HUMAN_REVIEW.md

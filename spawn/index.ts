@@ -18,8 +18,14 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import type { TextContent } from "@earendil-works/pi-ai";
 import {
+	READONLY_CHILD_AUTHORITY_NOTE,
+	READONLY_WRITE_EDIT_SUMMARY,
+} from "../readonly-copy.js";
+import {
 	AuthStorage,
 	createAgentSession,
+	createBashToolDefinition,
+	defineTool,
 	ModelRegistry,
 	SessionManager,
 } from "@earendil-works/pi-coding-agent";
@@ -28,6 +34,7 @@ import { Type } from "typebox";
 import type { AgenticodingState } from "../state.js";
 import { formatPageList } from "../notebook/store.js";
 import { createNotebookToolDefinitions } from "../notebook/tools.js";
+import { applyReadonlyBashGuard } from "../readonly-bash.js";
 import {
 	renderSpawnCall,
 	renderSpawnResult,
@@ -74,13 +81,24 @@ function getLastAssistantOutcome(messages: AssistantMessageLike[]): SpawnOutcome
  * Line-count limit is applied first, then byte limit.
  * May end mid-line if the byte limit is the tighter constraint.
  */
-function truncateText(text: string, maxLines: number, maxBytes: number): string {
+export function truncateText(text: string, maxLines: number, maxBytes: number): string {
 	const lines = text.split("\n");
 	let truncated = lines.slice(0, maxLines).join("\n");
-	if (new TextEncoder().encode(truncated).length > maxBytes) {
-		truncated = new TextDecoder().decode(
-			new TextEncoder().encode(truncated).slice(0, maxBytes),
-		);
+	const encoded = new TextEncoder().encode(truncated);
+	if (encoded.length > maxBytes) {
+		// Shrink byte-by-byte at the boundary until we have valid UTF-8.
+		// This avoids splitting a multi-byte character mid-sequence.
+		// An empty slice (0 bytes) is always valid and decodes to empty string.
+		let slice = encoded.slice(0, maxBytes);
+		for (;;) {
+			try {
+				truncated = new TextDecoder("utf-8", { fatal: true }).decode(slice);
+				break;
+			} catch {
+				if (slice.length === 0) break;
+				slice = slice.slice(0, slice.length - 1);
+			}
+		}
 	}
 	return truncated;
 }
@@ -138,6 +156,45 @@ export function buildChildToolNames(
 	return [...new Set([...inheritedTools, ...childTools.map((tool) => tool.name)])];
 }
 
+/**
+ * Filter child tool names for readonly mode.
+ * Removes write/edit from the tool list entirely — children start with
+ * a fresh context, so there is no cache to preserve.
+ */
+export function filterReadonlyToolNames(toolNames: string[], readonlyEnabled: boolean): string[] {
+	return readonlyEnabled
+		? toolNames.filter((name) => name !== "write" && name !== "edit")
+		: toolNames;
+}
+
+/**
+ * Create a bash tool definition for readonly-mode child sessions.
+ *
+ * Applies OS-level sandboxing (sandbox-exec on macOS, bwrap on Linux) when available.
+ * Falls back to classifyBashCommand command-pattern inspection when no OS sandbox
+ * is available (Windows). The fallback blocks filesystem writes/deletions outside
+ * the OS temp dir using the same logic as the parent's tool_call hook.
+ */
+function createReadonlyChildBashTool(
+	cwd: string,
+) {
+	const bashTool = createBashToolDefinition(cwd, {
+		spawnHook: (spawnContext) => {
+			const result = applyReadonlyBashGuard(spawnContext.command, cwd);
+			if (result.action === "block") {
+				throw new Error(result.reason);
+			}
+			if (result.action === "sandbox") {
+				spawnContext.command = result.sandboxedCommand;
+			}
+			return spawnContext;
+		},
+	});
+	return defineTool(bashTool);
+}
+
+
+
 // ── Spawn tool metadata ──
 
 const SPAWN_DESCRIPTION =
@@ -167,7 +224,6 @@ const SPAWN_PARAMETERS = Type.Object({
 });
 
 
-
 /**
  * Build the custom tool set for child agent sessions.
  *
@@ -184,7 +240,6 @@ export function createChildTools(
 ): ToolDefinition[] {
 	return createNotebookToolDefinitions(pi, state, { isStale: options?.isStale });
 }
-
 
 
 // ── Shared spawn execution logic ──────────────────────────────────────
@@ -230,15 +285,21 @@ export async function executeSpawn(
 	const notebookListing = listing
 		? "Available notebook pages:\n" + listing
 		: "No notebook pages.";
+	const readonlyNotice = state.readonlyEnabled
+		? `\n\n${READONLY_WRITE_EDIT_SUMMARY}.`
+		: "";
+	const authorityNote = state.readonlyEnabled
+		? READONLY_CHILD_AUTHORITY_NOTE
+		: "You have the same authority as the parent.";
 	const fullPrompt =
 		`You are a focused child agent spawned by a parent agent. ` +
-		`You have the same authority as the parent. ` +
+		`${authorityNote} ` +
 		`Children cannot spawn further children. ` +
 		`Your result will be read by the parent, so be concise and complete.\n\n` +
 		`${notebookListing}\n\n` +
 		`If you write notebook pages, store only durable grounding knowledge for future contexts. ` +
 		`Keep transient task state in your final reply to the parent.\n\n` +
-		`## Task\n\n${params.prompt}\n\n` +
+		`## Task\n\n${params.prompt}${readonlyNotice}\n\n` +
 		`When complete, provide a concise summary of findings. ` +
 		`Keep the result under ${CHILD_MAX_LINES} lines / ${(CHILD_MAX_BYTES / 1024).toFixed(0)}KB.`;
 
@@ -249,14 +310,31 @@ export async function executeSpawn(
 	const childTools = createChildTools(pi, state, { isStale });
 	const parentToolNames = pi.getActiveTools();
 	const childToolNames = buildChildToolNames(parentToolNames, childTools, pi.getAllTools());
+	// Children: readonly vs non-readonly tool strategy differs from the parent.
+	// Parent keeps write/edit in the tool list and blocks at call time to avoid
+	// context-cache misses (index.ts). Children start with a fresh context — no
+	// cache to preserve — so we remove write/edit from the tool list entirely
+	// (cleaner than advertising tools that always error).  The readonly bash guard
+	// (sandbox-exec/bwrap or classifyBashCommand fallback) still propagates to
+	// children via createReadonlyChildBashTool below.
+	//
+	// This is a guardrail for a coding agent, not a security boundary.
+	const effectiveChildTools = [
+		...childTools,
+		...(state.readonlyEnabled && childToolNames.includes("bash")
+			? [createReadonlyChildBashTool(ctx.cwd)]
+			: []),
+	];
+
+	const effectiveToolNames = filterReadonlyToolNames(childToolNames, state.readonlyEnabled);
 
 	const { session } = await sessionFactory({
 		sessionManager: SessionManager.inMemory(),
 		model: childModel,
 		thinkingLevel: childThinking,
 		cwd: ctx.cwd,
-		tools: childToolNames,
-		customTools: childTools,
+		tools: effectiveToolNames,
+		customTools: effectiveChildTools,
 		authStorage,
 		modelRegistry,
 	});
@@ -265,7 +343,7 @@ export async function executeSpawn(
 	let wasAborted = false;
 	const abortChild = () => {
 		wasAborted = true;
-		session.abort().catch(e => console.error("[spawn] abort failed:", toolCallId, e));
+		session.abort().catch(() => {});
 	};
 	const clearChildSession = () => {
 		if (state.childSessions.get(toolCallId) === session) {
@@ -277,7 +355,7 @@ export async function executeSpawn(
 	};
 	const abortAndInvalidate = async () => {
 		clearChildSession();
-		await session.abort().catch(e => console.error("[spawn] abort failed:", toolCallId, e));
+		await session.abort().catch(() => {});
 		throw invalidatedError;
 	};
 
@@ -361,7 +439,6 @@ export async function executeSpawn(
 		}
 	} catch (error: unknown) {
 		statsUnavailable = true;
-		console.warn("[spawn] Failed to collect child session stats:", error, toolCallId);
 	}
 
 	if (isStale()) {
@@ -424,7 +501,17 @@ export function registerSpawnTool(
 			ctx: ExtensionContext,
 		) {
 			const parentThinking: ThinkingValue = pi.getThinkingLevel();
-			return executeSpawn(_toolCallId, pi, ctx, state, params, signal, onUpdate, parentThinking, sessionFactory);
+			return executeSpawn(
+				_toolCallId,
+				pi,
+				ctx,
+				state,
+				params,
+				signal,
+				onUpdate,
+				parentThinking,
+				sessionFactory,
+			);
 		},
 
 		renderCall: renderSpawnCall,

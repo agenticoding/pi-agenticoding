@@ -9,9 +9,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { ProcessHarness } from "./pty-harness.js";
 
-/**
- * Create a fresh host, wait for READY, and return the harness.
- */
+/** Create a fresh host, wait for READY, and return the harness. */
 async function start(): Promise<ProcessHarness> {
 	const h = new ProcessHarness();
 	await h.waitForText("READY");
@@ -117,9 +115,120 @@ describe("agenticoding E2E", () => {
 		assert.ok(snap.includes("fresh-agent-topic"));
 	}));
 
-	it("handoff tool queues handoff state", async () => withHarness(async (h) => {
+	it("handoff tool rejects when context usage is unavailable", async () => withHarness(async (h) => {
 		h.write('tool handoff {"task":"test handoff task","direction":"next-phase"}');
-		await h.waitForText("OK:Handoff started");
+		await h.waitForText("ERR:Context usage unavailable");
+	}));
+
+	it("handoff succeeds with valid context usage and readonly execution constraints", async () => withHarness(async (h) => {
+		h.write("cmd readonly");
+		await h.waitForText("OK");
+		h.write("cmd handoff continue readonly work");
+		await h.waitForText("OK");
+		h.write('usage {"tokens":50000,"percent":25,"contextWindow":200000}');
+		await h.waitForText("OK");
+		h.write('tool handoff {"task":"continue readonly work"}');
+		await h.waitForText("OK:Handoff started.");
+		h.write("compact-success");
+		await h.waitForText("Fresh context resumes in readonly mode.");
+		const snap = h.snapshot();
+		assert.ok(snap.includes("temporary handoff-only exception used to reach this context is no longer active"));
+		assert.ok(snap.includes("non-temp bash filesystem mutations remain blocked"));
+	}));
+
+	it("failed handoff compaction preserves retryability", async () => withHarness(async (h) => {
+		h.write("cmd handoff retry after failure");
+		await h.waitForText("OK");
+		h.write('usage {"tokens":50000,"percent":25,"contextWindow":200000}');
+		await h.waitForText("OK");
+		h.write('tool handoff {"task":"retry after failure"}');
+		await h.waitForText("OK:Handoff started.");
+		h.write("compact-fail simulated failure");
+		await h.waitForText("OK:compaction failed");
+		await h.waitForText("Handoff failed");
+		h.clear();
+		h.write("ui-events");
+		await h.waitForText('"agenticoding-handoff":"🤝 Handoff required — ready to compact"');
+		await h.waitForText("Handoff compaction failed");
+		h.write('tool handoff {"task":"retry after failure"}');
+		await h.waitForText("OK:Handoff started.");
+	}));
+
+	it("stale handoff compaction is ignored after session-tree navigation", async () => withHarness(async (h) => {
+		h.write("cmd handoff stale branch");
+		await h.waitForText("OK");
+		h.write('usage {"tokens":50000,"percent":25,"contextWindow":200000}');
+		await h.waitForText("OK");
+		h.write('tool handoff {"task":"stale branch work"}');
+		await h.waitForText("OK:Handoff started.");
+		h.write("session-tree");
+		await h.waitForText("OK");
+		h.write("compact-success");
+		await h.waitForText("OK:null");
+		h.clear();
+		h.write("ui-events");
+		await h.waitForText("OK:");
+		assert.doesNotMatch(h.snapshot(), /agenticoding-handoff/);
+	}));
+
+	it("readonly lifecycle: handoff bypass clears after compaction while readonly persists", async () => withHarness(async (h) => {
+		h.write("cmd readonly");
+		await h.waitForText("OK");
+		// Drain the readonly toggle nudge
+		h.write("context");
+		await h.waitForText("agenticoding-readonly-nudge");
+		// Issue /handoff command — creates the bypass
+		h.write("cmd handoff continue readonly work");
+		await h.waitForText("OK");
+		// Set eligible context usage and call the handoff tool
+		h.write('usage {"tokens":50000,"percent":25,"contextWindow":200000}');
+		await h.waitForText("OK");
+		h.write('tool handoff {"task":"continue readonly work"}');
+		await h.waitForText("OK:Handoff started.");
+		// Simulate successful compaction
+		h.write("compact-success");
+		await h.waitForText("Fresh context resumes in readonly mode.");
+		// After compaction: bypass cleared, readonly persists.
+		// handoff tool should now be blocked again
+		h.write('toolcall handoff {"task":"direct call"}');
+		await h.waitForText('"block":true');
+		// write tool should stay blocked
+		h.write('toolcall write {"path":"/tmp/x","content":"x"}');
+		await h.waitForText('"block":true');
+	}));
+
+	it("readonly topic boundary enables the handoff bypass on the next context hook", async () => withHarness(async (h) => {
+		h.write("cmd readonly");
+		await h.waitForText("OK");
+		h.write("context");
+		await h.waitForText("agenticoding-readonly-nudge");
+		h.write("cmd notebook oauth");
+		await h.waitForText("OK");
+		h.write("cmd notebook billing");
+		await h.waitForText("OK");
+		h.write('usage {"tokens":50000,"percent":25,"contextWindow":200000}');
+		await h.waitForText("OK");
+		h.write("context");
+		await h.waitForText("temporary handoff exception active");
+		h.clear();
+		h.write("ui-events");
+		await h.waitForText('"agenticoding-handoff":"🤝 Handoff required — ready to compact"');
+		await h.waitForText("Readonly topic boundary detected");
+		h.write('toolcall handoff {"task":"continue billing work"}');
+		await h.waitForText('OK:null');
+		h.write('tool handoff {"task":"continue billing work"}');
+		await h.waitForText('OK:Handoff started.');
+		h.clear();
+		h.write("ui-events");
+		await h.waitForText('"agenticoding-handoff":"🤝 Handoff in progress"');
+		h.write("compact-success");
+		await h.waitForText("Fresh context resumes in readonly mode.");
+		h.clear();
+		h.write("ui-events");
+		await h.waitForText("OK:");
+		assert.doesNotMatch(h.snapshot(), /agenticoding-handoff/);
+		h.write('toolcall handoff {"task":"direct call"}');
+		await h.waitForText('"block":true');
 	}));
 
 	it("commands are registered", async () => withHarness(async (h) => {
@@ -140,6 +249,15 @@ describe("agenticoding E2E", () => {
 		assert.ok(snap.includes("No model") || snap.includes("ERR"), "spawn errors gracefully");
 	}));
 
+	it("headless mode keeps readonly command a no-op", async () => withHarness(async (h) => {
+		h.write("headless");
+		await h.waitForText("OK");
+		h.write("cmd readonly");
+		await h.waitForText("OK");
+		h.write('toolcall write {"path":"/tmp/x","content":"x"}');
+		await h.waitForText("OK:null");
+	}));
+
 	it("handles errors gracefully", async () => withHarness(async (h) => {
 		// Unknown tool
 		h.write("tool nonexistent {}");
@@ -149,8 +267,12 @@ describe("agenticoding E2E", () => {
 		h.write("tool notebook_write {bad json}");
 		await h.waitForText("ERR:invalid json");
 
+		h.write("context {bad json}");
+		await h.waitForText("ERR:invalid json");
+
 		// Unknown command
 		h.write("cmd nonexistent");
 		await h.waitForText("ERR:unknown command");
 	}));
+
 });

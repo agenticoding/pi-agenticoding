@@ -6,9 +6,8 @@
  */
 
 import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
+import { buildEnrichedTask } from "./format.js";
 import type { AgenticodingState } from "../state.js";
-import { clearActiveNotebookTopic } from "../notebook/topic.js";
-import { STATUS_KEY_HANDOFF } from "../tui.js";
 
 function getImpossibleKeptId(branchEntries: SessionEntry[]): string {
 	const leaf = branchEntries[branchEntries.length - 1];
@@ -16,27 +15,29 @@ function getImpossibleKeptId(branchEntries: SessionEntry[]): string {
 }
 
 export function registerHandoffCompaction(pi: ExtensionAPI, state: AgenticodingState): void {
-	pi.on("session_before_compact", async (event, ctx: ExtensionContext) => {
+	pi.on("session_before_compact", async (event, _ctx: ExtensionContext) => {
 		const pending = state.pendingHandoff;
-		if (!pending) {
+		if (!pending || pending.generation !== state.handoffGeneration) {
 			return;
 		}
 
 		state.pendingHandoff = null;
-		state.pendingRequestedHandoff = null;
-		clearActiveNotebookTopic(state);
-
-		// Clear the handoff progress indicator now that compaction is consuming it
-		if (ctx.hasUI) {
-			ctx.ui.setStatus(STATUS_KEY_HANDOFF, undefined);
-		}
+		// Two-phase clear contract:
+		//   pendingHandoff — cleared here (the compaction hook consumed the queued task)
+		//   pendingRequestedHandoff — kept; cleared later by completeHandoff in tool.ts
+		//                              (on success) or preserved for retry (on error).
+		// Read readonlyEnabled at the cut so the brief reflects a toggle made after
+		// the handoff tool was called but before Pi consumes the queued task.
+		const task = buildEnrichedTask(pending.task, {
+			resumeReadonlyAfterHandoff: state.readonlyEnabled,
+		});
 
 		return {
 			compaction: {
-				summary: pending.task,
+				summary: task,
 				firstKeptEntryId: getImpossibleKeptId(event.branchEntries),
 				tokensBefore: event.preparation.tokensBefore,
-				details: { handoff: true, task: pending.task },
+				details: { handoff: true, task },
 			},
 		};
 	});

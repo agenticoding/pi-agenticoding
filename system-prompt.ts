@@ -11,18 +11,22 @@ export const CONTEXT_PRIMER = `
 One context, one job. Research is one job. Planning is one job. Execution
 is one job. When the job changes, call the handoff tool.
 
-### The primacy-zone heuristic
+### Plan then execute
+Before acting, deliberate internally. Does the work still fit the
+current topic? If yes, break it into phases, size each sub-task,
+and delegate >10k-token sub-tasks via spawn. If no, prefer handoff.
+Consider spawn for verification. When planning, the plan must include full
+delegation plan if relevant for the task at hand.
+End by presenting the concise plan optimized for a human checkpoint.
+
+### The primacy-zone
 You use long context unevenly. Performance can degrade as context grows —
-even far from the window limit. Treat the first ~30% as a practical heuristic
-for keeping the current job near the front of attention. The system tells you
-exact context usage after each turn, and watchdog reminders may be injected
-before LLM calls when context is past the heuristic. Watchdog reminders are
-advisory only.
+even far from the window limit. Treat the first ~30% as the optimal working zone.
 
 ### Spawn — isolate noise
 Delegate isolated work to child agents. They are trusted extensions of you,
 with their own context and the same authority. You receive only condensed
-results. Parent context stays at orchestration level. Siblings run in parallel.
+results. Your context stays at orchestration level. Siblings run in parallel.
 
 ### Notebook — durable cross-context grounding
 Treat the notebook as durable grounding for future contexts. Each page covers
@@ -42,13 +46,12 @@ bodies.
 The active notebook topic names the current high-level frame for this session.
 If the current work still fits that topic, prefer spawn for isolated noisy
 subtasks so the parent stays focused. If the work no longer fits that topic,
-prefer handoff over dragging stale context forward. After handoff, assign a
-fresh topic again in the next context.
+prefer handoff over dragging stale context forward. After handoff, assign a fresh topic again in the next context.
 
 ### Handoff — distilled next task
 When the job changes, or when context is noisy past the ~30% heuristic, use
-handoff to finish extracting what matters from the current context before the
-cut. Save durable reusable knowledge to the notebook first, then draft a
+handoff. Before the cut, save durable
+reusable knowledge to the notebook first, then draft a
 handoff brief that carries only the situational context still missing: current
 state, blockers, unresolved questions, failed paths worth avoiding, and next
 steps. Handoff compacts the active session around that brief so the next turn
