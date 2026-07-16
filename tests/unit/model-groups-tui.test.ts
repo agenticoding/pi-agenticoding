@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { CURSOR_MARKER, visibleWidth } from "@earendil-works/pi-tui";
 import { createModelGroupsComponent } from "../../model-groups/tui.js";
 import { ModelGroupsPersistenceError, type ModelGroupsBootValidation, type ResolvedModelGroup } from "../../model-groups/types.js";
 import { theme } from "./helpers.js";
@@ -9,7 +10,7 @@ function registry(): any {
 	const models = [
 		{ provider: "anthropic", id: "claude", reasoning: false },
 		{ provider: "google", id: "gemini-no-auth", reasoning: true, configuredAuth: false },
-		{ provider: "openai", id: "gpt-5", reasoning: true, thinkingLevelMap: { xhigh: "x" } },
+		{ provider: "openai", id: "gpt-5", reasoning: true, thinkingLevelMap: { xhigh: "x", max: "m" } },
 		{ provider: "openai", id: "gpt-no-auth", reasoning: true, configuredAuth: false },
 	];
 	return {
@@ -22,13 +23,13 @@ function registry(): any {
 
 function boot(groups: ResolvedModelGroup[]): ModelGroupsBootValidation { return { groups, loadIssues: [] }; }
 
-function component(args: { groups?: ResolvedModelGroup[]; store?: any; notify?: (m: string, t?: any) => void; renderTheme?: any } = {}) {
+function component(args: { groups?: ResolvedModelGroup[]; store?: any; notify?: (m: string, t?: any) => void; renderTheme?: any; policy?: "global-project" | "global-only" } = {}) {
 	let renders = 0;
 	const c = createModelGroupsComponent(
 		{ requestRender: () => { renders++; } } as any,
 		args.renderTheme ?? theme,
 		registry(),
-		"/tmp/project",
+		{ cwd: "/tmp/project", policy: args.policy ?? "global-project" },
 		() => {},
 		{ initialValidation: boot(args.groups ?? []), store: args.store, notify: args.notify },
 	);
@@ -202,9 +203,9 @@ test("model groups TUI selected markers and primary labels use accent token", ()
 	const list = component({ groups: [group("review", { scope: "project", models: [{ provider: "openai", modelId: "gpt-5" }] })], renderTheme: accentTheme }).c;
 
 	let text = rendered(list);
-	assert.match(text, /<accent>→<\/accent> <accent>review<\/accent> \[project\]/);
+	assert.match(text, /<accent>→ review\s+\[project\] 1 models inherit<\/accent>/);
 	press(list, DOWN);
-	assert.match(rendered(list), /<accent>→<\/accent> <accent>\+ Add group<\/accent>/);
+	assert.match(rendered(list), /<accent>→ \+ Add group<\/accent>/);
 
 	const editor = component({ groups: [group("review", { scope: "project", models: [{ provider: "openai", modelId: "gpt-5" }] })], renderTheme: accentTheme }).c;
 	press(editor, ENTER);
@@ -216,11 +217,11 @@ test("model groups TUI selected markers and primary labels use accent token", ()
 	assert.match(rendered(editor), /<accent>→<\/accent> <accent>\+ Add model…<\/accent>/);
 
 	press(editor, ENTER);
-	assert.match(rendered(editor), /<accent>→<\/accent> <accent>anthropic<\/accent>/);
+	assert.match(rendered(editor), /<accent>→ anthropic<\/accent>/);
 	press(editor, DOWN, ENTER);
-	assert.match(rendered(editor), /<accent>→<\/accent> <accent>openai\/gpt-5<\/accent>/);
+	assert.match(rendered(editor), /<accent>→ openai\/gpt-5<\/accent>/);
 	press(editor, ENTER);
-	assert.match(rendered(editor), /<accent>→<\/accent> <accent>inherit<\/accent>/);
+	assert.match(rendered(editor), /<accent>→ inherit<\/accent>/);
 
 	const modelEdit = component({ groups: [group("review", { scope: "project", models: [{ provider: "openai", modelId: "gpt-5" }] })], renderTheme: accentTheme }).c;
 	press(modelEdit, ENTER, DOWN, DOWN, DOWN, ENTER);
@@ -334,7 +335,7 @@ test("model groups TUI name edit commits through renameGroup on row-change and D
 	c.handleInput?.("\u001b[B"); // name row
 	c.handleInput?.("\r"); // focus name
 	c.handleInput?.("d");
-	assert.match(c.render(100).join("\n"), /Name: abcd_/);
+	assert.match(c.render(100).join("\n"), /> abcd/);
 	c.handleInput?.("\u001b[B"); // row-change flushes the pending rename before moving to + Add model
 	assert.deepEqual(calls, ["abc->abcd"]);
 	const rendered = c.render(100).join("\n");
@@ -415,4 +416,142 @@ test("model groups TUI notifies and keeps visible state on persistence errors", 
 	assert.match(messages[0], /target: \/tmp\/project\/\.pi\/pi-agenticoding\/model-groups\.json\.123\.tmp/);
 	assert.match(messages[0], /collision/);
 	assert.match(c.render(100).join("\n"), /Model Group: review/);
+});
+
+test("model groups TUI uses root Focusable propagation and MODEL_EDIT parent navigation", () => {
+	const c = component({ groups: [group("review", { scope: "project", models: [{ provider: "openai", modelId: "gpt-5" }] })] }).c;
+	c.focused = true;
+	press(c, ENTER, DOWN, DOWN, ENTER);
+	assert.ok(c.render(80).join("\n").includes(CURSOR_MARKER));
+	press(c, ENTER);
+	assert.equal(c.render(80).join("\n").includes(CURSOR_MARKER), false);
+	press(c, DOWN, ENTER);
+	assert.match(rendered(c), /Edit model/);
+	press(c, ESC);
+	assert.match(rendered(c), /Location: project/);
+	assert.doesNotMatch(rendered(c), /Edit model/);
+});
+
+test("model groups TUI clamps final add row and enforces global-only access", () => {
+	let groups = [group("global-name", { scope: "global" }), group("project-secret", { scope: "project" })];
+	const calls: any[] = [];
+	const store = {
+		createGroup: (scope: string, access: any, name: string, def: any) => {
+			calls.push({ scope, access, name, def });
+			groups = [group("global-name", { scope: "global" }), group(name, { scope: "global" })];
+		},
+		listResolvedModelGroups: () => boot(groups.filter((candidate) => candidate.scope === "global")),
+	};
+	const c = component({ groups, store, policy: "global-only" }).c;
+	assert.doesNotMatch(rendered(c), /project-secret/);
+	press(c, DOWN, DOWN);
+	assert.match(rendered(c), /→ \+ Add group/);
+	press(c, ENTER);
+	assert.equal(calls.length, 1);
+	assert.equal(calls[0].scope, "global");
+	assert.deepEqual(calls[0].access, { cwd: "/tmp/project", policy: "global-only" });
+	assert.deepEqual(calls[0].def, { models: [] });
+	const text = rendered(c);
+	assert.match(text, /Location: global/);
+	assert.doesNotMatch(text, /Location: project/);
+});
+
+test("model groups TUI escapes controlled labels, bounds width, and offers native max", () => {
+	const hostile = "group\n\u001b]8;;https://example.test\u0007link\u001b]8;;\u0007";
+	const c = component({ groups: [group(hostile, { scope: "project", models: [{ provider: "openai\u001b[31m", modelId: "model\nlong" }] })] }).c;
+	const lines = c.render(20);
+	assert.equal(lines.every((line) => visibleWidth(line) <= 20), true);
+	const text = lines.join("\n");
+	assert.match(text, /group\\n\\x1B/);
+	assert.doesNotMatch(text, /\u001b\]8;;/);
+
+	let maxGroups = [group("review", { scope: "project" })];
+	let selectedThinking: string | undefined;
+	const max = component({
+		groups: maxGroups,
+		store: {
+			updateGroup: (_scope: string, _access: any, name: string, def: any) => { selectedThinking = def.models.at(-1)?.thinkingLevel; maxGroups = [group(name, { scope: "project", models: def.models })]; },
+			listResolvedModelGroups: () => boot(maxGroups),
+		},
+	}).c;
+	press(max, ENTER, DOWN, DOWN, DOWN, ENTER);
+	press(max, DOWN, ENTER, ENTER);
+	assert.match(rendered(max), /Add model — Step 3\/3 Thinking/);
+	assert.match(rendered(max), /max/);
+	press(max, ...Array(20).fill(DOWN), ENTER);
+	assert.equal(selectedThinking, "max");
+});
+
+test("model groups TUI decodes then canonicalizes prototype-sensitive names and rejects malformed escapes", () => {
+	for (const nextName of ["__proto__", "constructor", "toString"]) {
+		let groups = [group("abc", { scope: "project" })];
+		const calls: string[] = [];
+		const notifications: string[] = [];
+		const store = {
+			renameGroup: (_scope: string, _access: any, oldName: string, renamed: string) => { calls.push(`${oldName}->${renamed}`); groups = [group(renamed, { scope: "project" })]; },
+			listResolvedModelGroups: () => boot(groups),
+		};
+		const c = component({ groups, store, notify: (message) => notifications.push(message) }).c;
+		press(c, ENTER, DOWN, DOWN, ENTER, "\u007f", "\u007f", "\u007f", ...[...` ${nextName} `], DOWN);
+		assert.deepEqual(calls, [`abc->${nextName}`]);
+		assert.match(rendered(c), new RegExp(nextName.replaceAll("_", "\\_")));
+		assert.deepEqual(notifications, []);
+	}
+
+	const malformedCalls: string[] = [];
+	const notifications: string[] = [];
+	const malformed = component({
+		groups: [group("abc", { scope: "project" })],
+		store: { renameGroup: () => malformedCalls.push("called"), listResolvedModelGroups: () => boot([group("abc", { scope: "project" })]) },
+		notify: (message) => notifications.push(message),
+	}).c;
+	press(malformed, ENTER, DOWN, DOWN, ENTER, "\\", ENTER);
+	assert.deepEqual(malformedCalls, []);
+	assert.equal(notifications.length, 1);
+	assert.match(rendered(malformed), /abc/);
+});
+
+test("model groups TUI keeps every screen width-bounded without wrapping logical rows", () => {
+	const assertScreen = (c: ReturnType<typeof component>["c"]) => {
+		const wideCount = c.render(200).length;
+		const narrow = c.render(12);
+		assert.equal(narrow.length, wideCount);
+		assert.equal(narrow.every((line) => visibleWidth(line) <= 12), true);
+	};
+	const longModel = { provider: "openai", modelId: "gpt-5", thinkingLevel: "max" as const };
+	const c = component({ groups: [group("a-very-long-group-name", { scope: "project", models: [longModel] })] }).c;
+	assertScreen(c); // LIST
+	press(c, ENTER);
+	assertScreen(c); // EDITOR
+	press(c, DOWN, DOWN, DOWN, ENTER);
+	assertScreen(c); // MODEL_EDIT
+	press(c, ESC, DOWN, DOWN, DOWN, DOWN, ENTER);
+	assertScreen(c); // WIZARD_PROVIDER
+	press(c, DOWN, DOWN, ENTER);
+	assertScreen(c); // WIZARD_MODEL
+	press(c, ENTER);
+	assertScreen(c); // WIZARD_THINKING
+	const deletion = component({ groups: [group("a-very-long-group-name", { scope: "project", models: [longModel] })] }).c;
+	press(deletion, "D");
+	assertScreen(deletion); // DELETE_CONFIRM
+});
+
+test("model groups TUI persistence notifications escape each hostile dynamic field", () => {
+	const notifications: string[] = [];
+	const raw = "\n\u001b]8;;https://example.test\u0007field";
+	const c = component({
+		groups: [group("review", { scope: "project" })],
+		store: {
+			renameGroup: () => { throw new ModelGroupsPersistenceError({ operation: "save", scope: "project", sourcePath: `source${raw}`, targetPath: `target${raw}`, phase: "rename", message: `message${raw}`, cause: new Error(`cause${raw}`) }); },
+			listResolvedModelGroups: () => boot([group("review", { scope: "project" })]),
+		},
+		notify: (message) => notifications.push(message),
+	}).c;
+	press(c, ENTER, DOWN, DOWN, ENTER, "x", ENTER);
+	assert.equal(notifications.length, 1);
+	assert.match(notifications[0], /source\\n\\x1B/);
+	assert.match(notifications[0], /target\\n\\x1B/);
+	assert.match(notifications[0], /message\\n\\x1B/);
+	assert.match(notifications[0], /cause\\n\\x1B/);
+	assert.doesNotMatch(notifications[0], /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/);
 });

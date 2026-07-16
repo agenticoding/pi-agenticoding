@@ -35,6 +35,8 @@ import { registerModelGroupsCommand } from "./model-groups/command.js";
 import { registerModelGroupAutocomplete } from "./model-groups/autocomplete.js";
 import { getEffectiveModelGroupNames } from "./model-groups/router.js";
 import { loadModelGroups, summarizeBootValidation, validateModelGroups } from "./model-groups/store.js";
+import { escapeDisplayLabel } from "./model-groups/display.js";
+import type { ModelGroupsAccess } from "./model-groups/types.js";
 import {
 	STATUS_KEY_HANDOFF,
 	STATUS_KEY_TOPIC,
@@ -43,9 +45,13 @@ import {
 } from "./tui.js";
 import { formatPagePreview } from "./notebook/store.js";
 
+function modelGroupsAccess(ctx: ExtensionContext): ModelGroupsAccess {
+	return { cwd: ctx.cwd, policy: ctx.isProjectTrusted() ? "global-project" : "global-only" };
+}
+
 function refreshModelGroupsState(state: AgenticodingState, ctx: ExtensionContext) {
 	if (!ctx.cwd || !(ctx as any).modelRegistry) return null;
-	const loadedModelGroups = loadModelGroups(ctx.cwd);
+	const loadedModelGroups = loadModelGroups(modelGroupsAccess(ctx));
 	const resolvedModelGroups = validateModelGroups(loadedModelGroups, (ctx as any).modelRegistry);
 	state.modelGroups.groups = resolvedModelGroups;
 	state.modelGroups.validation = { groups: resolvedModelGroups, loadIssues: loadedModelGroups.issues };
@@ -273,8 +279,11 @@ export default function (pi: ExtensionAPI): void {
 		const validation = refreshModelGroupsState(state, ctx);
 		if (validation && ctx.hasUI) {
 			for (const issue of validation.loadIssues) {
-				const backupNote = issue.backupFailed ? "; backup failed, original file left untouched" : "";
-				ctx.ui.notify(`Model Groups config ${issue.kind} in ${issue.scope} scope (${issue.sourcePath}); using empty config for that scope${backupNote}`, "warning");
+				const sourcePath = escapeDisplayLabel(issue.sourcePath);
+				const backupPath = issue.backupPath ? escapeDisplayLabel(issue.backupPath) : undefined;
+				const detail = escapeDisplayLabel(issue.message);
+				const backupNote = issue.backupFailed ? `; backup failed${backupPath ? ` (${backupPath})` : ""}, original file left untouched` : "";
+				ctx.ui.notify(`Model Groups config ${issue.kind} in ${issue.scope} scope (${sourcePath}); using empty config for that scope${backupNote}; ${detail}`, "warning");
 			}
 			const { unavailableCount, overrideCount } = summarizeBootValidation(validation.groups);
 			if (unavailableCount > 0 || overrideCount > 0) {

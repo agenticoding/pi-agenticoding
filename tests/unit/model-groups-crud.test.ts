@@ -15,8 +15,10 @@ import {
 	updateGroup,
 	validateModelGroups,
 } from "../../model-groups/store.js";
-import { ModelGroupsPersistenceError, type ModelGroupScope } from "../../model-groups/types.js";
+import { ModelGroupsPersistenceError, type ModelGroupScope, type ModelGroupsAccess } from "../../model-groups/types.js";
 import { withTemp } from "./model-groups-helpers.js";
+
+function access(cwd: string, policy: ModelGroupsAccess["policy"] = "global-project"): ModelGroupsAccess { return { cwd, policy }; }
 
 function read(scope: ModelGroupScope, cwd: string): any {
 	return JSON.parse(fs.readFileSync(modelGroupsPath(scope, cwd), "utf8"));
@@ -36,43 +38,43 @@ function registry(available = new Set(["openai:gpt-5", "anthropic:claude"])): an
 }
 
 test("model groups store creates, round-trips, validates, renames, updates, deletes, and moves", () => withTemp(({ cwd }) => {
-	assert.deepEqual(loadModelGroups(cwd).configs.project.groups, {});
-	createGroup("project", cwd, "review", { models: [] });
+	assert.equal(Object.keys(loadModelGroups(access(cwd)).configs.project.groups).length, 0);
+	createGroup("project", access(cwd), "review", { models: [] });
 	assert.deepEqual(read("project", cwd).groups.review.models, []);
-	assert.throws(() => createGroup("project", cwd, "review", { models: [] }), /already exists/);
+	assert.throws(() => createGroup("project", access(cwd), "review", { models: [] }), /already exists/);
 
-	createGroup("project", cwd, "inherit-roundtrip", { models: [{ provider: "anthropic", modelId: "claude" }] });
-	const inheritLoaded = loadModelGroups(cwd).configs.project.groups["inherit-roundtrip"].models[0];
+	createGroup("project", access(cwd), "inherit-roundtrip", { models: [{ provider: "anthropic", modelId: "claude" }] });
+	const inheritLoaded = loadModelGroups(access(cwd)).configs.project.groups["inherit-roundtrip"].models[0];
 	assert.equal(inheritLoaded.thinkingLevel, undefined);
 	assert.equal(Object.prototype.hasOwnProperty.call(inheritLoaded, "thinkingLevel"), false);
 	const inheritPersisted = read("project", cwd).groups["inherit-roundtrip"].models[0];
 	assert.equal(inheritPersisted.thinkingLevel, undefined);
 	assert.equal(Object.prototype.hasOwnProperty.call(inheritPersisted, "thinkingLevel"), false);
 
-	updateGroup("project", cwd, "review", { models: [{ provider: "openai", modelId: "gpt-5", thinkingLevel: "high" }] });
-	renameGroup("project", cwd, "review", "reviewers");
+	updateGroup("project", access(cwd), "review", { models: [{ provider: "openai", modelId: "gpt-5", thinkingLevel: "high" }] });
+	renameGroup("project", access(cwd), "review", "reviewers");
 	assert.equal(read("project", cwd).groups.review, undefined);
 	assert.equal(read("project", cwd).groups.reviewers.models[0].thinkingLevel, "high");
 
-	createGroup("project", cwd, "collision", { models: [] });
-	assert.throws(() => renameGroup("project", cwd, "reviewers", "collision"), /already exists/);
-	createGroup("global", cwd, "reviewers", { models: [{ provider: "openai", modelId: "gpt-5" }, { provider: "missing", modelId: "nope" }] });
-	const loaded = loadModelGroups(cwd);
+	createGroup("project", access(cwd), "collision", { models: [] });
+	assert.throws(() => renameGroup("project", access(cwd), "reviewers", "collision"), /already exists/);
+	createGroup("global", access(cwd), "reviewers", { models: [{ provider: "openai", modelId: "gpt-5" }, { provider: "missing", modelId: "nope" }] });
+	const loaded = loadModelGroups(access(cwd));
 	const resolved = validateModelGroups(loaded, registry());
 	const globalReviewers = resolved.find((g) => g.name === "reviewers" && g.scope === "global");
 	assert.equal(globalReviewers?.validation.shadowedByProject, true);
 	assert.deepEqual(globalReviewers?.validation.unavailableRefs, [{ provider: "missing", modelId: "nope" }]);
 	assert.equal(globalReviewers?.validation.degraded, true);
 
-	createGroup("global", cwd, "move-collision", { models: [] });
-	createGroup("project", cwd, "move-collision", { models: [] });
-	assert.throws(() => moveGroup(cwd, "move-collision", "project"), /already exists in project scope/);
+	createGroup("global", access(cwd), "move-collision", { models: [] });
+	createGroup("project", access(cwd), "move-collision", { models: [] });
+	assert.throws(() => moveGroup(access(cwd), "move-collision", "project"), /already exists in project scope/);
 	assert.ok(read("global", cwd).groups["move-collision"]);
 	assert.ok(read("project", cwd).groups["move-collision"]);
 
-	const deleted = deleteGroup("global", cwd, "reviewers");
+	const deleted = deleteGroup("global", access(cwd), "reviewers");
 	assert.equal(deleted.otherScopeHasOverride, true);
-	moveGroup(cwd, "reviewers", "global");
+	moveGroup(access(cwd), "reviewers", "global");
 	assert.ok(read("global", cwd).groups.reviewers);
 	assert.equal(read("project", cwd).groups.reviewers, undefined);
 }));
@@ -80,34 +82,34 @@ test("model groups store creates, round-trips, validates, renames, updates, dele
 test("model groups load recovery handles malformed, schema-invalid, unsupported version, and backup failure", () => withTemp(({ cwd }) => {
 	fs.mkdirSync(path.dirname(modelGroupsPath("global", cwd)), { recursive: true });
 	fs.writeFileSync(modelGroupsPath("global", cwd), "{not json", "utf8");
-	let loaded = loadModelGroups(cwd);
+	let loaded = loadModelGroups(access(cwd));
 	assert.equal(loaded.issues[0].kind, "corrupt-json");
 	assert.ok(fs.existsSync(`${modelGroupsPath("global", cwd)}.bak`));
 
 	fs.mkdirSync(path.dirname(modelGroupsPath("project", cwd)), { recursive: true });
 	fs.writeFileSync(modelGroupsPath("project", cwd), JSON.stringify({ version: 1, groups: { bad: { models: [{ provider: 1 }] } } }), "utf8");
-	loaded = loadModelGroups(cwd);
+	loaded = loadModelGroups(access(cwd));
 	const schemaIssue = loaded.issues.find((i) => i.scope === "project")!;
 	assert.equal(schemaIssue.kind, "schema-invalid");
 	assert.equal(schemaIssue.scope, "project");
 	assert.equal(schemaIssue.sourcePath, modelGroupsPath("project", cwd));
 	assert.equal(schemaIssue.backupPath, `${modelGroupsPath("project", cwd)}.bak`);
-	assert.match(schemaIssue.message, /invalid model entry/);
+	assert.match(schemaIssue.message, /provider/);
 	assert.ok(fs.existsSync(schemaIssue.backupPath!));
-	assert.deepEqual(loaded.configs.project.groups, {});
+	assert.equal(Object.keys(loaded.configs.project.groups).length, 0);
 
 	fs.writeFileSync(modelGroupsPath("project", cwd), JSON.stringify({ version: 99, groups: {} }), "utf8");
-	loaded = loadModelGroups(cwd);
+	loaded = loadModelGroups(access(cwd));
 	assert.equal(loaded.issues.find((i) => i.scope === "project")?.kind, "unsupported-version");
 	assert.equal(loaded.issues.find((i) => i.scope === "project")?.version, 99);
 
 	fs.writeFileSync(modelGroupsPath("project", cwd), "{bad", "utf8");
 	__setModelGroupsFsForTests({ copyFileSync: () => { throw new Error("denied"); } });
-	loaded = loadModelGroups(cwd);
+	loaded = loadModelGroups(access(cwd));
 	const issue = loaded.issues.find((i) => i.scope === "project")!;
 	assert.equal(issue.backupFailed, true);
 	assert.equal(fs.readFileSync(modelGroupsPath("project", cwd), "utf8"), "{bad");
-	assert.throws(() => createGroup("project", cwd, "must-not-overwrite", { models: [] }), (error) => {
+	assert.throws(() => createGroup("project", access(cwd), "must-not-overwrite", { models: [] }), (error) => {
 		assert.ok(error instanceof ModelGroupsPersistenceError);
 		assert.equal(error.operation, "save");
 		assert.equal(error.phase, "load-recovery");
@@ -117,9 +119,9 @@ test("model groups load recovery handles malformed, schema-invalid, unsupported 
 }));
 
 test("model groups persistence failures throw typed errors and preserve committed state", () => withTemp(({ cwd }) => {
-	saveModelGroups("project", cwd, { version: 1, groups: { keep: { models: [] } } });
+	saveModelGroups("project", access(cwd), { version: 1, groups: { keep: { models: [] } } });
 	__setModelGroupsFsForTests({ writeFileSync: () => { throw new Error("temp denied"); } });
-	assert.throws(() => updateGroup("project", cwd, "keep", { models: [{ provider: "openai", modelId: "gpt-5" }] }), (error) => {
+	assert.throws(() => updateGroup("project", access(cwd), "keep", { models: [{ provider: "openai", modelId: "gpt-5" }] }), (error) => {
 		assert.ok(error instanceof ModelGroupsPersistenceError);
 		assert.equal(error.operation, "save");
 		assert.equal(error.phase, "temp-write");
@@ -133,7 +135,7 @@ test("model groups persistence failures throw typed errors and preserve committe
 	assert.equal(read("project", cwd).groups.keep.models.length, 0);
 
 	__setModelGroupsFsForTests({ renameSync: () => { throw new Error("rename denied"); } });
-	assert.throws(() => saveModelGroups("project", cwd, { version: 1, groups: { drop: { models: [] } } }), (error) => {
+	assert.throws(() => saveModelGroups("project", access(cwd), { version: 1, groups: { drop: { models: [] } } }), (error) => {
 		assert.ok(error instanceof ModelGroupsPersistenceError);
 		assert.equal(error.phase, "rename");
 		return true;
@@ -143,16 +145,16 @@ test("model groups persistence failures throw typed errors and preserve committe
 	assert.equal(read("project", cwd).groups.drop, undefined);
 
 	__setModelGroupsFsForTests({ renameSync: () => { throw new Error("delete denied"); } });
-	assert.throws(() => deleteGroup("project", cwd, "keep"), (error) => {
+	assert.throws(() => deleteGroup("project", access(cwd), "keep"), (error) => {
 		assert.ok(error instanceof ModelGroupsPersistenceError);
 		assert.equal(error.operation, "delete");
 		return true;
 	});
 	__setModelGroupsFsForTests(null);
 
-	createGroup("global", cwd, "move-target-fails", { models: [] });
+	createGroup("global", access(cwd), "move-target-fails", { models: [] });
 	__setModelGroupsFsForTests({ renameSync: () => { throw new Error("target denied"); } });
-	assert.throws(() => moveGroup(cwd, "move-target-fails", "project"), (error) => {
+	assert.throws(() => moveGroup(access(cwd), "move-target-fails", "project"), (error) => {
 		assert.ok(error instanceof ModelGroupsPersistenceError);
 		assert.equal(error.operation, "move");
 		assert.equal(error.partialMove, undefined);
@@ -160,13 +162,106 @@ test("model groups persistence failures throw typed errors and preserve committe
 	});
 	__setModelGroupsFsForTests(null);
 
-	createGroup("global", cwd, "move-me", { models: [] });
+	createGroup("global", access(cwd), "move-me", { models: [] });
 	let writes = 0;
 	__setModelGroupsFsForTests({ renameSync: (from, to) => { writes++; if (writes === 2) throw new Error("source denied"); fs.renameSync(from, to); } });
-	assert.throws(() => moveGroup(cwd, "move-me", "project"), (error) => {
+	assert.throws(() => moveGroup(access(cwd), "move-me", "project"), (error) => {
 		assert.ok(error instanceof ModelGroupsPersistenceError);
 		assert.equal(error.partialMove, "target-written-source-retained");
 		assert.equal(error.phase, "source-remove");
 		return true;
 	});
+}));
+
+test("model groups strictly partitions schema and legacy version domains", () => withTemp(({ cwd }) => {
+	const projectPath = modelGroupsPath("project", cwd);
+	fs.mkdirSync(path.dirname(projectPath), { recursive: true });
+	const invalid: Array<[string, unknown, RegExp]> = [
+		["root", [], /root/], ["version type", { version: "1", groups: {} }, /version/],
+		["negative", { version: -1, groups: {} }, /version/], ["fraction low", { version: 0.5, groups: {} }, /version/],
+		["fraction high", { version: 1.5, groups: {} }, /version/], ["groups", { version: 1, groups: [] }, /groups/],
+		["group", { version: 1, groups: { bad: 1 } }, /group/],
+		["provider missing", { version: 1, groups: { bad: { models: [{ modelId: "m" }] } } }, /provider/],
+		["provider type", { version: 1, groups: { bad: { models: [{ provider: 1, modelId: "m" }] } } }, /provider/],
+		["model missing", { version: 1, groups: { bad: { models: [{ provider: "p" }] } } }, /modelId/],
+		["model type", { version: 1, groups: { bad: { models: [{ provider: "p", modelId: 1 }] } } }, /modelId/],
+		["models", { version: 1, groups: { bad: { models: 1 } } }, /models/],
+		["thinking", { version: 1, groups: { bad: { models: [{ provider: "p", modelId: "m", thinkingLevel: "turbo" }] } } }, /thinkingLevel/],
+	];
+	for (const [label, raw, message] of invalid) {
+		fs.writeFileSync(projectPath, JSON.stringify(raw), "utf8");
+		const loaded = loadModelGroups(access(cwd));
+		const issue = loaded.issues.find((candidate) => candidate.scope === "project")!;
+		assert.equal(issue.kind, "schema-invalid", label);
+		assert.match(issue.message, message, label);
+		assert.ok(fs.existsSync(`${projectPath}.bak`), label);
+		assert.equal(Object.keys(loaded.configs.project.groups).length, 0, label);
+	}
+	for (const raw of [{ groups: { legacy: { models: [] } } }, { version: 0, groups: { legacy: { models: [] } } }]) {
+		fs.writeFileSync(projectPath, JSON.stringify(raw), "utf8");
+		const loaded = loadModelGroups(access(cwd));
+		assert.equal(loaded.issues.length, 0);
+		assert.equal(loaded.configs.project.version, 1);
+		updateGroup("project", access(cwd), "legacy", { models: [] });
+		assert.equal(read("project", cwd).version, 1);
+	}
+}));
+
+test("model groups use branded paths, global-only access, canonical own keys, and native max", () => withTemp(({ cwd }) => {
+	assert.equal(modelGroupsPath("project", cwd, "branded-pi"), path.join(cwd, "branded-pi", "pi-agenticoding", "model-groups.json"));
+	const raw = '{"version":1,"groups":{" __proto__ ":{"models":[{"provider":"p","modelId":"proto","thinkingLevel":"max"}]},"constructor":{"models":[]},"toString":{"models":[]}}}';
+	fs.mkdirSync(path.dirname(modelGroupsPath("project", cwd)), { recursive: true });
+	fs.writeFileSync(modelGroupsPath("project", cwd), raw, "utf8");
+	let loaded = loadModelGroups(access(cwd));
+	for (const name of ["__proto__", "constructor", "toString"]) assert.ok(Object.hasOwn(loaded.configs.project.groups, name));
+	assert.equal(loaded.configs.project.groups.__proto__.models[0].thinkingLevel, "max");
+	saveModelGroups("project", access(cwd), loaded.configs.project);
+	const persisted = read("project", cwd);
+	assert.deepEqual(Object.keys(persisted.groups).sort(), ["__proto__", "constructor", "toString"].sort());
+	assert.equal(Object.getPrototypeOf(loaded.configs.project.groups), null);
+
+	for (const name of ["__proto__", "constructor", "toString"]) {
+		deleteGroup("project", access(cwd), name);
+		createGroup("global", access(cwd), ` ${name} `, { models: [] });
+		updateGroup("global", access(cwd), name, { models: [{ provider: "p", modelId: name }] });
+		moveGroup(access(cwd), name, "project");
+		assert.ok(Object.hasOwn(read("project", cwd).groups, name));
+		deleteGroup("project", access(cwd), name);
+	}
+
+	let projectProbe = false;
+	__setModelGroupsFsForTests({ existsSync: (candidate) => {
+		if (String(candidate).startsWith(cwd)) { projectProbe = true; throw new Error("project probed"); }
+		return fs.existsSync(candidate);
+	} });
+	const untrusted = loadModelGroups(access(cwd, "global-only"));
+	assert.equal(projectProbe, false);
+	assert.equal(untrusted.merged.every((group) => group.scope === "global"), true);
+	assert.throws(() => createGroup("project", access(cwd, "global-only"), "forbidden", { models: [] }), /global-only/);
+	assert.equal(projectProbe, false);
+}));
+
+test("model groups direct save canonicalizes unique keys and rejects empty/colliding keys before write", () => withTemp(({ cwd }) => {
+	const a = access(cwd);
+	saveModelGroups("project", a, { version: 1, groups: { committed: { models: [] } } });
+	const unique: Record<string, any> = Object.create(null);
+	Object.defineProperty(unique, " unique ", { value: { models: [] }, enumerable: true });
+	saveModelGroups("project", a, { version: 1, groups: unique });
+	assert.deepEqual(Object.keys(read("project", cwd).groups), ["unique"]);
+	for (const keys of [["   "], ["same", " same "]]) {
+		const groups: Record<string, any> = Object.create(null);
+		for (const key of keys) Object.defineProperty(groups, key, { value: { models: [] }, enumerable: true });
+		const before = fs.readFileSync(modelGroupsPath("project", cwd), "utf8");
+		let writes = 0;
+		__setModelGroupsFsForTests({ writeFileSync: (..._args: any[]) => { writes++; throw new Error("must not write"); } });
+		assert.throws(() => saveModelGroups("project", a, { version: 1, groups }), (error) => {
+			assert.ok(error instanceof ModelGroupsPersistenceError);
+			assert.equal(error.operation, "save");
+			assert.equal(error.phase, "config-validation");
+			return true;
+		});
+		assert.equal(writes, 0);
+		assert.equal(fs.readFileSync(modelGroupsPath("project", cwd), "utf8"), before);
+		__setModelGroupsFsForTests(null);
+	}
 }));

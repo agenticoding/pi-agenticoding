@@ -3,9 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import registerAgenticoding from "../../index.js";
-import { registerModelGroupsCommand } from "../../model-groups/command.js";
 import { __setModelGroupsFsForTests, modelGroupsPath } from "../../model-groups/store.js";
-import { createState } from "../../state.js";
 import { createTestPI, theme } from "./helpers.js";
 import { withTemp } from "./model-groups-helpers.js";
 
@@ -23,7 +21,6 @@ test("/model-groups command registers and opens ctx.ui.custom with live registry
 	fs.mkdirSync(path.dirname(modelGroupsPath("project", cwd)), { recursive: true });
 	fs.writeFileSync(modelGroupsPath("project", cwd), JSON.stringify({ version: 1, groups: { "cwd-sentinel-group": { models: [{ provider: "openai", modelId: "gpt-5" }] } } }), "utf8");
 	const pi = createTestPI();
-	const state = createState();
 	const findCalls: string[] = [];
 	const registrySentinel = {
 		...registry(),
@@ -33,12 +30,14 @@ test("/model-groups command registers and opens ctx.ui.custom with live registry
 		},
 		hasConfiguredAuth: () => true,
 	};
-	registerModelGroupsCommand(pi as any, state);
+	registerAgenticoding(pi as any);
 	assert.ok(pi.commands.has("model-groups"));
 	let customCalled = 0;
 	let rendered = "";
 	await pi.commands.get("model-groups")!.handler("", {
 		hasUI: true,
+		mode: "tui",
+		isProjectTrusted: () => true,
 		cwd,
 		modelRegistry: registrySentinel,
 		ui: {
@@ -66,6 +65,8 @@ test("index session_start stores model group validation and notifies load and va
 	const notifications: string[] = [];
 	const ctx = {
 		hasUI: true,
+		mode: "tui",
+		isProjectTrusted: () => true,
 		cwd,
 		modelRegistry: registry(),
 		getContextUsage: () => ({ percent: 10 }),
@@ -91,6 +92,8 @@ test("index session_start notifies corrupt/schema/unsupported load issues", asyn
 	const notifications: string[] = [];
 	const ctx = {
 		hasUI: true,
+		mode: "tui",
+		isProjectTrusted: () => true,
 		cwd,
 		modelRegistry: registry(),
 		getContextUsage: () => ({ percent: 10 }),
@@ -110,6 +113,8 @@ test("index session_start notifies schema-invalid load issues", async () => with
 	const notifications: string[] = [];
 	const ctx = {
 		hasUI: true,
+		mode: "tui",
+		isProjectTrusted: () => true,
 		cwd,
 		modelRegistry: registry(),
 		getContextUsage: () => ({ percent: 10 }),
@@ -131,6 +136,8 @@ test("index session_start includes backup-failure detail in load issue notificat
 	const notifications: string[] = [];
 	const ctx = {
 		hasUI: true,
+		mode: "tui",
+		isProjectTrusted: () => true,
 		cwd,
 		modelRegistry: registry(),
 		getContextUsage: () => ({ percent: 10 }),
@@ -138,7 +145,7 @@ test("index session_start includes backup-failure detail in load issue notificat
 	};
 	const handler = pi.handlers.get("session_start")!.at(-1)!;
 	await handler({ reason: "load" }, ctx);
-	assert.ok(notifications.some((m) => /corrupt-json/.test(m) && /backup failed, original file left untouched/.test(m) && m.includes(modelGroupsPath("project", cwd))));
+	assert.ok(notifications.some((m) => /corrupt-json/.test(m) && /backup failed.*original file left untouched/.test(m) && m.includes(modelGroupsPath("project", cwd))));
 }));
 
 test("before_agent_start injects fresh names-only Model Groups guidance", async () => withTemp(async ({ cwd }) => {
@@ -147,7 +154,7 @@ test("before_agent_start injects fresh names-only Model Groups guidance", async 
 	const pi = createTestPI();
 	registerAgenticoding(pi as any);
 	const handler = pi.handlers.get("before_agent_start")!.at(-1)!;
-	const result = await handler({ systemPrompt: "Base." }, { hasUI: false, cwd, modelRegistry: registry(), getContextUsage: () => null });
+	const result = await handler({ systemPrompt: "Base." }, { hasUI: false, isProjectTrusted: () => true, cwd, modelRegistry: registry(), getContextUsage: () => null });
 	assert.match(result.systemPrompt, /## Model Groups for spawn/);
 	assert.match(result.systemPrompt, /Available Model Groups: review/);
 	assert.match(result.systemPrompt, /exact group name/);
@@ -164,6 +171,8 @@ test("session_start registers Model Groups autocomplete provider when UI support
 	const handler = pi.handlers.get("session_start")!.at(-1)!;
 	await handler({ reason: "load" }, {
 		hasUI: true,
+		mode: "tui",
+		isProjectTrusted: () => true,
 		cwd,
 		modelRegistry: registry(),
 		getContextUsage: () => ({ percent: 10 }),
@@ -178,6 +187,8 @@ test("index session_start does not notify when load and validation issues are ab
 	const notifications: string[] = [];
 	const ctx = {
 		hasUI: true,
+		mode: "tui",
+		isProjectTrusted: () => true,
 		cwd,
 		modelRegistry: registry(),
 		getContextUsage: () => ({ percent: 10 }),
@@ -186,4 +197,69 @@ test("index session_start does not notify when load and validation issues are ab
 	const handler = pi.handlers.get("session_start")!.at(-1)!;
 	await handler({ reason: "load" }, ctx);
 	assert.deepEqual(notifications, []);
+}));
+
+test("root-recorded /model-groups rejects RPC and skips JSON/print before custom UI", async () => {
+	for (const mode of ["rpc", "json", "print"] as const) {
+		const pi = createTestPI();
+		registerAgenticoding(pi as any);
+		const notifications: string[] = [];
+		let customCalls = 0;
+		await pi.commands.get("model-groups")!.handler("", {
+			mode,
+			hasUI: mode === "rpc",
+			cwd: "/must-not-load",
+			modelRegistry: registry(),
+			isProjectTrusted: () => true,
+			ui: { notify: (message: string) => notifications.push(message), custom: async () => { customCalls++; } },
+		});
+		assert.equal(customCalls, 0, mode);
+		assert.deepEqual(notifications, mode === "rpc" ? ["/model-groups requires TUI mode"] : [], mode);
+	}
+});
+
+test("model groups untrusted root flow never probes project data and publishes global-only state to TUI", async () => withTemp(async ({ cwd }) => {
+	fs.mkdirSync(path.dirname(modelGroupsPath("global", cwd)), { recursive: true });
+	fs.writeFileSync(modelGroupsPath("global", cwd), JSON.stringify({ version: 1, groups: { globalOnly: { models: [] } } }), "utf8");
+	fs.mkdirSync(path.dirname(modelGroupsPath("project", cwd)), { recursive: true });
+	fs.writeFileSync(modelGroupsPath("project", cwd), JSON.stringify({ version: 1, groups: { projectSecret: { models: [] } } }), "utf8");
+	let projectProbe = false;
+	__setModelGroupsFsForTests({ existsSync: (candidate) => {
+		if (String(candidate).startsWith(cwd)) { projectProbe = true; throw new Error("project probe"); }
+		return fs.existsSync(candidate);
+	} });
+	const pi = createTestPI();
+	registerAgenticoding(pi as any);
+	const baseUi = { theme, notify: () => {}, setStatus: () => {}, setWidget: () => {}, addAutocompleteProvider: () => {} };
+	await pi.handlers.get("session_start")!.at(-1)!({ reason: "load" }, {
+		mode: "tui", hasUI: true, isProjectTrusted: () => false, cwd, modelRegistry: registry(), getContextUsage: () => ({ percent: 10 }), ui: baseUi,
+	});
+	assert.equal(projectProbe, false);
+	let rendered = "";
+	await pi.commands.get("model-groups")!.handler("", {
+		mode: "tui", hasUI: true, isProjectTrusted: () => false, cwd, modelRegistry: registry(),
+		ui: { ...baseUi, custom: async (factory: any) => { rendered = factory({ requestRender: () => {} }, theme, {}, () => {}).render(80).join("\n"); } },
+	});
+	assert.match(rendered, /globalOnly/);
+	assert.doesNotMatch(rendered, /projectSecret|\[project\]/);
+	assert.equal(projectProbe, false);
+}));
+
+test("model groups boot load-issue notifications escape hostile source, backup, and error detail fields", async () => withTemp(async ({ cwd }) => {
+	const hostileCwd = `${cwd}\n\u001b]8;;https://example.test\u0007path`;
+	const projectPath = modelGroupsPath("project", hostileCwd);
+	fs.mkdirSync(path.dirname(projectPath), { recursive: true });
+	fs.writeFileSync(projectPath, "{bad", "utf8");
+	__setModelGroupsFsForTests({ copyFileSync: () => { throw new Error("backup\n\u001b[31mfailed\u0007"); } });
+	const pi = createTestPI();
+	registerAgenticoding(pi as any);
+	const notifications: string[] = [];
+	await pi.handlers.get("session_start")!.at(-1)!({ reason: "load" }, {
+		mode: "tui", hasUI: true, isProjectTrusted: () => true, cwd: hostileCwd, modelRegistry: registry(), getContextUsage: () => ({ percent: 10 }),
+		ui: { theme, notify: (message: string) => notifications.push(message), setStatus: () => {}, setWidget: () => {}, addAutocompleteProvider: () => {} },
+	});
+	const notification = notifications.find((message) => message.includes("corrupt-json"))!;
+	assert.match(notification, /\\n\\x1B\]8;;https:\/example\.test\\x07path/);
+	assert.match(notification, /backup\\n\\x1B\[31mfailed\\x07/);
+	assert.doesNotMatch(notification, /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/);
 }));
