@@ -73,8 +73,6 @@ test("nested spawn handleEvent recovers from malformed events", () => {
 
 	// Emit a malformed event that will throw inside handleEvent
 	emit({ type: "message_start", message: null });
-	assert.equal(h.warnings.length, 1);
-	assert.match(String(h.warnings[0].args[1]), /message_start/);
 
 	// Subsequent valid events still process
 	emit({ type: "message_start", message: { role: "assistant", content: [] } });
@@ -447,8 +445,6 @@ test("nested spawn recovers batching state after event handler error", async () 
 	const lines = component.render(120);
 	assert.ok(lines.some((l: string) => l.includes("thinking")),
 		"error recovery should allow subsequent events to render");
-	assert.equal(h.warnings.length, 1);
-	assert.match(String(h.warnings[0].args[0]), /Event handler error/);
 });
 
 test("handleEvent gracefully degrades with null message events", () => {

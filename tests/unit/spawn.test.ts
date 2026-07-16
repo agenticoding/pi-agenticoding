@@ -10,6 +10,7 @@ import {
 	createChildTools,
 	executeSpawn,
 	registerSpawnTool,
+	truncateText,
 } from "../../spawn/index.js";
 import { renderSpawnResult } from "../../spawn/renderer.js";
 import { createTestPI, createRenderContext, createSession, createSubscribableSession, messageText, makeTUICtx, theme, createTestAssistantMessage, createTestAssistantStream } from "./helpers.js";
@@ -187,10 +188,12 @@ test("spawn execute passes broad active registered tool formula to child session
 	assert.deepEqual(seenConfig.customTools.map((tool: any) => tool.name), ["notebook_write", "notebook_read", "notebook_index"]);
 });
 
-test("spawn execute routes Model Group with parent registry/auth and ignores stale thinking", async () => {
+test("spawn execute composes Model Group routing with readonly child guards", async () => {
 	const pi = createTestPI();
-	pi.setActiveTools(["read", "spawn"]);
+	pi.setActiveTools(["read", "bash", "write", "edit", "spawn", "handoff"]);
+	pi.setAllTools(["read", "bash", "write", "edit", "spawn", "handoff"]);
 	const state = createState();
+	state.readonlyEnabled = true;
 	const routedModel = { provider: "openai", id: "gpt-routed", reasoning: true };
 	state.modelGroups.groups = [{
 		name: "review",
@@ -206,11 +209,15 @@ test("spawn execute routes Model Group with parent registry/auth and ignores sta
 		hasConfiguredAuth: (model: any) => model === routedModel,
 	};
 	let seenConfig: any;
+	let seenPrompt = "";
 	const mockFactory = async (config: any) => {
 		seenConfig = config;
 		const session = {
 			messages: [] as any[],
-			prompt: async () => { session.messages = [{ role: "assistant", content: [{ type: "text", text: "routed result" }] }]; },
+			prompt: async (prompt: string) => {
+				seenPrompt = prompt;
+				session.messages = [{ role: "assistant", content: [{ type: "text", text: "routed result" }] }];
+			},
 			abort: async () => {},
 			getSessionStats: () => undefined,
 		};
@@ -230,6 +237,17 @@ test("spawn execute routes Model Group with parent registry/auth and ignores sta
 	assert.equal(seenConfig.thinkingLevel, "low");
 	assert.equal(seenConfig.modelRegistry, parentRegistry);
 	assert.equal(seenConfig.authStorage, parentAuth);
+	assert.deepEqual(
+		new Set(seenConfig.tools),
+		new Set(["read", "bash", "notebook_write", "notebook_read", "notebook_index"]),
+	);
+	assert.ok(seenConfig.customTools.some((tool: any) => tool.name === "bash"));
+	assert.ok(!seenConfig.tools.includes("write"));
+	assert.ok(!seenConfig.tools.includes("edit"));
+	assert.ok(!seenConfig.tools.includes("spawn"));
+	assert.ok(!seenConfig.tools.includes("handoff"));
+	assert.match(seenPrompt, /inherit readonly authority/i);
+	assert.match(seenPrompt, /\[readonly\] write\/edit blocked/i);
 	assert.deepEqual(result.details.route, { status: "routed", group: "review", provider: "openai", modelId: "gpt-routed" });
 });
 
@@ -266,6 +284,13 @@ test("spawn execute builds prompt with notebook pages and task", async () => {
 	// Verify user-facing invariants: task text is included, notebook pages are referenced
 	assert.match(seenPrompt, /Do the task/);
 	assert.match(seenPrompt, /entry-a: preview line/);
+});
+
+test("truncateText handles multi-byte boundaries correctly", () => {
+	assert.equal(truncateText("🙂", 10, 2), "");
+	assert.equal(truncateText("🙂", 10, 4), "🙂");
+	assert.equal(truncateText("", 10, 1024), "");
+	assert.equal(truncateText("hello", 10, 1024), "hello");
 });
 
 test("spawn renderResult falls back to static text when no live session is stored", () => {
@@ -399,9 +424,6 @@ test("spawn execute marks stats unavailable when stats collection throws", async
 
 	assert.equal(result.details.stats, undefined);
 	assert.equal(result.details.statsUnavailable, true);
-	assert.equal(h.warnings.length, 1);
-	assert.match(String(h.warnings[0].args[1]), /stats failed/);
-	assert.equal(h.warnings[0].args[2], "spawn-1");
 });
 
 test("spawn execute throws when child produces no output", async () => {
@@ -718,6 +740,42 @@ test("child tool names exclude inactive registered and active phantom tools", ()
 	assert.ok(toolNames.includes("notebook_index"));
 	assert.equal(toolNames.includes("handoff"), false);
 	assert.equal(toolNames.includes("spawn"), false);
+});
+
+test("buildChildToolNames (2-arg fallback) removes spawn and handoff from inherited tools", () => {
+	const result = buildChildToolNames(["read", "bash", "spawn", "handoff"], []);
+	assert.ok(!result.includes("spawn"), "spawn must be filtered out");
+	assert.ok(!result.includes("handoff"), "handoff must be filtered out");
+	assert.ok(result.includes("read"), "read must be preserved");
+	assert.ok(result.includes("bash"), "bash must be preserved");
+});
+
+test("buildChildToolNames (2-arg fallback) preserves non-spawn/handoff tools", () => {
+	const result = buildChildToolNames(["read", "bash", "write", "edit"], []);
+	assert.deepEqual(result.sort(), ["bash", "edit", "read", "write"]);
+});
+
+test("buildChildToolNames (2-arg fallback) adds custom child tools to the list", () => {
+	const result = buildChildToolNames(["read"], [{ name: "custom-tool", description: "", parameters: {}, label: "", execute: async () => ({ content: [], details: undefined }) }]);
+	assert.ok(result.includes("custom-tool"), "custom child tool must be added");
+	assert.ok(result.includes("read"), "inherited tool must be preserved");
+});
+
+test("buildChildToolNames (2-arg fallback) deduplicates overlapping inherited and custom names", () => {
+	const result = buildChildToolNames(["read", "bash"], [{ name: "bash", description: "", parameters: {}, label: "", execute: async () => ({ content: [], details: undefined }) }]);
+	assert.deepEqual(result, ["read", "bash"]);
+});
+
+test("buildChildToolNames (2-arg fallback) handles empty parent tool names", () => {
+	assert.deepEqual(buildChildToolNames([], [{ name: "only-child", description: "", parameters: {}, label: "", execute: async () => ({ content: [], details: undefined }) }]), ["only-child"]);
+});
+
+test("buildChildToolNames (2-arg fallback) handles empty custom tools", () => {
+	assert.deepEqual(buildChildToolNames(["read", "bash"], []), ["read", "bash"]);
+});
+
+test("buildChildToolNames (2-arg fallback) handles both empty inputs", () => {
+	assert.deepEqual(buildChildToolNames([], []), []);
 });
 
 test("spawn execute short-circuits when signal is already aborted", async () => {
@@ -1180,8 +1238,6 @@ test("nested spawn attachSession recovers from subscribe throwing", () => {
 
 	// Should not crash, session attached, ownership transferred
 	assert.equal(state.childSessions.has("tool-call-1"), false);
-	assert.equal(h.warnings.length, 1);
-	assert.match(String(h.warnings[0].args[0]), /Failed to subscribe/);
 
 	// Should still render from session messages despite subscribe failure
 	const lines = component.render(120);

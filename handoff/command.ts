@@ -6,6 +6,12 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { HANDOFF_REQUESTED_STATUS, HANDOFF_REQUIRED_STATUS } from "./copy.js";
+import { isHandoffEligible } from "./eligibility.js";
+import {
+	READONLY_HANDOFF_EXCEPTION_NOTIFICATION,
+	buildReadonlyHandoffCommandNotice,
+} from "../readonly-copy.js";
 import type { AgenticodingState } from "../state.js";
 import { STATUS_KEY_HANDOFF } from "../tui.js";
 
@@ -22,22 +28,42 @@ export function registerHandoffCommand(pi: ExtensionAPI, state: AgenticodingStat
 				return;
 			}
 
+			if (state.handoffCompactionGeneration !== null) {
+				throw new Error("Handoff compaction already in progress; wait for it to complete before requesting another handoff.");
+			}
+			// Invalidate queued work from an earlier request before replacing its intent.
+			state.handoffGeneration++;
+			state.pendingHandoff = null;
 			state.pendingRequestedHandoff = {
-				direction,
-				enforcementAttempts: 0,
 				toolCalled: false,
+				resumeReadonlyAfterHandoff: state.readonlyEnabled,
+				enforcementAttempts: 0,
 			};
 
-			// Show live progress indicator in footer
-			if (ctx.hasUI && ctx.ui.theme) {
-				ctx.ui.setStatus(
-					STATUS_KEY_HANDOFF,
-					ctx.ui.theme.fg("accent", "\uD83E\uDD1D Handoff in progress"),
+			if (ctx.hasUI && state.readonlyEnabled) {
+				ctx.ui.notify(
+					READONLY_HANDOFF_EXCEPTION_NOTIFICATION,
+					"info",
 				);
 			}
 
+			// Show live progress indicator in footer
+			if (ctx.hasUI && ctx.ui.theme) {
+				const status = isHandoffEligible(ctx.getContextUsage())
+					? HANDOFF_REQUIRED_STATUS
+					: HANDOFF_REQUESTED_STATUS;
+				ctx.ui.setStatus(
+					STATUS_KEY_HANDOFF,
+					ctx.ui.theme.fg("accent", status),
+				);
+			}
+
+			const readonlyNotice = state.readonlyEnabled
+				? buildReadonlyHandoffCommandNotice()
+				: "\n\nA real handoff is required in the current session. Do not continue normal work instead.";
+
 			pi.sendUserMessage(
-				`Handoff direction: ${direction}\n\nPrepare a handoff in the current session. First, save any durable reusable knowledge that aligns with the direction above to the notebook: findings worth keeping, constraints discovered, decisions made, or other grounding future contexts will need. Then draft a concise but sufficiently detailed handoff brief capturing only the remaining situational context: current state, blockers, unresolved questions, failed paths worth avoiding, and next steps. The next context will read the notebook on demand, so do not duplicate notebook content in the brief. Use any structure that makes the next work unambiguous. Reference notebook pages by name when relevant.`,
+				`Handoff direction: ${direction}\n\nPrepare a handoff in the current session now. First, save any durable reusable knowledge that aligns with the direction above to the notebook: findings worth keeping, constraints discovered, decisions made, or other grounding future contexts will need. Then draft a concise but sufficiently detailed handoff brief capturing only the remaining situational context: current state, blockers, unresolved questions, failed paths worth avoiding, and next steps. The next context will read the notebook on demand, so do not duplicate notebook content in the brief. Use any structure that makes the next work unambiguous. Reference notebook pages by name when relevant.${readonlyNotice}`,
 				ctx.isIdle() ? undefined : { deliverAs: "followUp" },
 			);
 		},

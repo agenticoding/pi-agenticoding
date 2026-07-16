@@ -42,6 +42,7 @@ export function registerNotebookRehydration(
 
 		for (let i = branch.length - 1; i >= 0; i--) {
 			const entry = branch[i];
+			if (!entry || typeof entry !== "object") continue;
 
 			if (
 				entry.type !== "custom" ||

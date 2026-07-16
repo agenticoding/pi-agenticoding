@@ -164,6 +164,19 @@ test("before_agent_start injects fresh names-only Model Groups guidance", async 
 	assert.doesNotMatch(result.systemPrompt, /model-groups\.json/);
 }));
 
+test("before_agent_start clears stale Model Groups guidance when registry becomes unavailable", async () => withTemp(async ({ cwd }) => {
+	fs.mkdirSync(path.dirname(modelGroupsPath("project", cwd)), { recursive: true });
+	fs.writeFileSync(modelGroupsPath("project", cwd), JSON.stringify({ version: 1, groups: { review: { models: [{ provider: "openai", modelId: "gpt-5" }] } } }), "utf8");
+	const pi = createTestPI();
+	registerAgenticoding(pi as any);
+	const handler = pi.handlers.get("before_agent_start")!.at(-1)!;
+	const loaded = await handler({ systemPrompt: "Base." }, { hasUI: false, isProjectTrusted: () => true, cwd, modelRegistry: registry(), getContextUsage: () => null });
+	assert.match(loaded.systemPrompt, /Available Model Groups: review/);
+
+	const unavailable = await handler({ systemPrompt: "Base." }, { hasUI: false, isProjectTrusted: () => true, cwd, modelRegistry: undefined, getContextUsage: () => null });
+	assert.doesNotMatch(unavailable.systemPrompt, /## Model Groups for spawn|Available Model Groups: review/);
+}));
+
 test("session_start registers Model Groups autocomplete provider when UI supports it", async () => withTemp(async ({ cwd }) => {
 	const pi = createTestPI();
 	registerAgenticoding(pi as any);

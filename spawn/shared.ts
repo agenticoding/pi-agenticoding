@@ -1,4 +1,4 @@
-export type ThinkingValue = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+export type ThinkingValue = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 export type SpawnOutcome = "running" | "success" | "aborted" | "error";
 
 export type SpawnRouteDetails =

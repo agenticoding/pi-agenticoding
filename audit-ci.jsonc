@@ -1,0 +1,7 @@
+{
+  "$schema": "https://github.com/IBM/audit-ci/raw/main/docs/schema.json",
+  "moderate": true,
+  // Pi 0.80.7's resolved graph is currently clean at moderate severity and above.
+  // Keep this explicit so future advisories fail CI until reviewed.
+  "allowlist": []
+}
