@@ -42,6 +42,10 @@ Then disable pi's built-in compaction so handoff stays in control:
 
 That's it. Your agent now has `spawn`, `notebook_write`, `notebook_read`, `notebook_index`, and `handoff`. The status bar shows context usage and notebook count.
 
+### Compatibility
+
+pi-agenticoding requires **Pi 0.80.8 or later** and **Node.js 22.19.0 or later**. Spawn passes Pi's already-selected public model into a child-owned runtime. Persisted, environment-based, and extension-rediscoverable provider/auth configuration is available to children; parent-only transient credentials, inline provider factories, or in-memory catalog changes are not guaranteed to be rediscoverable. In that unsupported case, spawn reports the child resolution/auth failure and does not silently select another model.
+
 ---
 
 ## What You Get
@@ -104,7 +108,7 @@ The agent decided to spawn research children, save reusable findings to the note
 
 ### Spawn — Isolate Noise
 
-Delegate messy work to an isolated child agent with clean context. The child inherits the parent's model, thinking level, cwd, and active registered tools executable in the child session, including MCP/extension tools such as ChunkHound when they are active and registered. Child-local notebook tools remain available, but children cannot spawn grandchildren or handoff. Siblings run in parallel; the parent stays focused on orchestration.
+Delegate messy work to an isolated child agent with clean context. The child inherits the parent's already-selected public model, thinking level (including `max`), cwd, and active registered tools executable in the child session, including MCP/extension tools such as ChunkHound when they are active and registered. Child-local notebook tools remain available, but children cannot spawn grandchildren or handoff. Each child owns an isolated in-memory session that spawn disposes when execution ends. Siblings run in parallel; the parent stays focused on orchestration.
 
 ### Notebook — Continuity Across Cuts
 

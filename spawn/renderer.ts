@@ -299,8 +299,8 @@ export class SpawnFrameScheduler {
 		const batch = [...this.dirtyComponents];
 		this.dirtyComponents.clear();
 
-		const requestRenders = new Set<() => void>();
-		const failed: SpawnFrameTarget[] = [];
+		const requestRenders = new Map<() => void, Set<SpawnFrameTarget>>();
+		const failed = new Set<SpawnFrameTarget>();
 
 		for (const component of batch) {
 			try {
@@ -310,27 +310,39 @@ export class SpawnFrameScheduler {
 				component.clearRenderCache();
 				// 3. Collect TUI invalidate
 				const r = component.flushScheduledRender();
-				if (r) requestRenders.add(r);
-			} catch (e) {
-				// Component failed during flush — re-queue for next frame.
-				// The error is logged but we continue processing remaining components.
-				console.error("[spawn] flush error on component:", e);
-				failed.push(component);
+				if (r) {
+					const targets = requestRenders.get(r) ?? new Set<SpawnFrameTarget>();
+					targets.add(component);
+					requestRenders.set(r, targets);
+				}
+			} catch {
+				// Component failed during flush — re-queue for the next frame while
+				// remaining components continue. Do not write diagnostics: stdout/stderr
+				// corrupts Pi's TUI and this scheduler has no ExtensionContext UI seam.
+				failed.add(component);
 			}
 		}
 
-		// Re-queue failed components for recovery on next frame
+		// One invalidate per distinct callback per frame tick. A component-provided
+		// callback remains inside the same recovery boundary as its target methods.
+		for (const [requestRender, targets] of requestRenders) {
+			try {
+				requestRender();
+			} catch {
+				for (const component of targets) failed.add(component);
+			}
+		}
+
+		// Re-queue failed components directly, then schedule exactly one recovery
+		// frame. Calling markDirty() here would create a timer that this method could
+		// overwrite below, leaving an untracked callback behind.
 		for (const component of failed) {
-			getSingletons().frameScheduler.markDirty(component);
+			this.dirtyComponents.add(component);
 		}
 
-		// One invalidate per distinct callback per frame tick.
-		for (const requestRender of requestRenders) {
-			requestRender();
-		}
-
-		// If more components were dirtied during flush, schedule another frame
-		if (this.dirtyComponents.size > 0) {
+		// If more components were dirtied during flush, schedule another frame.
+		// A callback may already have called markDirty(), so retain that timer.
+		if (this.dirtyComponents.size > 0 && !this.frameTimer) {
 			this.frameTimer = setTimeout(() => this.flush(), this.frameMs);
 		}
 	}

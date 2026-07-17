@@ -85,8 +85,6 @@ export function createDeferred() {
 	return { promise, resolve };
 }
 
-type Handler = (args: any, ctx: any) => any;
-
 export function createTestPI() {
 	const _handlers = new Map<string, any[]>();
 	const _tools = new Map<string, any>();
@@ -163,6 +161,7 @@ export function createTestPI() {
 		},
 		getFlag: (name: string) => _flags.get(name),
 		registerMessageRenderer: () => {},
+		registerEntryRenderer: () => {},
 		setLabel: () => {},
 		unregisterProvider: () => {},
 		events: { on: () => () => {}, emit: () => {} } as import("@earendil-works/pi-coding-agent").EventBus,
@@ -193,8 +192,6 @@ type _TestPICoversExtensionAPI = typeof createTestPI extends () => import("@eare
 const _testPIVerified: _TestPICoversExtensionAPI = true;
 
 // ── Readonly test helpers ────────────────────────────────────────────
-
-import type registerAgenticodingType from "../../index.js"; // type-only re-export for clients
 
 export type ToolCall = (event: { toolName: string; input?: Record<string, unknown> }, ctx: { cwd?: string }) => Promise<any>;
 
@@ -252,43 +249,6 @@ export async function withTempHome<T>(run: (homeDir: string) => Promise<T>): Pro
 		}
 		await rm(homeDir, { recursive: true, force: true });
 	}
-}
-
-export const EMPTY_USAGE = {
-	input: 0,
-	output: 0,
-	cacheRead: 0,
-	cacheWrite: 0,
-	totalTokens: 0,
-	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-};
-
-export function createTestAssistantMessage(model: any, content: any[], stopReason = "stop") {
-	return {
-		role: "assistant",
-		content,
-		api: model.api,
-		provider: model.provider,
-		model: model.id,
-		usage: EMPTY_USAGE,
-		stopReason,
-		timestamp: Date.now(),
-	};
-}
-
-export function createTestAssistantStream(message: any): any {
-	return {
-		async *[Symbol.asyncIterator]() {
-			yield { type: "done", reason: message.stopReason, message };
-		},
-		result: async () => message,
-	};
-}
-
-export function messageText(message: any): string {
-	return (message.content ?? [])
-		.map((block: any) => block.type === "text" ? block.text : JSON.stringify(block))
-		.join("\n");
 }
 
 // ── TUI context factory ───────────────────────────────────────────────

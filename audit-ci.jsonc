@@ -2,18 +2,9 @@
   "$schema": "https://github.com/IBM/audit-ci/raw/main/docs/schema.json",
   "moderate": true,
   "allowlist": [
-    // Upstream: pi-coding-agent ships a shrinkwrap that pins vulnerable transitive
-    // deps (ws, protobufjs, undici). The fix must happen in pi-coding-agent itself
-    // — nothing to do from this extension.
-    { "GHSA-96hv-2xvq-fx4p": { "active": true, "expiry": "2026-09-01", "notes": "ws <8.21.0 via pi-coding-agent shrinkwrap" } },
-    { "GHSA-f38q-mgvj-vph7": { "active": true, "expiry": "2026-09-01", "notes": "protobufjs <=7.6.2 via pi-coding-agent shrinkwrap" } },
-    { "GHSA-wcpc-wj8m-hjx6": { "active": true, "expiry": "2026-09-01", "notes": "protobufjs <=7.6.0 via pi-coding-agent shrinkwrap" } },
-    { "GHSA-vmh5-mc38-953g|@earendil-works/pi-coding-agent>undici": { "active": true, "expiry": "2026-09-01", "notes": "undici 8.x via pi-coding-agent shrinkwrap" } },
-    { "GHSA-pr7r-676h-xcf6|@earendil-works/pi-coding-agent>undici": { "active": true, "expiry": "2026-09-01", "notes": "undici 8.x via pi-coding-agent shrinkwrap" } },
-    { "GHSA-38rv-x7px-6hhq|@earendil-works/pi-coding-agent>undici": { "active": true, "expiry": "2026-09-01", "notes": "undici 8.x via pi-coding-agent shrinkwrap" } },
-    { "GHSA-p88m-4jfj-68fv|@earendil-works/pi-coding-agent>undici": { "active": true, "expiry": "2026-09-01", "notes": "undici 8.x via pi-coding-agent shrinkwrap" } },
-    { "GHSA-vxpw-j846-p89q|@earendil-works/pi-coding-agent>undici": { "active": true, "expiry": "2026-09-01", "notes": "undici 8.x via pi-coding-agent shrinkwrap" } }
-    // Low-severity undici advisories (GHSA-35p6-xmwp-9g52, GHSA-g8m3-5g58-fq7m) are
-    // not allowlisted — the config gates moderate+ only, so they don't block CI.
+    // npm's audit report exposes this hoisted advisory as the module path
+    // `protobufjs`; a config invariant separately rejects any vulnerable
+    // protobufjs occurrence outside the exact Pi 0.80.8 development path.
+    { "GHSA-f38q-mgvj-vph7|protobufjs": { "active": true, "expiry": "2026-09-01", "notes": "protobufjs 7.6.1 only via @earendil-works/pi-ai > @google/genai in the exact Pi 0.80.8 development graph" } }
   ]
 }
