@@ -171,11 +171,33 @@ test("audit-ci config keeps an expiry-tracked advisory-module path allowlist", (
 });
 
 test("the allowlisted vulnerable protobufjs path is reachable only through the exact Pi floor graph", () => {
-	const result = spawnSync("npm", ["ls", "protobufjs", "--all", "--json"], {
-		cwd: REPO_ROOT,
-		encoding: "utf8",
-	});
-	assert.equal(result.status, 0, result.stderr || result.stdout);
+	const npmArgs = ["ls", "protobufjs", "--all", "--json"];
+	const npmExecPath = process.env.npm_execpath;
+	const invocation = npmExecPath
+		? [process.execPath, npmExecPath, ...npmArgs].join(" ")
+		: "npm ls protobufjs --all --json";
+	const result = npmExecPath
+		? spawnSync(process.execPath, [npmExecPath, ...npmArgs], {
+				cwd: REPO_ROOT,
+				encoding: "utf8",
+			})
+		: spawnSync("npm ls protobufjs --all --json", {
+				cwd: REPO_ROOT,
+				encoding: "utf8",
+				shell: true,
+			});
+	const diagnostics = [
+		`invocation: ${invocation}`,
+		`error.stack: ${result.error?.stack ?? "none"}`,
+		`status: ${String(result.status)}`,
+		`signal: ${String(result.signal)}`,
+		`stdout:\n${result.stdout}`,
+		`stderr:\n${result.stderr}`,
+	].join("\n");
+
+	assert.equal(result.error, undefined, diagnostics);
+	assert.equal(result.signal, null, diagnostics);
+	assert.equal(result.status, 0, diagnostics);
 	const vulnerablePaths = collectPackagePaths(JSON.parse(result.stdout), "protobufjs")
 		.filter(({ version }) => isVulnerableProtobufVersion(version));
 	assert.deepEqual(vulnerablePaths, [{

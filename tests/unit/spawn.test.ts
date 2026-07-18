@@ -1,6 +1,7 @@
 import test, { afterEach, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import { createState, resetState } from "../../state.js";
 import {
 	buildChildToolNames,
@@ -36,6 +37,7 @@ test("spawn execute passes broad active registered tool formula to child session
 	pi.setActiveTools(["read", "bash", "spawn", "handoff", "project_search", "phantom_tool"]);
 	pi.setAllTools(["read", "bash", "spawn", "handoff", "project_search", "inactive_registered"]);
 	const state = createState();
+	const requestedCwd = "/tmp";
 
 	let seenConfig: any;
 	const mockFactory = async (config: any) => {
@@ -58,13 +60,17 @@ test("spawn execute passes broad active registered tool formula to child session
 		{ prompt: "Do the task", thinking: "high" },
 		undefined,
 		undefined,
-		{ model: { id: "mock-model" }, cwd: "/tmp" },
+		{ model: { id: "mock-model" }, cwd: requestedCwd },
 	);
 
 	assert.equal(seenConfig.model.id, "mock-model");
 	assert.equal(seenConfig.thinkingLevel, "high");
-	assert.equal(seenConfig.cwd, "/tmp");
-	assert.equal(seenConfig.sessionManager.getCwd(), "/tmp", "child session manager uses ctx.cwd");
+	assert.equal(seenConfig.cwd, requestedCwd);
+	assert.equal(
+		seenConfig.sessionManager.getCwd(),
+		resolve(requestedCwd),
+		"child session manager resolves ctx.cwd through Pi's native path semantics",
+	);
 	assert.equal(seenConfig.sessionManager.isPersisted(), false, "child transcript remains in-memory and isolated");
 	assert.equal(seenConfig.sessionManager.getSessionFile(), undefined, "child transcript has no parent session file");
 	assert.deepEqual(seenConfig.sessionManager.getEntries(), [], "child transcript starts independently empty");

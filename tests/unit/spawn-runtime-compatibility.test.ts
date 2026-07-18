@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { Value } from "typebox/value";
 import { createState } from "../../state.js";
 import { executeSpawn, registerSpawnTool } from "../../spawn/index.js";
@@ -157,6 +157,7 @@ test("spawn accepts max and forwards the public ctx.model unchanged", async () =
 	const pi = createTestPI();
 	const state = createState();
 	const model = { id: "selected-model", provider: "selected-provider" };
+	const requestedCwd = "/tmp";
 	let options: any;
 	const session = {
 		messages: [] as any[],
@@ -175,10 +176,14 @@ test("spawn accepts max and forwards the public ctx.model unchanged", async () =
 	const schemaText = JSON.stringify(tool.parameters);
 	assert.match(schemaText, /max/);
 	assert.equal(Value.Check(tool.parameters, { prompt: "work" }), true, "registered schema accepts inherited/default thinking");
-	await tool.execute("spawn-max", { prompt: "work", thinking: "max" }, undefined, undefined, { model, cwd: "/tmp" });
+	await tool.execute("spawn-max", { prompt: "work", thinking: "max" }, undefined, undefined, {
+		model,
+		cwd: requestedCwd,
+	});
 	assert.equal(options.model, model);
 	assert.equal(options.thinkingLevel, "max");
-	assert.equal(options.sessionManager.getCwd(), "/tmp");
+	assert.equal(options.cwd, requestedCwd);
+	assert.equal(options.sessionManager.getCwd(), resolve(requestedCwd));
 });
 
 test("selected-model creation failure remains authoritative and never attempts a fallback model", async () => {
