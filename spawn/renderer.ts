@@ -237,10 +237,16 @@ function formatCollapsedStats(details: SpawnResultDetails): { text: string; colo
  * Minimal interface the frame scheduler needs from a component.
  * Lets the scheduler batch without importing the full class.
  */
+interface ScheduledSpawnRender {
+	requestRender: () => void;
+	/** Restore the consumed request only when it is still current. */
+	restoreAfterFailure: () => boolean;
+}
+
 interface SpawnFrameTarget {
 	flushPendingUpdates(): void;
 	clearRenderCache(): void;
-	flushScheduledRender(): (() => void) | undefined;
+	flushScheduledRender(): ScheduledSpawnRender | undefined;
 }
 
 // ── Frame-based render scheduler ────────────────────────────────────
@@ -299,7 +305,7 @@ export class SpawnFrameScheduler {
 		const batch = [...this.dirtyComponents];
 		this.dirtyComponents.clear();
 
-		const requestRenders = new Map<() => void, Set<SpawnFrameTarget>>();
+		const requestRenders = new Map<() => void, Map<SpawnFrameTarget, () => boolean>>();
 		const failed = new Set<SpawnFrameTarget>();
 
 		for (const component of batch) {
@@ -308,12 +314,13 @@ export class SpawnFrameScheduler {
 				component.flushPendingUpdates();
 				// 2. Invalidate render cache so render() recomputes on next TUI paint
 				component.clearRenderCache();
-				// 3. Collect TUI invalidate
-				const r = component.flushScheduledRender();
-				if (r) {
-					const targets = requestRenders.get(r) ?? new Set<SpawnFrameTarget>();
-					targets.add(component);
-					requestRenders.set(r, targets);
+				// 3. Collect TUI invalidate and its component-owned recovery operation
+				const scheduled = component.flushScheduledRender();
+				if (scheduled) {
+					const targets = requestRenders.get(scheduled.requestRender)
+						?? new Map<SpawnFrameTarget, () => boolean>();
+					targets.set(component, scheduled.restoreAfterFailure);
+					requestRenders.set(scheduled.requestRender, targets);
 				}
 			} catch {
 				// Component failed during flush — re-queue for the next frame while
@@ -323,13 +330,15 @@ export class SpawnFrameScheduler {
 			}
 		}
 
-		// One invalidate per distinct callback per frame tick. A component-provided
-		// callback remains inside the same recovery boundary as its target methods.
+		// One invalidate per distinct callback per frame tick. If it fails, let each
+		// component restore only the render request that was consumed for this frame.
 		for (const [requestRender, targets] of requestRenders) {
 			try {
 				requestRender();
 			} catch {
-				for (const component of targets) failed.add(component);
+				for (const [component, restoreAfterFailure] of targets) {
+					if (restoreAfterFailure()) failed.add(component);
+				}
 			}
 		}
 
@@ -461,10 +470,11 @@ class NestedAgentSessionComponent extends Container implements SpawnFrameTarget 
 	 * Returns the TUI invalidate function if this component has work pending.
 	 * Also detects stale sessions and triggers a full rebuild.
 	 */
-	flushScheduledRender(): (() => void) | undefined {
+	flushScheduledRender(): ScheduledSpawnRender | undefined {
 		if (!this.renderQueued || this.queuedRenderToken !== this.renderScheduleToken) {
 			return undefined;
 		}
+		const consumedToken = this.queuedRenderToken;
 		this.renderQueued = false;
 		this.queuedRenderToken = undefined;
 		if (this.isStaleSession()) {
@@ -473,7 +483,17 @@ class NestedAgentSessionComponent extends Container implements SpawnFrameTarget 
 			this.clearRenderCache();
 			return undefined;
 		}
-		return this.requestRender;
+		return {
+			requestRender: this.requestRender,
+			restoreAfterFailure: () => {
+				// A reset/dispose increments the token; a reentrant event queues a newer
+				// token. Neither may be overwritten by recovery of this consumed frame.
+				if (this.renderQueued || this.renderScheduleToken !== consumedToken) return false;
+				this.renderQueued = true;
+				this.queuedRenderToken = consumedToken;
+				return true;
+			},
+		};
 	}
 
 	setRequestRender(requestRender: () => void): void {
