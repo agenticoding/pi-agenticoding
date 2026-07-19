@@ -132,14 +132,14 @@ test("exact Pi floor real child completes through inherited/default thinking", a
 	assert.deepEqual(proof.outboundFetches, [], "offline real-child fixture attempted an outbound fetch");
 });
 
-test("exact Pi floor real child preserves selected identity and max thinking", async () => {
+test("exact Pi floor real child preserves selected identity and reports effective thinking", async () => {
 	const proof = await runRealChildInvocation({
 		prompt: "Use the agentic_e2e_probe tool and return AGENTIC_E2E_PROBE_OK.",
 		thinking: "max",
 	});
 	assert.equal(proof.result.content[0].text, proof.expectedText);
 	assert.equal(proof.result.details.model, proof.modelId);
-	assert.equal(proof.result.details.thinking, "max");
+	assert.equal(proof.result.details.thinking, "off", "non-reasoning model clamps requested max to off");
 	assert.equal(proof.probeCalls, 1);
 	assert.equal(proof.streamCalls, 2);
 	assert.deepEqual(proof.outboundFetches, [], "offline real-child fixture attempted an outbound fetch");

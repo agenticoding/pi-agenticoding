@@ -286,7 +286,7 @@ export function executeSpawn(
 		throw new Error("No model configured. Cannot spawn child agent.");
 	}
 
-	const childThinking: ThinkingValue = params.thinking ?? defaultThinking;
+	const requestedChildThinking: ThinkingValue = params.thinking ?? defaultThinking;
 
 	const listing = formatPageList(state);
 	const notebookListing = listing
@@ -336,11 +336,15 @@ export function executeSpawn(
 	const { session } = await sessionFactory({
 		sessionManager: SessionManager.inMemory(ctx.cwd),
 		model: childModel,
-		thinkingLevel: childThinking,
+		thinkingLevel: requestedChildThinking,
 		cwd: ctx.cwd,
 		tools: effectiveToolNames,
 		customTools: effectiveChildTools,
 	});
+	// Pi clamps unsupported requested levels during session creation. Report the
+	// public session value so child details describe what actually runs. The
+	// fallback keeps intentionally partial session test doubles compatible.
+	const effectiveChildThinking = () => session.thinkingLevel ?? requestedChildThinking;
 
 	const invalidatedError = new Error("Spawn invalidated by reset.");
 	let wasAborted = false;
@@ -398,7 +402,7 @@ export function executeSpawn(
 			content: [],
 			details: {
 				model: childModel.id,
-				thinking: childThinking,
+				thinking: effectiveChildThinking(),
 				truncated: false,
 				outcome: "running",
 			} satisfies SpawnResultDetails,
@@ -470,7 +474,7 @@ export function executeSpawn(
 
 	const details: SpawnResultDetails = {
 		model: childModel.id,
-		thinking: childThinking,
+		thinking: effectiveChildThinking(),
 		truncated,
 		outcome,
 	};

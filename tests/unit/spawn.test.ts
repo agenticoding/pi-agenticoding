@@ -81,6 +81,41 @@ test("spawn execute passes broad active registered tool formula to child session
 	assert.deepEqual(seenConfig.customTools.map((tool: any) => tool.name), ["notebook_write", "notebook_read", "notebook_index"]);
 });
 
+test("spawn forwards requested thinking and reports the session effective thinking", async () => {
+	const pi = createTestPI();
+	pi.setActiveTools(["read", "spawn"]);
+	const state = createState();
+	const updates: any[] = [];
+	let seenConfig: any;
+	const session = {
+		messages: [] as any[],
+		get thinkingLevel() { return "off" as const; },
+		prompt: async () => {
+			session.messages = [{ role: "assistant", content: [{ type: "text", text: "child result" }] }];
+		},
+		abort: async () => {},
+		dispose: () => {},
+		getSessionStats: () => undefined,
+	};
+
+	registerSpawnTool(pi as any, state, (async (config: any) => {
+		seenConfig = config;
+		return { session: session as any };
+	}) as any);
+
+	const result = await pi.tools.get("spawn").execute(
+		"spawn-effective-thinking",
+		{ prompt: "Do the task", thinking: "max" },
+		undefined,
+		(update: any) => updates.push(update),
+		{ model: { id: "non-reasoning-model", reasoning: false }, cwd: "/tmp" },
+	);
+
+	assert.equal(seenConfig.thinkingLevel, "max", "requested thinking is forwarded unchanged");
+	assert.equal(updates[0].details.thinking, "off", "running details report Pi's effective thinking");
+	assert.equal(result.details.thinking, "off", "final details report Pi's effective thinking");
+});
+
 test("spawn execute builds prompt with notebook pages and task", async () => {
 	const pi = createTestPI();
 	pi.setActiveTools(["read", "bash", "spawn"]);

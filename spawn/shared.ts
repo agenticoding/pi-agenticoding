@@ -3,6 +3,7 @@ export type SpawnOutcome = "running" | "success" | "aborted" | "error";
 
 export type SpawnResultDetails = {
 	model: string;
+	/** Effective child-session level after Pi applies model capability clamping. */
 	thinking: ThinkingValue;
 	truncated: boolean;
 	outcome: SpawnOutcome;
