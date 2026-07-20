@@ -32,6 +32,7 @@ import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import type { Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
 import { Container, Spacer, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { TUI } from "@earendil-works/pi-tui";
+import { escapeDisplayLabel } from "../model-groups/display.js";
 import type { AgenticodingState } from "../state.js";
 import {
 	__setSingletons,
@@ -173,12 +174,18 @@ function equalRoute(a: SpawnResultDetails["route"], b: SpawnResultDetails["route
 
 function formatSpawnIdentity(details: Pick<SpawnResultDetails, "model" | "thinking" | "route">): string {
 	if (details.route?.status === "routed") {
-		return `${details.route.group} → ${details.route.provider}/${details.route.modelId} • ${details.thinking}`;
+		const group = escapeDisplayLabel(details.route.group);
+		const provider = escapeDisplayLabel(details.route.provider);
+		const modelId = escapeDisplayLabel(details.route.modelId);
+		return `${group} → ${provider}/${modelId} • ${details.thinking}`;
 	}
 	if (details.route?.status === "unknown-fallback") {
-		return `${details.route.requestedGroup}? fallback → ${details.route.provider}/${details.route.modelId} • ${details.thinking}`;
+		const requestedGroup = escapeDisplayLabel(details.route.requestedGroup);
+		const provider = escapeDisplayLabel(details.route.provider);
+		const modelId = escapeDisplayLabel(details.route.modelId);
+		return `${requestedGroup}? fallback → ${provider}/${modelId} • ${details.thinking}`;
 	}
-	return `${details.model} • ${details.thinking}`;
+	return `${escapeDisplayLabel(details.model)} • ${details.thinking}`;
 }
 
 function padVisibleWidth(text: string, width: number): string {
@@ -251,10 +258,16 @@ function formatCollapsedStats(details: SpawnResultDetails): { text: string; colo
  * Minimal interface the frame scheduler needs from a component.
  * Lets the scheduler batch without importing the full class.
  */
+interface ScheduledSpawnRender {
+	requestRender: () => void;
+	/** Restore the consumed request only when it is still current. */
+	restoreAfterFailure: () => boolean;
+}
+
 interface SpawnFrameTarget {
 	flushPendingUpdates(): void;
 	clearRenderCache(): void;
-	flushScheduledRender(): (() => void) | undefined;
+	flushScheduledRender(): ScheduledSpawnRender | undefined;
 }
 
 // ── Frame-based render scheduler ────────────────────────────────────
@@ -313,8 +326,8 @@ export class SpawnFrameScheduler {
 		const batch = [...this.dirtyComponents];
 		this.dirtyComponents.clear();
 
-		const requestRenders = new Set<() => void>();
-		const failed: SpawnFrameTarget[] = [];
+		const requestRenders = new Map<() => void, Map<SpawnFrameTarget, () => boolean>>();
+		const failed = new Set<SpawnFrameTarget>();
 
 		for (const component of batch) {
 			try {
@@ -322,29 +335,44 @@ export class SpawnFrameScheduler {
 				component.flushPendingUpdates();
 				// 2. Invalidate render cache so render() recomputes on next TUI paint
 				component.clearRenderCache();
-				// 3. Collect TUI invalidate
-				const r = component.flushScheduledRender();
-				if (r) requestRenders.add(r);
-			} catch (e) {
-				// Component failed during flush — re-queue for next frame.
-				// The error is logged but we continue processing remaining components.
-				console.error("[spawn] flush error on component:", e);
-				failed.push(component);
+				// 3. Collect TUI invalidate and its component-owned recovery operation
+				const scheduled = component.flushScheduledRender();
+				if (scheduled) {
+					const targets = requestRenders.get(scheduled.requestRender)
+						?? new Map<SpawnFrameTarget, () => boolean>();
+					targets.set(component, scheduled.restoreAfterFailure);
+					requestRenders.set(scheduled.requestRender, targets);
+				}
+			} catch {
+				// Component failed during flush — re-queue for the next frame while
+				// remaining components continue. Do not write diagnostics: stdout/stderr
+				// corrupts Pi's TUI and this scheduler has no ExtensionContext UI seam.
+				failed.add(component);
 			}
 		}
 
-		// Re-queue failed components for recovery on next frame
+		// One invalidate per distinct callback per frame tick. If it fails, let each
+		// component restore only the render request that was consumed for this frame.
+		for (const [requestRender, targets] of requestRenders) {
+			try {
+				requestRender();
+			} catch {
+				for (const [component, restoreAfterFailure] of targets) {
+					if (restoreAfterFailure()) failed.add(component);
+				}
+			}
+		}
+
+		// Re-queue failed components directly, then schedule exactly one recovery
+		// frame. Calling markDirty() here would create a timer that this method could
+		// overwrite below, leaving an untracked callback behind.
 		for (const component of failed) {
-			getSingletons().frameScheduler.markDirty(component);
+			this.dirtyComponents.add(component);
 		}
 
-		// One invalidate per distinct callback per frame tick.
-		for (const requestRender of requestRenders) {
-			requestRender();
-		}
-
-		// If more components were dirtied during flush, schedule another frame
-		if (this.dirtyComponents.size > 0) {
+		// If more components were dirtied during flush, schedule another frame.
+		// A callback may already have called markDirty(), so retain that timer.
+		if (this.dirtyComponents.size > 0 && !this.frameTimer) {
 			this.frameTimer = setTimeout(() => this.flush(), this.frameMs);
 		}
 	}
@@ -463,10 +491,11 @@ class NestedAgentSessionComponent extends Container implements SpawnFrameTarget 
 	 * Returns the TUI invalidate function if this component has work pending.
 	 * Also detects stale sessions and triggers a full rebuild.
 	 */
-	flushScheduledRender(): (() => void) | undefined {
+	flushScheduledRender(): ScheduledSpawnRender | undefined {
 		if (!this.renderQueued || this.queuedRenderToken !== this.renderScheduleToken) {
 			return undefined;
 		}
+		const consumedToken = this.queuedRenderToken;
 		this.renderQueued = false;
 		this.queuedRenderToken = undefined;
 		if (this.isStaleSession()) {
@@ -475,7 +504,17 @@ class NestedAgentSessionComponent extends Container implements SpawnFrameTarget 
 			this.clearRenderCache();
 			return undefined;
 		}
-		return this.requestRender;
+		return {
+			requestRender: this.requestRender,
+			restoreAfterFailure: () => {
+				// A reset/dispose increments the token; a reentrant event queues a newer
+				// token. Neither may be overwritten by recovery of this consumed frame.
+				if (this.renderQueued || this.renderScheduleToken !== consumedToken) return false;
+				this.renderQueued = true;
+				this.queuedRenderToken = consumedToken;
+				return true;
+			},
+		};
 	}
 
 	setRequestRender(requestRender: () => void): void {
@@ -1170,8 +1209,12 @@ function renderSpawnCall(args: any, theme: Theme, context: { expanded: boolean }
 	const prompt = typeof args.prompt === "string" ? args.prompt : "...";
 	const { shown, remaining } = renderPromptPreview(prompt, context.expanded);
 	let text = theme.fg("toolTitle", theme.bold("spawn ")) + theme.fg("accent", "child");
-	if (typeof args.group === "string" && args.group.trim()) {
-		text += theme.fg("dim", ` [${args.group.trim()}]`);
+	const group = typeof args.group === "string" ? args.group.trim() : "";
+	if (group) {
+		text += theme.fg("dim", ` [${escapeDisplayLabel(group)}]`);
+	}
+	if (!group && typeof args.thinking === "string") {
+		text += theme.fg("dim", ` [${args.thinking}]`);
 	}
 	text += `\n${theme.fg("dim", shown)}`;
 	if (remaining > 0) {

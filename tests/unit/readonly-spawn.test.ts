@@ -42,13 +42,17 @@ async function spawnWithCapture(
 	);
 }
 
-test("readonly spawn child prompt tells the child it inherits readonly authority", async () => {
+test("readonly spawn excludes mutating tools and tells the child it inherits readonly authority", async () => {
 	let prompt = "";
+	let childToolNames: string[] = [];
 
-	await spawnWithCapture(true, (_config, childPrompt) => {
+	await spawnWithCapture(true, (config, childPrompt) => {
 		prompt = childPrompt;
+		childToolNames = config.tools;
 	});
 
+	assert.equal(childToolNames.includes("write"), false);
+	assert.equal(childToolNames.includes("edit"), false);
 	assert.match(prompt, /inherit readonly authority/i);
 	assert.match(prompt, /\[readonly\] write\/edit blocked/i);
 	assert.match(prompt, /bash writes\/deletions outside temp blocked/i);

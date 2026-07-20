@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { createState } from "../../state.js";
 import { createSession, createSubscribableSession, createTestPI, createRenderContext, theme } from "./helpers.js";
 import { flushSpawnFrameScheduler } from "../../spawn/renderer.js";
+import { getSingletons } from "../../runtime-singletons.js";
 import { registerSpawnTool } from "../../spawn/index.js";
 import { createTestHarness, type TestHarness } from "../test-utils.js";
 
@@ -20,6 +21,113 @@ beforeEach(() => {
 
 afterEach(() => {
 	h.teardown();
+});
+
+test("test harness captures every forbidden console output level", () => {
+	for (const level of ["debug", "log", "warn", "error"] as const) {
+		globalThis.console[level](`sentinel-${level}`);
+	}
+	assert.deepEqual(h.warnings.map(({ level }) => level), ["debug", "log", "warn", "error"]);
+});
+
+test("frame scheduler requeues a throwing target without diagnostics and recovers", () => {
+	const scheduler = getSingletons().frameScheduler;
+	let failingFlushes = 0;
+	let failingRenders = 0;
+	let healthyFlushes = 0;
+	let healthyRenders = 0;
+	const failing = {
+		flushPendingUpdates() {
+			failingFlushes++;
+			if (failingFlushes === 1) throw new Error("throw once");
+		},
+		clearRenderCache() {},
+		flushScheduledRender() {
+			return { requestRender: () => { failingRenders++; }, restoreAfterFailure: () => true };
+		},
+	};
+	const healthy = {
+		flushPendingUpdates() { healthyFlushes++; },
+		clearRenderCache() {},
+		flushScheduledRender() {
+			return { requestRender: () => { healthyRenders++; }, restoreAfterFailure: () => true };
+		},
+	};
+
+	scheduler.markDirty(failing);
+	scheduler.markDirty(healthy);
+	flushSpawnFrameScheduler();
+	assert.equal(healthyFlushes, 1);
+	assert.equal(healthyRenders, 1);
+	assert.equal(failingRenders, 0);
+	assert.deepEqual(h.warnings, []);
+
+	flushSpawnFrameScheduler();
+	assert.equal(failingFlushes, 2);
+	assert.equal(failingRenders, 1);
+	assert.deepEqual(h.warnings, []);
+	scheduler.clear();
+});
+
+test("frame scheduler contains invalidate callback failures and continues healthy callbacks", () => {
+	const scheduler = getSingletons().frameScheduler;
+	let failingFlushes = 0;
+	let failingInvalidates = 0;
+	let healthyInvalidates = 0;
+	const failing = {
+		flushPendingUpdates() { failingFlushes++; },
+		clearRenderCache() {},
+		flushScheduledRender() {
+			return {
+				requestRender: () => {
+					failingInvalidates++;
+					if (failingInvalidates === 1) throw new Error("invalidate once");
+				},
+				restoreAfterFailure: () => true,
+			};
+		},
+	};
+	const healthy = {
+		flushPendingUpdates() {},
+		clearRenderCache() {},
+		flushScheduledRender() {
+			return { requestRender: () => { healthyInvalidates++; }, restoreAfterFailure: () => true };
+		},
+	};
+
+	scheduler.markDirty(failing);
+	scheduler.markDirty(healthy);
+	assert.doesNotThrow(() => flushSpawnFrameScheduler());
+	assert.equal(failingInvalidates, 1);
+	assert.equal(healthyInvalidates, 1);
+	assert.deepEqual(h.warnings, []);
+
+	flushSpawnFrameScheduler();
+	assert.equal(failingFlushes, 2, "callback failure requeues its component");
+	assert.equal(failingInvalidates, 2);
+	assert.equal(healthyInvalidates, 1);
+	assert.deepEqual(h.warnings, []);
+	scheduler.clear();
+});
+
+test("frame scheduler creates only one timer for a failed-target recovery frame", (t) => {
+	const scheduler = getSingletons().frameScheduler;
+	let scheduledTimers = 0;
+	t.mock.method(globalThis, "setTimeout", ((callback: () => void) => {
+		scheduledTimers++;
+		return { callback, id: scheduledTimers } as any;
+	}) as typeof setTimeout);
+	t.mock.method(globalThis, "clearTimeout", (() => {}) as typeof clearTimeout);
+	const failing = {
+		flushPendingUpdates() { throw new Error("retry later"); },
+		clearRenderCache() {},
+		flushScheduledRender() { return undefined; },
+	};
+
+	scheduler.markDirty(failing);
+	flushSpawnFrameScheduler();
+	assert.equal(scheduledTimers, 2, "one initial frame and one recovery frame");
+	scheduler.clear();
 });
 
 test("nested spawn live action tracks tool execution events", () => {
@@ -126,14 +234,18 @@ test("nested spawn dispose stops event processing", () => {
 	assert.ok(after.every((line: string) => !line.includes("thinking")), `unexpected post-dispose update: ${after.join("\n")}`);
 });
 
-test("nested spawn dispose aborts a claimed live child session", () => {
+test("nested spawn dispose aborts but does not dispose a claimed live child session", () => {
 	const state = createState();
 	const childSpawnTool = makeChildSpawnTool(state);
 	let abortCalls = 0;
+	let disposeCalls = 0;
 	const session = {
 		...createSession([{ role: "assistant", content: [{ type: "text", text: "hello" }] }]),
 		abort: async () => {
 			abortCalls++;
+		},
+		dispose: () => {
+			disposeCalls++;
 		},
 	} as any;
 	state.childSessions.set("tool-call-1", session);
@@ -152,6 +264,7 @@ test("nested spawn dispose aborts a claimed live child session", () => {
 	component.dispose();
 
 	assert.equal(abortCalls, 1);
+	assert.equal(disposeCalls, 0);
 	assert.equal(state.liveChildSessions.has("tool-call-1"), false);
 });
 
@@ -251,6 +364,67 @@ test("nested spawn coalesces same-turn child events into one parent invalidate",
 
 	const lines = component.render(120);
 	assert.ok(lines.some((l: string) => l.includes("file2")));
+});
+
+test("nested spawn retries a throw-once parent invalidate without a new child event", () => {
+	const state = createState();
+	const childSpawnTool = makeChildSpawnTool(state);
+	const { session, emit } = createSubscribableSession([]);
+	state.childSessions.set("tool-call-1", session);
+	state.liveChildSessions.set("tool-call-1", session);
+	let invalidateCalls = 0;
+
+	childSpawnTool.renderResult(
+		{ content: [], details: { model: "m", thinking: "low", truncated: false } },
+		{ expanded: false },
+		theme,
+		createRenderContext({
+			invalidate: () => {
+				invalidateCalls++;
+				if (invalidateCalls === 1) throw new Error("invalidate once");
+			},
+		}),
+	);
+
+	emit({ type: "message_start", message: { role: "assistant", content: [] } });
+	assert.doesNotThrow(() => flushSpawnFrameScheduler());
+	assert.equal(invalidateCalls, 1);
+
+	flushSpawnFrameScheduler();
+	assert.equal(invalidateCalls, 2, "failed invalidate retries on the recovery frame");
+	flushSpawnFrameScheduler();
+	assert.equal(invalidateCalls, 2, "successful retry consumes the queued render");
+	assert.deepEqual(h.warnings, []);
+});
+
+test("nested spawn does not restore a failed invalidate after disposal", () => {
+	const state = createState();
+	const childSpawnTool = makeChildSpawnTool(state);
+	const { session, emit } = createSubscribableSession([]);
+	state.childSessions.set("tool-call-1", session);
+	state.liveChildSessions.set("tool-call-1", session);
+	let invalidateCalls = 0;
+	let component: any;
+
+	component = childSpawnTool.renderResult(
+		{ content: [], details: { model: "m", thinking: "low", truncated: false } },
+		{ expanded: false },
+		theme,
+		createRenderContext({
+			invalidate: () => {
+				invalidateCalls++;
+				component.dispose();
+				throw new Error("invalidate after disposal");
+			},
+		}),
+	) as any;
+
+	emit({ type: "message_start", message: { role: "assistant", content: [] } });
+	assert.doesNotThrow(() => flushSpawnFrameScheduler());
+	assert.equal(invalidateCalls, 1);
+	flushSpawnFrameScheduler();
+	assert.equal(invalidateCalls, 1, "dispose prevents stale render restoration");
+	assert.deepEqual(h.warnings, []);
 });
 
 test("nested spawn ignores child renderer invalidations during parent rebuild", async () => {

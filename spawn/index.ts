@@ -16,17 +16,15 @@ import type {
 	ToolDefinition,
 	ToolInfo,
 } from "@earendil-works/pi-coding-agent";
-import type { TextContent } from "@earendil-works/pi-ai";
+import { StringEnum, type TextContent } from "@earendil-works/pi-ai";
 import {
 	READONLY_CHILD_AUTHORITY_NOTE,
 	READONLY_WRITE_EDIT_SUMMARY,
 } from "../readonly-copy.js";
 import {
-	AuthStorage,
 	createAgentSession,
 	createBashToolDefinition,
 	defineTool,
-	ModelRegistry,
 	SessionManager,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -50,6 +48,14 @@ import {
 
 const CHILD_MAX_LINES = 2000;
 const CHILD_MAX_BYTES = 50 * 1024;
+
+const spawnCleanupErrors = new WeakMap<Promise<unknown>, { primary: unknown; cleanup: unknown }>();
+
+/** Return a disposal failure retained alongside a primary spawn failure. */
+export function getSpawnCleanupError(error: unknown, execution: Promise<unknown>): unknown {
+	const retained = spawnCleanupErrors.get(execution);
+	return retained && Object.is(retained.primary, error) ? retained.cleanup : undefined;
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────
 
@@ -218,6 +224,13 @@ const SPAWN_PARAMETERS = Type.Object({
 	group: Type.Optional(Type.String({
 		description: "Optional exact Model Group name for child model routing. Omit to inherit the parent model/thinking.",
 	})),
+	thinking: Type.Optional(StringEnum(
+		["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const,
+		{
+			description:
+				"Override child thinking level. A routed Model Group entry may override it.",
+		},
+	)),
 });
 
 
@@ -254,12 +267,12 @@ export function createChildTools(
  *
  * @param sessionFactory - Test seam for mocking createAgentSession.
  */
-export async function executeSpawn(
+export function executeSpawn(
 	toolCallId: string,
 	pi: ExtensionAPI,
 	ctx: ExtensionContext,
 	state: AgenticodingState,
-	params: { prompt: string; group?: string; thinking?: unknown },
+	params: { prompt: string; group?: string; thinking?: ThinkingValue },
 	signal: AbortSignal | undefined,
 	onUpdate:
 		| ((result: {
@@ -269,29 +282,39 @@ export async function executeSpawn(
 		| undefined,
 	defaultThinking: ThinkingValue,
 	sessionFactory: typeof createAgentSession = createAgentSession,
-) {
+): Promise<{ content: TextContent[]; details: SpawnResultDetails }> {
+	let execution!: Promise<{ content: TextContent[]; details: SpawnResultDetails }>;
+	execution = (async () => {
+		const parentModel = ctx.model;
+		if (!parentModel) {
+			throw new Error("No model configured. Cannot spawn child agent.");
+		}
 
-	const parentModel = ctx.model;
-	if (!parentModel) {
-		throw new Error("No model configured. Cannot spawn child agent.");
-	}
-
-	const authStorage = (ctx as any).modelRegistry?.authStorage ?? AuthStorage.create();
-	const modelRegistry = (ctx as any).modelRegistry ?? ModelRegistry.create(authStorage);
-	const route = resolveSpawnModelRoute({
-		requestedGroup: params.group,
-		groups: state.modelGroups.groups,
-		parentModel: parentModel as any,
-		parentThinking: defaultThinking,
-		modelRegistry,
-	});
-	const childModel = route.model;
-	const childThinking: ThinkingValue = route.thinking;
-	const routeDetails: SpawnResultDetails["route"] = route.status === "routed"
-		? { status: "routed", group: route.groupName ?? route.requestedGroup ?? params.group?.trim() ?? "", provider: route.provider, modelId: route.modelId }
-		: route.status === "unknown-fallback"
-			? { status: "unknown-fallback", requestedGroup: route.requestedGroup ?? params.group?.trim() ?? "", provider: route.provider, modelId: route.modelId }
-			: { status: "inherited" };
+		const inheritedChildThinking: ThinkingValue = params.thinking ?? defaultThinking;
+		const route = resolveSpawnModelRoute({
+			requestedGroup: params.group,
+			groups: state.modelGroups.groups,
+			parentModel,
+			parentThinking: inheritedChildThinking,
+			modelRegistry: ctx.modelRegistry,
+		});
+		const childModel = route.model;
+		const requestedChildThinking: ThinkingValue = route.thinking;
+		const routeDetails: SpawnResultDetails["route"] = route.status === "routed"
+			? {
+					status: "routed",
+					group: route.groupName ?? route.requestedGroup ?? params.group?.trim() ?? "",
+					provider: route.provider,
+					modelId: route.modelId,
+				}
+			: route.status === "unknown-fallback"
+				? {
+						status: "unknown-fallback",
+						requestedGroup: route.requestedGroup ?? params.group?.trim() ?? "",
+						provider: route.provider,
+						modelId: route.modelId,
+					}
+				: { status: "inherited" };
 
 	const listing = formatPageList(state);
 	const notebookListing = listing
@@ -339,21 +362,27 @@ export async function executeSpawn(
 	const effectiveToolNames = filterReadonlyToolNames(childToolNames, state.readonlyEnabled);
 
 	const { session } = await sessionFactory({
-		sessionManager: SessionManager.inMemory(),
+		sessionManager: SessionManager.inMemory(ctx.cwd),
 		model: childModel,
-		thinkingLevel: childThinking,
+		thinkingLevel: requestedChildThinking,
 		cwd: ctx.cwd,
 		tools: effectiveToolNames,
 		customTools: effectiveChildTools,
-		authStorage,
-		modelRegistry,
 	});
+	// Pi clamps unsupported requested levels during session creation. Report the
+	// public session value so child details describe what actually runs. The
+	// fallback keeps intentionally partial session test doubles compatible.
+	const effectiveChildThinking = () => session.thinkingLevel ?? requestedChildThinking;
 
 	const invalidatedError = new Error("Spawn invalidated by reset.");
 	let wasAborted = false;
+	let abortPromise: Promise<void> | undefined;
 	const abortChild = () => {
 		wasAborted = true;
-		session.abort().catch(() => {});
+		if (!abortPromise) {
+			abortPromise = session.abort();
+			abortPromise.catch(() => {});
+		}
 	};
 	const clearChildSession = () => {
 		if (state.childSessions.get(toolCallId) === session) {
@@ -369,9 +398,12 @@ export async function executeSpawn(
 		throw invalidatedError;
 	};
 
-	if (isStale()) {
-		await abortAndInvalidate();
-	}
+	let primaryError: unknown;
+	let hasPrimaryError = false;
+	try {
+		if (isStale()) {
+			await abortAndInvalidate();
+		}
 
 	// liveChildSessions must be set before childSessions so the renderer can
 	// attach with a fully-published live ownership record.
@@ -380,8 +412,8 @@ export async function executeSpawn(
 
 	try {
 		if (signal?.aborted) {
-			wasAborted = true;
-			await session.abort();
+			abortChild();
+			await abortPromise;
 			throw signal.reason instanceof Error
 				? signal.reason
 				: new Error("Spawn aborted before child session started.");
@@ -391,18 +423,31 @@ export async function executeSpawn(
 			await abortAndInvalidate();
 		}
 
+		// Register before publishing the running update: onUpdate is component code
+		// and may synchronously abort or reset this child.
+		signal?.addEventListener("abort", abortChild, { once: true });
 		onUpdate?.({
 			content: [],
 			details: {
 				model: childModel.id,
-				thinking: childThinking,
+				thinking: effectiveChildThinking(),
 				truncated: false,
 				outcome: "running",
 				route: routeDetails,
 			} satisfies SpawnResultDetails,
 		});
 
-		signal?.addEventListener("abort", abortChild, { once: true });
+		if (signal?.aborted) {
+			abortChild();
+			await abortPromise;
+			throw signal.reason instanceof Error
+				? signal.reason
+				: new Error("Spawn aborted before child session started.");
+		}
+		if (isStale()) {
+			await abortAndInvalidate();
+		}
+
 		await session.prompt(fullPrompt);
 	} catch (error) {
 		clearChildSession();
@@ -458,7 +503,7 @@ export async function executeSpawn(
 
 	const details: SpawnResultDetails = {
 		model: childModel.id,
-		thinking: childThinking,
+		thinking: effectiveChildThinking(),
 		truncated,
 		outcome,
 		route: routeDetails,
@@ -469,10 +514,33 @@ export async function executeSpawn(
 		details.statsUnavailable = true;
 	}
 
-	return {
-		content: [{ type: "text" as const, text: finalText }] as TextContent[],
-		details,
-	};
+		return {
+			content: [{ type: "text" as const, text: finalText }] as TextContent[],
+			details,
+		};
+	} catch (error) {
+		primaryError = error;
+		hasPrimaryError = true;
+		throw error;
+	} finally {
+		clearChildSession();
+		try {
+			// AgentSession always provides dispose(); the guard keeps intentionally
+			// partial test doubles compatible with the public session boundary.
+			if (typeof session.dispose === "function") session.dispose();
+		} catch (cleanupError) {
+			if (hasPrimaryError) {
+				spawnCleanupErrors.set(execution, {
+					primary: primaryError,
+					cleanup: cleanupError,
+				});
+			} else {
+				throw cleanupError;
+			}
+		}
+	}
+	})();
+	return execution;
 }
 
 /**
@@ -500,9 +568,9 @@ export function registerSpawnTool(
 		parameters: SPAWN_PARAMETERS,
 		renderShell: "self",
 
-		async execute(
+		execute(
 			_toolCallId: string,
-			params: { prompt: string; group?: string; thinking?: unknown },
+			params: { prompt: string; group?: string; thinking?: ThinkingValue },
 			signal: AbortSignal | undefined,
 			onUpdate:
 				| ((result: {

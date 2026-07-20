@@ -34,7 +34,7 @@ import { SpawnFrameScheduler } from "../spawn/renderer.js";
 // ── Types ─────────────────────────────────────────────────────────────
 
 export interface TestHarness {
-	/** Captured console.warn and console.error calls. */
+	/** Captured console.debug/log/warn/error calls. */
 	warnings: Array<{ level: string; args: unknown[] }>;
 	/** Restore console, clear scheduler, reset write lock. */
 	teardown: () => void;
@@ -66,6 +66,8 @@ export function createTestHarness(): TestHarness {
 		frameScheduler: new SpawnFrameScheduler(),
 	};
 	const warnings: Array<{ level: string; args: unknown[] }> = [];
+	const originalDebug = console.debug;
+	const originalLog = console.log;
 	const originalWarn = console.warn;
 	const originalError = console.error;
 
@@ -84,7 +86,13 @@ export function createTestHarness(): TestHarness {
 	// context, frame scheduler) in one call.
 	__setSingletons(singletons);
 
-	// Capture console output for assertions without noisy passing-test output.
+	// Capture every forbidden TUI-corrupting console level for assertions.
+	console.debug = (...args: unknown[]) => {
+		warnings.push({ level: "debug", args });
+	};
+	console.log = (...args: unknown[]) => {
+		warnings.push({ level: "log", args });
+	};
 	console.warn = (...args: unknown[]) => {
 		warnings.push({ level: "warn", args });
 	};
@@ -99,6 +107,8 @@ export function createTestHarness(): TestHarness {
 			// Then clear it to release any dirty components before disposal.
 			__setSingletons(previousSingletons);
 			singletons.frameScheduler.clear();
+			console.debug = originalDebug;
+			console.log = originalLog;
 			console.warn = originalWarn;
 			console.error = originalError;
 		},

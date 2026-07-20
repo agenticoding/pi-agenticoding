@@ -1,7 +1,10 @@
 {
   "$schema": "https://github.com/IBM/audit-ci/raw/main/docs/schema.json",
   "moderate": true,
-  // Pi 0.80.7's resolved graph is currently clean at moderate severity and above.
-  // Keep this explicit so future advisories fail CI until reviewed.
-  "allowlist": []
+  "allowlist": [
+    // npm's audit report exposes this hoisted advisory as the module path
+    // `protobufjs`; a config invariant separately rejects any vulnerable
+    // protobufjs occurrence outside the exact Pi 0.80.8 development path.
+    { "GHSA-f38q-mgvj-vph7|protobufjs": { "active": true, "expiry": "2026-09-01", "notes": "protobufjs 7.6.1 only via @earendil-works/pi-ai > @google/genai in the exact Pi 0.80.8 development graph" } }
+  ]
 }
