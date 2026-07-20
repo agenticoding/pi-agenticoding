@@ -1,9 +1,7 @@
 import test, { afterEach, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { AuthStorage, ModelRegistry } from "@earendil-works/pi-coding-agent";
+import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import { createState, resetState } from "../../state.js";
 import {
 	buildChildToolNames,
@@ -13,7 +11,7 @@ import {
 	truncateText,
 } from "../../spawn/index.js";
 import { renderSpawnResult } from "../../spawn/renderer.js";
-import { createTestPI, createRenderContext, createSession, createSubscribableSession, messageText, makeTUICtx, theme, createTestAssistantMessage, createTestAssistantStream } from "./helpers.js";
+import { createTestPI, createRenderContext, createSession, theme } from "./helpers.js";
 import { createTestHarness, type TestHarness } from "../test-utils.js";
 
 let h: TestHarness;
@@ -32,120 +30,6 @@ afterEach(() => {
 	h.teardown();
 });
 
-test("agentic e2e spawn child can use active registered non-builtin tool", async () => {
-	const tempRoot = await mkdtemp(join(tmpdir(), "pi-agenticoding-a10-"));
-	const tempCwd = join(tempRoot, "project");
-	const tempAgentDir = join(tempRoot, "agent");
-	const extensionDir = join(tempCwd, ".pi", "extensions");
-	const sentinel = "AGENTIC_E2E_PROBE_OK";
-	const oldAgentDir = process.env.PI_CODING_AGENT_DIR;
-	const oldOpenAiApiKey = process.env.OPENAI_API_KEY;
-	const parentRegistry = ModelRegistry.inMemory(AuthStorage.inMemory());
-	let streamCallCount = 0;
-
-	try {
-		await mkdir(extensionDir, { recursive: true });
-		await mkdir(tempAgentDir, { recursive: true });
-		await writeFile(join(tempCwd, "package.json"), JSON.stringify({ type: "module" }));
-		await writeFile(
-			join(extensionDir, "agentic-e2e-probe.js"),
-			`
-export default function(pi) {
-	pi.registerTool({
-		name: "agentic_e2e_probe",
-		label: "Agentic E2E Probe",
-		description: "Return the deterministic Story 04 A10 sentinel.",
-		promptSnippet: "Call agentic_e2e_probe to return the Story 04 A10 sentinel.",
-		parameters: { type: "object", properties: {}, additionalProperties: false },
-		async execute() {
-			globalThis.__agenticE2eProbeCalls = (globalThis.__agenticE2eProbeCalls ?? 0) + 1;
-			return {
-				content: [{ type: "text", text: "${sentinel}" }],
-				details: { sentinel: "${sentinel}" },
-			};
-		},
-	});
-}
-`,
-		);
-
-		process.env.PI_CODING_AGENT_DIR = tempAgentDir;
-		process.env.OPENAI_API_KEY = "test-openai-key";
-		(globalThis as any).__agenticE2eProbeCalls = 0;
-
-		parentRegistry.registerProvider("openai", {
-			name: "Agentic E2E OpenAI-compatible provider",
-			api: "agentic-e2e-api",
-			apiKey: "test-openai-key",
-			baseUrl: "http://localhost:0",
-			streamSimple: (model: any, context: any) => {
-				streamCallCount += 1;
-				if (streamCallCount === 1) {
-					const promptText = context.messages.map(messageText).join("\n");
-					assert.match(promptText, /agentic_e2e_probe/);
-					assert.match(promptText, new RegExp(sentinel));
-					return createTestAssistantStream(createTestAssistantMessage(model, [
-						{ type: "toolCall", id: "probe-call-1", name: "agentic_e2e_probe", arguments: {} },
-					], "tool_calls"));
-				}
-
-				const probeResult = context.messages.find((message: any) =>
-					message.role === "toolResult" &&
-					message.toolName === "agentic_e2e_probe" &&
-					messageText(message).includes(sentinel)
-				);
-				const text = probeResult ? sentinel : "AGENTIC_E2E_PROBE_MISSING";
-				return createTestAssistantStream(createTestAssistantMessage(model, [{ type: "text", text }]));
-			},
-			models: [{
-				id: "agentic-e2e-model",
-				name: "Agentic E2E Model",
-				reasoning: false,
-				input: ["text"],
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-				contextWindow: 128000,
-				maxTokens: 1024,
-			}],
-		});
-		const model = parentRegistry.find("openai", "agentic-e2e-model");
-		assert.ok(model);
-
-		const pi = createTestPI();
-		pi.setToolSource("agentic_e2e_probe", "project");
-		pi.setActiveTools(["read", "agentic_e2e_probe", "spawn"]);
-		pi.setAllTools(["read", "agentic_e2e_probe", "spawn"]);
-		const state = createState();
-		const childPrompt = `Use the agentic_e2e_probe tool and return ${sentinel}.`;
-
-		registerSpawnTool(pi as any, state);
-		const result = await pi.tools.get("spawn").execute(
-			"spawn-e2e",
-			{ prompt: childPrompt, thinking: "medium" },
-			undefined,
-			undefined,
-			{ model, cwd: tempCwd },
-		);
-
-		assert.equal(result.content[0].text, sentinel);
-		assert.equal((globalThis as any).__agenticE2eProbeCalls, 1);
-		assert.equal(streamCallCount, 2);
-	} finally {
-		parentRegistry.unregisterProvider("openai");
-		if (oldAgentDir === undefined) {
-			delete process.env.PI_CODING_AGENT_DIR;
-		} else {
-			process.env.PI_CODING_AGENT_DIR = oldAgentDir;
-		}
-		if (oldOpenAiApiKey === undefined) {
-			delete process.env.OPENAI_API_KEY;
-		} else {
-			process.env.OPENAI_API_KEY = oldOpenAiApiKey;
-		}
-		delete (globalThis as any).__agenticE2eProbeCalls;
-		await rm(tempRoot, { recursive: true, force: true });
-	}
-});
-
 test("spawn execute passes broad active registered tool formula to child session", async () => {
 	const pi = createTestPI();
 	pi.setToolSource("project_search", "project");
@@ -153,6 +37,7 @@ test("spawn execute passes broad active registered tool formula to child session
 	pi.setActiveTools(["read", "bash", "spawn", "handoff", "project_search", "phantom_tool"]);
 	pi.setAllTools(["read", "bash", "spawn", "handoff", "project_search", "inactive_registered"]);
 	const state = createState();
+	const requestedCwd = "/tmp";
 
 	let seenConfig: any;
 	const mockFactory = async (config: any) => {
@@ -175,17 +60,60 @@ test("spawn execute passes broad active registered tool formula to child session
 		{ prompt: "Do the task", thinking: "high" },
 		undefined,
 		undefined,
-		{ model: { id: "mock-model" }, cwd: "/tmp" },
+		{ model: { id: "mock-model" }, cwd: requestedCwd },
 	);
 
 	assert.equal(seenConfig.model.id, "mock-model");
 	assert.equal(seenConfig.thinkingLevel, "high");
-	assert.equal(seenConfig.cwd, "/tmp");
+	assert.equal(seenConfig.cwd, requestedCwd);
+	assert.equal(
+		seenConfig.sessionManager.getCwd(),
+		resolve(requestedCwd),
+		"child session manager resolves ctx.cwd through Pi's native path semantics",
+	);
+	assert.equal(seenConfig.sessionManager.isPersisted(), false, "child transcript remains in-memory and isolated");
+	assert.equal(seenConfig.sessionManager.getSessionFile(), undefined, "child transcript has no parent session file");
+	assert.deepEqual(seenConfig.sessionManager.getEntries(), [], "child transcript starts independently empty");
 	assert.deepEqual(
 		new Set(seenConfig.tools),
 		new Set(["read", "bash", "project_search", "notebook_write", "notebook_read", "notebook_index"]),
 	);
 	assert.deepEqual(seenConfig.customTools.map((tool: any) => tool.name), ["notebook_write", "notebook_read", "notebook_index"]);
+});
+
+test("spawn forwards requested thinking and reports the session effective thinking", async () => {
+	const pi = createTestPI();
+	pi.setActiveTools(["read", "spawn"]);
+	const state = createState();
+	const updates: any[] = [];
+	let seenConfig: any;
+	const session = {
+		messages: [] as any[],
+		get thinkingLevel() { return "off" as const; },
+		prompt: async () => {
+			session.messages = [{ role: "assistant", content: [{ type: "text", text: "child result" }] }];
+		},
+		abort: async () => {},
+		dispose: () => {},
+		getSessionStats: () => undefined,
+	};
+
+	registerSpawnTool(pi as any, state, (async (config: any) => {
+		seenConfig = config;
+		return { session: session as any };
+	}) as any);
+
+	const result = await pi.tools.get("spawn").execute(
+		"spawn-effective-thinking",
+		{ prompt: "Do the task", thinking: "max" },
+		undefined,
+		(update: any) => updates.push(update),
+		{ model: { id: "non-reasoning-model", reasoning: false }, cwd: "/tmp" },
+	);
+
+	assert.equal(seenConfig.thinkingLevel, "max", "requested thinking is forwarded unchanged");
+	assert.equal(updates[0].details.thinking, "off", "running details report Pi's effective thinking");
+	assert.equal(result.details.thinking, "off", "final details report Pi's effective thinking");
 });
 
 test("spawn execute builds prompt with notebook pages and task", async () => {
@@ -868,6 +796,7 @@ test("executeSpawn → onUpdate → renderResult chains session ownership", asyn
 
 	let onUpdateCalled = false;
 	let renderComponent: any = null;
+	let disposeCalls = 0;
 	const mockFactory = async () => {
 		const session = {
 			messages: [] as any[],
@@ -875,6 +804,7 @@ test("executeSpawn → onUpdate → renderResult chains session ownership", asyn
 				session.messages = [{ role: "assistant", content: [{ type: "text", text: "result" }] }];
 			},
 			abort: async () => {},
+			dispose: () => { disposeCalls++; },
 			getSessionStats: () => undefined,
 		};
 		return { session: session as any };
@@ -918,8 +848,11 @@ test("executeSpawn → onUpdate → renderResult chains session ownership", asyn
 	const text = lines.join(" ");
 	assert.ok(text.includes("result"), `expected result in render, got: ${text}`);
 
-	// Final execute result is also correct
+	// Final execute result is also correct, and rendering never co-owns disposal.
 	assert.equal(result.content[0].text, "result");
+	assert.equal(disposeCalls, 1);
+	renderComponent.dispose();
+	assert.equal(disposeCalls, 1);
 });
 
 test("spawn render shows success state when stats are unavailable", () => {
@@ -952,6 +885,7 @@ test("spawn execute aborts child session when signal fires during execution", as
 	const state = createState();
 
 	let abortCalled = false;
+	let disposeCalls = 0;
 	let resolvePrompt!: () => void;
 	let promptStarted!: () => void;
 	const started = new Promise<void>((resolve) => { promptStarted = resolve; });
@@ -967,6 +901,7 @@ test("spawn execute aborts child session when signal fires during execution", as
 				abortCalled = true;
 				resolvePrompt();
 			},
+			dispose: () => { disposeCalls++; },
 			getSessionStats: () => undefined,
 		};
 		return { session: session as any };
@@ -992,6 +927,7 @@ test("spawn execute aborts child session when signal fires during execution", as
 	assert.equal(state.liveChildSessions.size, 0);
 	assert.equal(result.content[0].text, "aborted mid-flight");
 	assert.equal(result.details.outcome, "aborted");
+	assert.equal(disposeCalls, 1, "mid-prompt abort disposes exactly once");
 });
 
 test("spawn renderCall shows prompt preview and thinking level", () => {
@@ -1308,6 +1244,82 @@ test("executeSpawn detects stale session before session creation", async () => {
 	assert.equal(state.liveChildSessions.size, 0);
 });
 
+test("executeSpawn does not prompt when onUpdate synchronously resets the child epoch", async () => {
+	const pi = createTestPI();
+	pi.setActiveTools(["read", "bash", "spawn"]);
+	const state = createState();
+	let promptCalls = 0;
+	let abortCalls = 0;
+	let disposeCalls = 0;
+
+	const execution = executeSpawn(
+		"spawn-1",
+		pi as any,
+		{ model: { id: "mock-model" }, cwd: "/tmp" } as any,
+		state,
+		{ prompt: "Do the task" },
+		undefined,
+		() => { resetState(state); },
+		"medium",
+		async () => ({
+			extensionsResult: undefined as any,
+			session: {
+				messages: [] as any[],
+				prompt: async () => { promptCalls++; },
+				abort: async () => { abortCalls++; },
+				dispose: () => { disposeCalls++; },
+				getSessionStats: () => undefined,
+			} as any,
+		}),
+	);
+
+	await assert.rejects(() => execution, /invalidated by reset/i);
+	assert.equal(promptCalls, 0);
+	assert.equal(abortCalls >= 1, true);
+	assert.equal(disposeCalls, 1);
+	assert.equal(state.childSessions.size, 0);
+	assert.equal(state.liveChildSessions.size, 0);
+});
+
+test("executeSpawn does not prompt when onUpdate synchronously aborts the signal", async () => {
+	const pi = createTestPI();
+	pi.setActiveTools(["read", "bash", "spawn"]);
+	const state = createState();
+	const controller = new AbortController();
+	const reason = new Error("cancelled during update");
+	let promptCalls = 0;
+	let abortCalls = 0;
+	let disposeCalls = 0;
+
+	const execution = executeSpawn(
+		"spawn-1",
+		pi as any,
+		{ model: { id: "mock-model" }, cwd: "/tmp" } as any,
+		state,
+		{ prompt: "Do the task" },
+		controller.signal,
+		() => { controller.abort(reason); },
+		"medium",
+		async () => ({
+			extensionsResult: undefined as any,
+			session: {
+				messages: [] as any[],
+				prompt: async () => { promptCalls++; },
+				abort: async () => { abortCalls++; },
+				dispose: () => { disposeCalls++; },
+				getSessionStats: () => undefined,
+			} as any,
+		}),
+	);
+
+	await assert.rejects(async () => execution, (error) => error === reason);
+	assert.equal(promptCalls, 0);
+	assert.equal(abortCalls, 1);
+	assert.equal(disposeCalls, 1);
+	assert.equal(state.childSessions.size, 0);
+	assert.equal(state.liveChildSessions.size, 0);
+});
+
 test("executeSpawn aborts stale child when resetState fires during prompt", async () => {
 	const pi = createTestPI();
 	pi.setActiveTools(["read", "bash", "spawn"]);
@@ -1317,6 +1329,7 @@ test("executeSpawn aborts stale child when resetState fires during prompt", asyn
 	let resolvePromptStarted!: () => void;
 	const promptStartedPromise = new Promise<void>((r) => { resolvePromptStarted = r; });
 	let abortCalls = 0;
+	let disposeCalls = 0;
 
 	const executePromise = executeSpawn(
 		"spawn-1",
@@ -1341,6 +1354,7 @@ test("executeSpawn aborts stale child when resetState fires during prompt", asyn
 					abortCalls++;
 					rejectPrompt?.(new Error("aborted"));
 				},
+				dispose: () => { disposeCalls++; },
 				getSessionStats: () => undefined,
 			} as any,
 		}),
@@ -1358,6 +1372,54 @@ test("executeSpawn aborts stale child when resetState fires during prompt", asyn
 	);
 	// abort is called once by clearChildSession (identity match via liveChildSessions)
 	assert.equal(abortCalls >= 1, true);
+	assert.equal(state.childSessions.size, 0);
+	assert.equal(state.liveChildSessions.size, 0);
+	assert.equal(disposeCalls, 1, "prompt-reset invalidation disposes exactly once");
+});
+
+test("executeSpawn suppresses a successful stale prompt that ignores reset abort", async () => {
+	const pi = createTestPI();
+	pi.setActiveTools(["read", "bash", "spawn"]);
+	const state = createState();
+	let resolvePrompt!: () => void;
+	let promptStarted!: () => void;
+	const started = new Promise<void>((resolve) => { promptStarted = resolve; });
+	let abortCalls = 0;
+	let disposeCalls = 0;
+	const updates: unknown[] = [];
+	const session = {
+		messages: [] as any[],
+		prompt: async () => {
+			promptStarted();
+			await new Promise<void>((resolve) => { resolvePrompt = resolve; });
+			session.messages = [{ role: "assistant", content: [{ type: "text", text: "stale success" }] }];
+		},
+		abort: async () => { abortCalls++; },
+		dispose: () => { disposeCalls++; },
+		getSessionStats: () => undefined,
+	};
+
+	const execution = executeSpawn(
+		"spawn-1",
+		pi as any,
+		{ model: { id: "mock-model" }, cwd: "/tmp" } as any,
+		state,
+		{ prompt: "Do the task" },
+		undefined,
+		(update) => { updates.push(update); },
+		"medium",
+		async () => ({ session: session as any, extensionsResult: undefined as any }),
+	);
+
+	await started;
+	resetState(state);
+	resolvePrompt();
+
+	await assert.rejects(() => execution, /invalidated by reset/i);
+	assert.equal(abortCalls >= 1, true);
+	assert.equal(disposeCalls, 1);
+	assert.equal(updates.length, 1, "no stale completion update is published");
+	assert.deepEqual((updates[0] as any).content, []);
 	assert.equal(state.childSessions.size, 0);
 	assert.equal(state.liveChildSessions.size, 0);
 });

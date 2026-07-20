@@ -25,9 +25,9 @@ type AuditConfig = {
 };
 
 type PackageJson = {
-	engines: {
-		node: string;
-	};
+	engines: { node: string };
+	peerDependencies: Record<string, string>;
+	devDependencies: Record<string, string>;
 };
 
 const AUDIT_SCHEMA = "https://github.com/IBM/audit-ci/raw/main/docs/schema.json";
@@ -39,21 +39,17 @@ const AUDIT_CLI_PATH = fileURLToPath(
 );
 const PACKAGE_JSON_PATH = new URL("package.json", REPO_ROOT_URL);
 const WORKFLOW_PATH = new URL(".github/workflows/test.yml", REPO_ROOT_URL);
+const LOCK_PATH = new URL("package-lock.json", REPO_ROOT_URL);
+const SPAWN_SOURCE_PATH = new URL("spawn/index.ts", REPO_ROOT_URL);
+const RENDERER_SOURCE_PATH = new URL("spawn/renderer.ts", REPO_ROOT_URL);
 const EXPECTED_MATRIX = new Set([
-	"ubuntu-latest@22",
+	"ubuntu-latest@22.19.0",
 	"ubuntu-latest@24",
 	"macos-latest@24",
 	"windows-latest@24",
 ]);
 const EXPECTED_ALLOWLIST_KEYS = new Set([
-	"GHSA-96hv-2xvq-fx4p",
-	"GHSA-f38q-mgvj-vph7",
-	"GHSA-wcpc-wj8m-hjx6",
-	"GHSA-vmh5-mc38-953g|@earendil-works/pi-coding-agent>undici",
-	"GHSA-pr7r-676h-xcf6|@earendil-works/pi-coding-agent>undici",
-	"GHSA-38rv-x7px-6hhq|@earendil-works/pi-coding-agent>undici",
-	"GHSA-p88m-4jfj-68fv|@earendil-works/pi-coding-agent>undici",
-	"GHSA-vxpw-j846-p89q|@earendil-works/pi-coding-agent>undici",
+	"GHSA-f38q-mgvj-vph7|protobufjs",
 ]);
 
 function readText(url: URL): string {
@@ -97,10 +93,10 @@ function parseIsoDate(value: string): number {
 	return timestamp;
 }
 
-function minimumNodeVersion(value: string): number {
-	const match = value.match(/^>=(?<major>\d+)$/);
-	assert.ok(match?.groups?.major, `unsupported engines.node format: ${value}`);
-	return Number.parseInt(match.groups.major, 10);
+function minimumNodeVersion(value: string): string {
+	const match = value.match(/^>=(?<version>\d+\.\d+\.\d+)$/);
+	assert.ok(match?.groups?.version, `unsupported engines.node format: ${value}`);
+	return match.groups.version;
 }
 
 function runAuditCi(): void {
@@ -111,7 +107,53 @@ function runAuditCi(): void {
 	assert.equal(result.status, 0, [result.stdout, result.stderr].filter(Boolean).join("\n"));
 }
 
-test("audit-ci config keeps an expiry-tracked, path-scoped allowlist", () => {
+function collectPackagePaths(graph: any, packageName: string): Array<{ path: string; version: string }> {
+	const found: Array<{ path: string; version: string }> = [];
+	const visit = (node: any, path: string) => {
+		for (const [name, dependency] of Object.entries(node?.dependencies ?? {}) as Array<[string, any]>) {
+			const dependencyPath = `${path} > ${name}`;
+			if (name === packageName && typeof dependency.version === "string") {
+				found.push({ path: dependencyPath, version: dependency.version });
+			}
+			visit(dependency, dependencyPath);
+		}
+	};
+	visit(graph, graph?.name ?? "root");
+	return found;
+}
+
+function isVulnerableProtobufVersion(version: string): boolean {
+	const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(version);
+	assert.ok(match, `unexpected protobufjs version: ${version}`);
+	const [, major, minor, patch] = match.map(Number);
+	return major < 7 || (major === 7 && (minor < 6 || (minor === 6 && patch <= 2)));
+}
+
+test("Pi 0.80.8 compatibility metadata and source boundaries stay exact", () => {
+	const packageJson = parsePackageJson();
+	const lock = JSON.parse(readText(LOCK_PATH)) as { packages: Record<string, { version?: string }> };
+	assert.equal(packageJson.engines.node, ">=22.19.0");
+	for (const name of ["@earendil-works/pi-ai", "@earendil-works/pi-coding-agent", "@earendil-works/pi-tui", "typebox"]) {
+		assert.equal(packageJson.peerDependencies[name], "*", `${name} peer must remain host-provided`);
+	}
+	for (const name of ["@earendil-works/pi-ai", "@earendil-works/pi-coding-agent", "@earendil-works/pi-tui"]) {
+		assert.equal(packageJson.devDependencies[name], "0.80.8");
+		assert.equal(lock.packages[`node_modules/${name}`]?.version, "0.80.8");
+	}
+	assert.equal(packageJson.devDependencies.typebox, "1.1.38");
+	assert.equal(lock.packages["node_modules/typebox"]?.version, "1.1.38");
+
+	const spawnSource = readText(SPAWN_SOURCE_PATH);
+	assert.doesNotMatch(spawnSource, /\bAuthStorage\b|\bModelRegistry\b/);
+	assert.doesNotMatch(spawnSource, /\bauthStorage\s*:|\bmodelRegistry\s*:/);
+	assert.match(spawnSource, /model:\s*childModel/);
+	assert.match(spawnSource, /session\.dispose\(\)/);
+	const rendererSource = readText(RENDERER_SOURCE_PATH);
+	assert.doesNotMatch(rendererSource, /console\.(?:debug|warn|error|log)\s*\(/);
+	assert.doesNotMatch(rendererSource, /process\.(?:stdout|stderr)\.write\s*\(/);
+});
+
+test("audit-ci config keeps an expiry-tracked advisory-module path allowlist", () => {
 	const config = parseAuditConfig();
 	assert.equal(config.$schema, AUDIT_SCHEMA);
 	assert.equal(config.moderate, true);
@@ -120,12 +162,48 @@ test("audit-ci config keeps an expiry-tracked, path-scoped allowlist", () => {
 	assert.deepEqual(new Set(entries.map(([key]) => key)), EXPECTED_ALLOWLIST_KEYS);
 	const today = Date.parse(new Date().toISOString().slice(0, 10) + "T00:00:00Z");
 	for (const [key, value] of entries) {
-		assert.match(key, /^GHSA-[a-z0-9-]+(\|.*)?$/);
+		assert.match(key, /^GHSA-[a-z0-9-]+\|[^|>]+(?:>[^|>]+)*$/);
 		assert.equal(value.active, true);
 		assert.match(value.expiry, /^\d{4}-\d{2}-\d{2}$/);
 		assert.ok(parseIsoDate(value.expiry) >= today, `expired allowlist entry: ${key}`);
 		assert.notEqual(value.notes.trim(), "");
 	}
+});
+
+test("the allowlisted vulnerable protobufjs path is reachable only through the exact Pi floor graph", () => {
+	const npmArgs = ["ls", "protobufjs", "--all", "--json"];
+	const npmExecPath = process.env.npm_execpath;
+	const invocation = npmExecPath
+		? [process.execPath, npmExecPath, ...npmArgs].join(" ")
+		: "npm ls protobufjs --all --json";
+	const result = npmExecPath
+		? spawnSync(process.execPath, [npmExecPath, ...npmArgs], {
+				cwd: REPO_ROOT,
+				encoding: "utf8",
+			})
+		: spawnSync("npm ls protobufjs --all --json", {
+				cwd: REPO_ROOT,
+				encoding: "utf8",
+				shell: true,
+			});
+	const diagnostics = [
+		`invocation: ${invocation}`,
+		`error.stack: ${result.error?.stack ?? "none"}`,
+		`status: ${String(result.status)}`,
+		`signal: ${String(result.signal)}`,
+		`stdout:\n${result.stdout}`,
+		`stderr:\n${result.stderr}`,
+	].join("\n");
+
+	assert.equal(result.error, undefined, diagnostics);
+	assert.equal(result.signal, null, diagnostics);
+	assert.equal(result.status, 0, diagnostics);
+	const vulnerablePaths = collectPackagePaths(JSON.parse(result.stdout), "protobufjs")
+		.filter(({ version }) => isVulnerableProtobufVersion(version));
+	assert.deepEqual(vulnerablePaths, [{
+		path: "pi-agenticoding > @earendil-works/pi-ai > @google/genai > protobufjs",
+		version: "7.6.1",
+	}]);
 });
 
 test("workflow keeps the expected matrix and audit/test order", () => {

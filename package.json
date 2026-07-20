@@ -12,13 +12,13 @@
     "url": "git+https://github.com/agenticoding/pi-agenticoding.git"
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=22.19.0"
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": "^0.79.6",
-    "@earendil-works/pi-coding-agent": "^0.79.6",
-    "@earendil-works/pi-tui": "^0.79.6",
-    "typebox": "^1.2.2"
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
   },
   "scripts": {
     "prepare": "husky",
@@ -27,17 +27,20 @@
     "test:all": "npm run test && npm run test:e2e",
     "test:snapshots:check": "node ./scripts/run-node-test.mjs tests/unit/render-snapshots.test.ts",
     "test:snapshots:update": "node ./scripts/run-node-test.mjs --update-snapshots tests/unit/render-snapshots.test.ts",
+    "test:compat:floor": "node ./scripts/test-compat-floor.mjs",
+    "test:compat:current": "node ./scripts/test-compat-current.mjs",
+    "test:package-host": "node ./scripts/test-package-host.mjs",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "^0.79.6",
-    "@earendil-works/pi-coding-agent": "^0.79.6",
-    "@earendil-works/pi-tui": "^0.79.6",
+    "@earendil-works/pi-ai": "0.80.8",
+    "@earendil-works/pi-coding-agent": "0.80.8",
+    "@earendil-works/pi-tui": "0.80.8",
     "@types/node": "^25.9.3",
     "audit-ci": "^7.1.0",
     "fast-check": "^4.8.0",
     "husky": "^9.1.7",
-    "typebox": "^1.2.2",
+    "typebox": "1.1.38",
     "typescript": "^6.0.3"
   },
   "pi": {
