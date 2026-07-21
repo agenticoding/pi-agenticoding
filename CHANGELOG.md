@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Migrated child spawning to Pi 0.80.8's public selected-model and child-owned runtime APIs, added `max` thinking support, and disposed every created child session exactly once across completion, failure, abort, and reset races. Pi 0.80.8 and Node 22.19.0 are now the documented minimums; parent-only transient provider/auth state fails explicitly without model fallback.
+- Migrated child spawning to Pi 0.81.0's public selected-model and child-owned runtime APIs, added `max` thinking support, and disposed every created child session exactly once across completion, failure, abort, and reset races. Pi 0.81.0 and Node 22.19.0 are now the documented minimums; parent-only transient provider/auth state fails explicitly without model fallback.
 - Spawned child agents now inherit active registered parent tools executable in the child session, including MCP/extension tools such as ChunkHound when active and registered, while still excluding spawn and handoff and preserving child-local notebook tools.
 
 ### Fixed

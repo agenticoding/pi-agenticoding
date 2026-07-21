@@ -24,7 +24,7 @@ function dependency(version: string, dependencies = {}): object {
 	return { version, dependencies };
 }
 
-function graph(piVersion = "0.80.8", typeboxVersion = "1.1.38"): object {
+function graph(piVersion = "0.81.0", typeboxVersion = "1.1.38"): object {
 	return {
 		name: "synthetic-install",
 		version: "1.0.0",
@@ -47,27 +47,27 @@ function graph(piVersion = "0.80.8", typeboxVersion = "1.1.38"): object {
 
 test("exact floor accepts a coherent recursive dependency graph", () => {
 	assert.doesNotThrow(() => assertExactPackageVersions(graph(), {
-		"@earendil-works/pi-agent-core": "0.80.8",
-		"@earendil-works/pi-ai": "0.80.8",
-		"@earendil-works/pi-coding-agent": "0.80.8",
-		"@earendil-works/pi-tui": "0.80.8",
+		"@earendil-works/pi-agent-core": "0.81.0",
+		"@earendil-works/pi-ai": "0.81.0",
+		"@earendil-works/pi-coding-agent": "0.81.0",
+		"@earendil-works/pi-tui": "0.81.0",
 		typebox: "1.1.38",
 	}));
 });
 
 test("exact floor rejects mixed nested Pi and TypeBox versions", () => {
 	const mixedCore = graph() as any;
-	mixedCore.dependencies["@earendil-works/pi-coding-agent"].dependencies["@earendil-works/pi-agent-core"].version = "0.81.0";
+	mixedCore.dependencies["@earendil-works/pi-coding-agent"].dependencies["@earendil-works/pi-agent-core"].version = "0.82.0";
 	assert.throws(
-		() => assertExactPackageVersions(mixedCore, { "@earendil-works/pi-agent-core": "0.80.8" }),
-		/@earendil-works\/pi-agent-core@0\.80\.8.*0\.81\.0/,
+		() => assertExactPackageVersions(mixedCore, { "@earendil-works/pi-agent-core": "0.81.0" }),
+		/@earendil-works\/pi-agent-core@0\.81\.0.*0\.82\.0/,
 	);
 
 	const mixedPi = graph() as any;
-	mixedPi.dependencies["@earendil-works/pi-coding-agent"].dependencies["@earendil-works/pi-ai"].version = "0.81.0";
+	mixedPi.dependencies["@earendil-works/pi-coding-agent"].dependencies["@earendil-works/pi-ai"].version = "0.82.0";
 	assert.throws(
-		() => assertExactPackageVersions(mixedPi, { "@earendil-works/pi-ai": "0.80.8" }),
-		/@earendil-works\/pi-ai@0\.80\.8.*0\.81\.0/,
+		() => assertExactPackageVersions(mixedPi, { "@earendil-works/pi-ai": "0.81.0" }),
+		/@earendil-works\/pi-ai@0\.81\.0.*0\.82\.0/,
 	);
 
 	const mixedTypebox = graph() as any;
