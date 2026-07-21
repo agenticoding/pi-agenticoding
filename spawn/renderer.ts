@@ -42,6 +42,8 @@ import {
 	getLastAssistantText,
 	type SpawnOutcome,
 	type SpawnResultDetails,
+	type SpawnRouteDetails,
+	type ThinkingValue,
 } from "./shared.js";
 
 // ── Render-only constants ────────────────────────────────────────────
@@ -104,6 +106,68 @@ function getStopReasonOutcome(stopReason: unknown): SpawnOutcome | undefined {
 	if (stopReason === "aborted") return "aborted";
 	if (stopReason === "error") return "error";
 	return undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function normalizeRoute(value: unknown): SpawnRouteDetails | undefined {
+	if (!isRecord(value)) return undefined;
+	if (value.status === "inherited") return { status: "inherited" };
+	if (
+		value.status === "routed"
+		&& typeof value.group === "string"
+		&& typeof value.provider === "string"
+		&& typeof value.modelId === "string"
+	) {
+		return { status: "routed", group: value.group, provider: value.provider, modelId: value.modelId };
+	}
+	if (
+		value.status === "unknown-fallback"
+		&& typeof value.requestedGroup === "string"
+		&& typeof value.provider === "string"
+		&& typeof value.modelId === "string"
+	) {
+		return {
+			status: "unknown-fallback",
+			requestedGroup: value.requestedGroup,
+			provider: value.provider,
+			modelId: value.modelId,
+		};
+	}
+	return undefined;
+}
+
+function normalizeSpawnResultDetails(value: unknown): SpawnResultDetails | undefined {
+	if (!isRecord(value) || typeof value.model !== "string") return undefined;
+	const thinkingValues: ThinkingValue[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+	if (!thinkingValues.includes(value.thinking as ThinkingValue)) return undefined;
+
+	const outcome: SpawnOutcome = value.outcome === "success"
+		|| value.outcome === "aborted"
+		|| value.outcome === "error"
+		|| value.outcome === "running"
+		? value.outcome
+		: "running";
+	const details: SpawnResultDetails = {
+		model: value.model,
+		thinking: value.thinking as ThinkingValue,
+		truncated: typeof value.truncated === "boolean" ? value.truncated : false,
+		outcome,
+	};
+	const route = normalizeRoute(value.route);
+	if (route) details.route = route;
+	if (isRecord(value.stats)) {
+		const stats = Object.fromEntries(
+			Object.entries(value.stats).filter((entry): entry is [string, number] => (
+				typeof entry[1] === "number" && Number.isFinite(entry[1])
+			)),
+		);
+		if (Object.keys(stats).length > 0) details.stats = stats;
+	}
+	if (typeof value.statsUnavailable === "boolean") details.statsUnavailable = value.statsUnavailable;
+	return details;
 }
 
 function getOutcomeMarker(outcome: SpawnOutcome): string {
@@ -553,6 +617,17 @@ class NestedAgentSessionComponent extends Container implements SpawnFrameTarget 
 		this.details = details;
 		this.nestTheme = theme;
 		this.liveOutcome = details.outcome;
+		if (changed) this.clearRenderCache();
+	}
+
+	setOutcome(outcome: SpawnOutcome, theme: Theme): void {
+		const changed = this.liveOutcome !== outcome
+			|| this.details?.outcome !== outcome
+			|| this.nestTheme !== theme;
+		this.liveOutcome = outcome;
+		this.lastAction = getOutcomeStatusText(outcome) ?? this.lastAction;
+		this.nestTheme = theme;
+		if (this.details) this.details = { ...this.details, outcome };
 		if (changed) this.clearRenderCache();
 	}
 
@@ -1238,14 +1313,10 @@ function renderSpawnResult(
 	result: { content: { type: string; text?: string }[]; details?: unknown },
 	expanded: boolean,
 	theme: Theme,
-	context: { toolCallId: string; lastComponent?: unknown; invalidate: () => void; showImages: boolean },
+	context: { toolCallId: string; lastComponent?: unknown; invalidate: () => void; showImages: boolean; isError?: boolean },
 	state: AgenticodingState,
 ): NestedAgentSessionComponent | Text {
-	// Runtime guard — both parent and child use executeSpawn which produces matching shape,
-	// but an explicit check ensures we don't crash on unexpected input
-	const details: SpawnResultDetails | undefined = result.details && typeof result.details === "object"
-		? (result.details as SpawnResultDetails)
-		: undefined;
+	const details = normalizeSpawnResultDetails(result.details);
 	const component = context.lastComponent instanceof NestedAgentSessionComponent
 		? context.lastComponent
 		: new NestedAgentSessionComponent();
@@ -1258,10 +1329,12 @@ function renderSpawnResult(
 	const child = state.childSessions.get(context.toolCallId);
 	if (child) {
 		component.attachSession(context.toolCallId, child, state);
+		if (context.isError) component.setOutcome("error", theme);
 		state.childSessions.delete(context.toolCallId);
 		return component;
 	}
 	if (component.hasSession()) {
+		if (context.isError) component.setOutcome("error", theme);
 		return component;
 	}
 
@@ -1273,7 +1346,7 @@ function renderSpawnResult(
 		.join("\n\n")
 		.trim();
 	const summary = output || "(no output)";
-	const outcome = details?.outcome ?? "running";
+	const outcome = context.isError ? "error" : details?.outcome ?? "running";
 	const meta = details ? `${getOutcomeMarker(outcome)}${formatSpawnIdentity(details)}` : "";
 	const status = getOutcomeStatusText(outcome);
 	const text = [

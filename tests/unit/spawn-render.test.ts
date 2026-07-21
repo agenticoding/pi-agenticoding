@@ -84,6 +84,12 @@ test("spawn result identity formats default routed and unknown fallback", () => 
 	) as any;
 	assert.ok(routed.render(120).some((l: string) => l.includes("review → openai/gpt-routed • high")));
 
+	const inherited = childSpawnTool.renderResult(
+		{ content: [{ type: "text", text: "done" }], details: { model: "parent", thinking: "low", truncated: false, outcome: "success", route: { status: "inherited" } } },
+		{ expanded: false }, theme, createRenderContext(),
+	) as any;
+	assert.ok(inherited.render(120).some((l: string) => l.includes("✅ parent • low")));
+
 	const fallback = childSpawnTool.renderResult(
 		{ content: [{ type: "text", text: "done" }], details: { model: "parent", thinking: "medium", truncated: false, outcome: "success", route: { status: "unknown-fallback", requestedGroup: "rev", provider: "openai", modelId: "parent" } } },
 		{ expanded: false }, theme, createRenderContext(),
@@ -199,6 +205,90 @@ test("collapsed nested spawn keeps truncated stats line calm", () => {
 	const statsLine = getLineContaining(lines, "tok 12/34");
 	assert.match(statsLine, /<dim>.*tok 12\/34.*trunc.*<\/dim>/);
 	assert.equal(statsLine.includes("<warning>"), false);
+});
+
+test("static no-output child error with empty details renders without fabricated identity", () => {
+	const state = createState();
+	const childSpawnTool = makeChildSpawnTool(state);
+
+	const component = childSpawnTool.renderResult(
+		{
+			content: [{ type: "text", text: "Child agent produced no output." }],
+			details: {},
+		},
+		{ expanded: false },
+		theme,
+		createRenderContext({ isError: true }),
+	) as any;
+	const lines = component.render(120);
+
+	assert.ok(lines.some((line: string) => line.includes("💬 error")));
+	assert.ok(lines.some((line: string) => line.includes("Child agent produced no output.")));
+	assert.equal(lines.some((line: string) => line.includes("unknown")), false);
+});
+
+test("retained nested spawn preserves identity when malformed terminal details report an error", () => {
+	const state = createState();
+	const childSpawnTool = makeChildSpawnTool(state);
+	const session = createSession([]);
+	state.childSessions.set("tool-call-1", session);
+
+	const component = childSpawnTool.renderResult(
+		{ content: [], details: { model: "mock-model", thinking: "high", truncated: false, outcome: "running" } },
+		{ expanded: false },
+		theme,
+		createRenderContext(),
+	) as any;
+	const sameComponent = childSpawnTool.renderResult(
+		{ content: [], details: {} },
+		{ expanded: false },
+		theme,
+		createRenderContext({ lastComponent: component, isError: true }),
+	) as any;
+	const collapsedLines = sameComponent.render(120);
+
+	assert.equal(sameComponent, component);
+	assert.ok(collapsedLines.some((line: string) => line.includes("⚠ mock-model • high")));
+	assert.ok(collapsedLines.some((line: string) => line.includes("💬 error")));
+	assert.equal((sameComponent as any).details.outcome, "error");
+
+	const expandedComponent = childSpawnTool.renderResult(
+		{ content: [], details: {} },
+		{ expanded: true },
+		theme,
+		createRenderContext({ expanded: true, lastComponent: sameComponent, isError: true }),
+	) as any;
+	const expandedLines = expandedComponent.render(120);
+	assert.equal(expandedComponent, component);
+	assert.ok(expandedLines.some((line: string) => line.includes("⚠ mock-model • high")));
+});
+
+test("spawn result ignores malformed route and stats fields", () => {
+	const state = createState();
+	const childSpawnTool = makeChildSpawnTool(state);
+	const component = childSpawnTool.renderResult(
+		{
+			content: [{ type: "text", text: "done" }],
+			details: {
+				model: "safe-model",
+				thinking: "medium",
+				truncated: false,
+				outcome: "success",
+				route: { status: "routed", group: ["review"], provider: null, modelId: 42 },
+				stats: { inputTokens: "12", outputTokens: null, cost: Number.NaN },
+				statsUnavailable: "yes",
+			},
+		},
+		{ expanded: false },
+		theme,
+		createRenderContext(),
+	) as any;
+	const lines = component.render(120);
+
+	assert.ok(lines.some((line: string) => line.includes("✅ safe-model • medium")));
+	assert.equal(lines.some((line: string) => line.includes("review")), false);
+	assert.equal(lines.some((line: string) => line.includes("tok ")), false);
+	assert.equal(lines.some((line: string) => line.includes("stats unavailable")), false);
 });
 
 test("nested spawn render is safe without details", () => {
