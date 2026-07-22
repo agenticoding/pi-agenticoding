@@ -141,7 +141,12 @@ export function saveModelGroups(scope: ModelGroupScope, access: ModelGroupsAcces
 	try { fsOps.mkdirSync(dir, { recursive: true }); fsOps.writeFileSync(tempPath, body, "utf8"); }
 	catch (cause) { throw persistenceError({ operation: "save", scope, sourcePath, targetPath: tempPath, phase: "temp-write", message: `Failed to write temp model-groups file for ${scope}: ${cause instanceof Error ? cause.message : String(cause)}`, cause }); }
 	try { fsOps.renameSync(tempPath, sourcePath); }
-	catch (cause) { throw persistenceError({ operation: "save", scope, sourcePath, targetPath: tempPath, phase: "rename", message: `Failed to commit model-groups file for ${scope}: ${cause instanceof Error ? cause.message : String(cause)}`, cause }); }
+	catch (cause) {
+		let cleanupDetail = "";
+		try { fsOps.unlinkSync(tempPath); }
+		catch (cleanupCause) { cleanupDetail = `; temp cleanup failed: ${cleanupCause instanceof Error ? cleanupCause.message : String(cleanupCause)}`; }
+		throw persistenceError({ operation: "save", scope, sourcePath, targetPath: tempPath, phase: "rename", message: `Failed to commit model-groups file for ${scope}: ${cause instanceof Error ? cause.message : String(cause)}${cleanupDetail}`, cause });
+	}
 }
 function loadScopeConfig(scope: ModelGroupScope, access: ModelGroupsAccess): ModelGroupsConfig {
 	const loaded = loadScope(scope, access);

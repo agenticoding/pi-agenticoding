@@ -118,6 +118,72 @@ test("model groups load recovery handles malformed, schema-invalid, unsupported 
 	assert.equal(fs.readFileSync(modelGroupsPath("project", cwd), "utf8"), "{bad");
 }));
 
+test("model groups rename failure removes the generated temp file and preserves committed bytes", () => withTemp(({ cwd }) => {
+	const sourcePath = modelGroupsPath("project", cwd);
+	saveModelGroups("project", access(cwd), { version: 1, groups: { keep: { models: [] } } });
+	const committedBytes = fs.readFileSync(sourcePath);
+	const renameCause = new Error("rename denied");
+	let generatedTempPath = "";
+
+	__setModelGroupsFsForTests({
+		renameSync: (from) => {
+			generatedTempPath = String(from);
+			assert.match(path.basename(generatedTempPath), /^model-groups\.json\.\d+\.\d+\.tmp$/);
+			assert.ok(fs.readFileSync(generatedTempPath, "utf8").includes('"drop"'));
+			throw renameCause;
+		},
+	});
+	assert.throws(() => saveModelGroups("project", access(cwd), { version: 1, groups: { drop: { models: [] } } }), (error) => {
+		assert.ok(error instanceof ModelGroupsPersistenceError);
+		assert.equal(error.operation, "save");
+		assert.equal(error.phase, "rename");
+		assert.equal(error.sourcePath, sourcePath);
+		assert.equal(error.targetPath, generatedTempPath);
+		assert.equal(error.cause, renameCause);
+		return true;
+	});
+
+	assert.ok(generatedTempPath);
+	assert.deepEqual(fs.readFileSync(sourcePath), committedBytes);
+	assert.equal(fs.existsSync(generatedTempPath), false);
+	assert.deepEqual(fs.readdirSync(path.dirname(sourcePath)).filter((name) => /^model-groups\.json\.\d+\.\d+\.tmp$/.test(name)), []);
+}));
+
+test("model groups rename cleanup failure remains supplemental to the original typed error", () => withTemp(({ cwd }) => {
+	const sourcePath = modelGroupsPath("project", cwd);
+	saveModelGroups("project", access(cwd), { version: 1, groups: { keep: { models: [] } } });
+	const committedBytes = fs.readFileSync(sourcePath);
+	const renameCause = new Error("rename denied");
+	const cleanupCause = new Error("cleanup denied");
+	let generatedTempPath = "";
+
+	__setModelGroupsFsForTests({
+		renameSync: (from) => {
+			generatedTempPath = String(from);
+			assert.ok(fs.existsSync(generatedTempPath));
+			throw renameCause;
+		},
+		unlinkSync: (target) => {
+			assert.equal(String(target), generatedTempPath);
+			throw cleanupCause;
+		},
+	});
+	assert.throws(() => saveModelGroups("project", access(cwd), { version: 1, groups: { drop: { models: [] } } }), (error) => {
+		assert.ok(error instanceof ModelGroupsPersistenceError);
+		assert.equal(error.operation, "save");
+		assert.equal(error.phase, "rename");
+		assert.equal(error.sourcePath, sourcePath);
+		assert.equal(error.targetPath, generatedTempPath);
+		assert.equal(error.cause, renameCause);
+		assert.match(error.message, /cleanup denied/);
+		return true;
+	});
+
+	assert.ok(generatedTempPath);
+	assert.deepEqual(fs.readFileSync(sourcePath), committedBytes);
+	assert.equal(fs.existsSync(generatedTempPath), true);
+}));
+
 test("model groups persistence failures throw typed errors and preserve committed state", () => withTemp(({ cwd }) => {
 	saveModelGroups("project", access(cwd), { version: 1, groups: { keep: { models: [] } } });
 	__setModelGroupsFsForTests({ writeFileSync: () => { throw new Error("temp denied"); } });
