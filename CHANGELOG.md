@@ -7,10 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-22
+
+### Breaking Changes
+
+- **Ledger renamed to notebook** — tools are now `notebook_write`, `notebook_read`, and `notebook_index`; `/ledger` is `/notebook`. Legacy `ledger-entry` session data still rehydrates so existing sessions keep their pages.
+- **Handoff briefs no longer embed notebook bodies** — referenced pages are fetched on demand via `notebook_read`. The brief carries only the task and primer; the notebook remains the long-term grounding store.
+- **Handoff eligibility gate** — handoff rejects empty briefs, sessions under ~30k tokens, or missing usage data so compaction cannot run without a real brief and a meaningful context load.
+- **Human-set notebook topics are authoritative** — the agent cannot override a topic the user set via `/notebook` or the topic UI.
+
+### Added
+
+- **Readonly mode** — `/readonly`, Ctrl+Shift+R, and `--readonly` toggle a session-persisted read-only posture. Write/edit are blocked; bash is classified and limited (allowlist / temp-only writes), with OS sandboxing on macOS (`sandbox-exec`) and Linux (`bwrap`) when available. Spawned children inherit the posture (no write/edit; guarded bash). Status shows 🔒 with gentle nudges. Handoff is blocked unless the user runs `/handoff` or crosses an eligible human topic boundary; readonly resumes after compaction.
+- **Notebook topics** — `notebook_topic_set` and `/notebook <topic>` set the active semantic frame (🧭 in the status bar). Topics clear after handoff so the next context assigns a fresh one. Topic-change boundary hints integrate with the watchdog.
+- **Readonly frontmatter on skills and prompts** — `readonly: true` defers enabling readonly when that skill or prompt is invoked.
+
 ### Changed
 
-- Migrated child spawning to Pi 0.80.8's public selected-model and child-owned runtime APIs, added `max` thinking support, and dispose every created child session exactly once across completion, failure, abort, and reset races. Pi 0.80.8 and Node 22.19.0 are now the documented minimums; parent-only transient provider/auth state fails explicitly without model fallback.
-- Spawned child agents now inherit active registered parent tools executable in the child session, including MCP/extension tools such as ChunkHound when active and registered, while still excluding spawn and handoff and preserving child-local notebook tools.
+- **Spawn tool inheritance** — child agents inherit active registered parent tools executable in the child session, including MCP/extension tools, while still excluding spawn and handoff and keeping child-local notebook tools.
+- **Topic- and readonly-aware watchdog** — band-throttled primacy-zone nudges with copy that reflects the active topic and readonly state; warning widget at ≥70% context; malformed context percentages render as `ctx --%`.
+- **Handoff lifecycle status** — richer TUI status (requested / required / in progress), generation guards, and rejection of overlapping handoff attempts.
+- **Notebook overlay and indicators** — interactive `/notebook` overlay (renamed from `/ledger`) with subject-oriented page semantics; empty notebook count stays dim/discoverable rather than hidden without cue.
+
+### Fixed
+
+- **TUI-safe diagnostics** — removed stderr/console logging that corrupted pi's ANSI TUI rendering from the extension host process.
+- **Headless UI guards** — `ui.notify` and readonly toggle no-op cleanly when no UI is attached instead of throwing.
+- **Rehydration null-safety** — notebook and readonly session resume no longer crash on missing or partial persisted state.
 
 ## [0.3.0] - 2026-05-23
 
@@ -109,6 +132,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Comprehensive test suite** — 50+ tests covering spawn execution and rendering (concurrency, cancellation, truncation, stale detection, ownership lifecycle, microtask batching), ledger tools (add/get/list, staleness, rehydration, empty states, prompt hints), handoff (tool, command, compaction), watchdog (nudge injection, enforcement), and extension lifecycle.
 - **MIT licensed** — open-source permissive license.
 
+[Unreleased]: https://github.com/agenticoding/pi-agenticoding/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/agenticoding/pi-agenticoding/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/agenticoding/pi-agenticoding/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/agenticoding/pi-agenticoding/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/agenticoding/pi-agenticoding/releases/tag/v0.1.0
