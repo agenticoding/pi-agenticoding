@@ -50,6 +50,8 @@ const EXPECTED_MATRIX = new Set([
 ]);
 const EXPECTED_ALLOWLIST_KEYS = new Set([
 	"GHSA-f38q-mgvj-vph7|protobufjs",
+	"GHSA-3jxr-9vmj-r5cp|brace-expansion",
+	"GHSA-j3f2-48v5-ccww|protobufjs",
 ]);
 
 function readText(url: URL): string {
@@ -126,7 +128,7 @@ function isVulnerableProtobufVersion(version: string): boolean {
 	const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(version);
 	assert.ok(match, `unexpected protobufjs version: ${version}`);
 	const [, major, minor, patch] = match.map(Number);
-	return major < 7 || (major === 7 && (minor < 6 || (minor === 6 && patch <= 2)));
+	return major < 7 || (major === 7 && (minor < 6 || (minor === 6 && patch <= 4)));
 }
 
 test("Pi 0.80.8 compatibility metadata and source boundaries stay exact", () => {
@@ -199,11 +201,18 @@ test("the allowlisted vulnerable protobufjs path is reachable only through the e
 	assert.equal(result.signal, null, diagnostics);
 	assert.equal(result.status, 0, diagnostics);
 	const vulnerablePaths = collectPackagePaths(JSON.parse(result.stdout), "protobufjs")
-		.filter(({ version }) => isVulnerableProtobufVersion(version));
-	assert.deepEqual(vulnerablePaths, [{
-		path: "pi-agenticoding > @earendil-works/pi-ai > @google/genai > protobufjs",
-		version: "7.6.1",
-	}]);
+		.filter(({ version }) => isVulnerableProtobufVersion(version))
+		.sort((a, b) => a.path.localeCompare(b.path));
+	assert.deepEqual(vulnerablePaths, [
+		{
+			path: "pi-agenticoding > @earendil-works/pi-ai > @google/genai > protobufjs",
+			version: "7.6.1",
+		},
+		{
+			path: "pi-agenticoding > @earendil-works/pi-coding-agent > @earendil-works/pi-ai > @google/genai > protobufjs",
+			version: "7.6.4",
+		},
+	].sort((a, b) => a.path.localeCompare(b.path)));
 });
 
 test("workflow keeps the expected matrix and audit/test order", () => {
