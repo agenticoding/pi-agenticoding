@@ -11,6 +11,7 @@ import {
 	truncateText,
 } from "../../spawn/index.js";
 import { renderSpawnResult } from "../../spawn/renderer.js";
+import { SpawnRouteError } from "../../model-groups/router.js";
 import { createTestPI, createRenderContext, createSession, theme } from "./helpers.js";
 import { createTestHarness, type TestHarness } from "../test-utils.js";
 
@@ -441,6 +442,55 @@ test("spawn execute fails explicitly without a configured model", async () => {
 		() => pi.tools.get("spawn").execute("spawn-1", { prompt: "Do the task" }, undefined, undefined, { cwd: "/tmp" }),
 		/No model configured\. Cannot spawn child agent\./,
 	);
+});
+
+test("executeSpawn propagates unusable-group errors before creating child work", async () => {
+	const pi = createTestPI();
+	pi.setActiveTools(["read", "bash", "spawn"]);
+	const state = createState();
+	state.modelGroups.groups = [{
+		name: "broken",
+		scope: "project",
+		sourcePath: "<test>",
+		models: [{ provider: "openai", modelId: "missing" }],
+		validation: { unavailableRefs: [], shadowedByProject: false, degraded: true },
+	} as any];
+	let factoryCalls = 0;
+
+	await assert.rejects(
+		() => executeSpawn(
+			"spawn-route-error",
+			pi as any,
+			{
+				model: { provider: "openai", id: "parent" },
+				cwd: "/tmp",
+				modelRegistry: {
+					find: () => undefined,
+					hasConfiguredAuth: () => false,
+				},
+			} as any,
+			state,
+			{ prompt: "Do the task", group: "broken" },
+			undefined,
+			undefined,
+			"medium",
+			async () => {
+				factoryCalls++;
+				throw new Error("sessionFactory must not be called");
+			},
+		),
+		(error: unknown) => {
+			assert.ok(error instanceof SpawnRouteError, "route error must propagate without wrapping");
+			assert.equal(error.kind, "unusable-group");
+			assert.equal(error.group, "broken");
+			assert.equal(error.reason, "no-usable-models");
+			return true;
+		},
+	);
+
+	assert.equal(factoryCalls, 0, "sessionFactory must not be called on routing failure");
+	assert.equal(state.childSessions.size, 0, "no child session registered");
+	assert.equal(state.liveChildSessions.size, 0, "no live child session registered");
 });
 
 test("child tool names inherit active registered builtins and exclude recursive controls", () => {
