@@ -104,5 +104,3 @@ test("readonly toggle off delivers a deactivation nudge via context hook", async
 	assert.match(readonlyNudge.content, /readonly/i);
 	assert.match(readonlyNudge.content, /off|disabled|turned off/i);
 });
-
-

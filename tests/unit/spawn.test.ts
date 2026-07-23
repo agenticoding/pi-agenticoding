@@ -11,6 +11,7 @@ import {
 	truncateText,
 } from "../../spawn/index.js";
 import { renderSpawnResult } from "../../spawn/renderer.js";
+import { SpawnRouteError } from "../../model-groups/router.js";
 import { createTestPI, createRenderContext, createSession, theme } from "./helpers.js";
 import { createTestHarness, type TestHarness } from "../test-utils.js";
 
@@ -114,6 +115,69 @@ test("spawn forwards requested thinking and reports the session effective thinki
 	assert.equal(seenConfig.thinkingLevel, "max", "requested thinking is forwarded unchanged");
 	assert.equal(updates[0].details.thinking, "off", "running details report Pi's effective thinking");
 	assert.equal(result.details.thinking, "off", "final details report Pi's effective thinking");
+	assert.deepEqual(result.details.route, { status: "inherited" });
+});
+
+test("spawn execute composes Model Group routing with readonly child guards", async () => {
+	const pi = createTestPI();
+	pi.setActiveTools(["read", "bash", "write", "edit", "spawn", "handoff"]);
+	pi.setAllTools(["read", "bash", "write", "edit", "spawn", "handoff"]);
+	const state = createState();
+	state.readonlyEnabled = true;
+	const routedModel = { provider: "openai", id: "gpt-routed", reasoning: true };
+	state.modelGroups.groups = [{
+		name: "review",
+		scope: "project",
+		sourcePath: "<project>",
+		models: [{ provider: "openai", modelId: "gpt-routed", thinkingLevel: "low" }],
+		validation: { unavailableRefs: [], shadowedByProject: false, degraded: false },
+	} as any];
+	const parentRegistry = {
+		find: (provider: string, modelId: string) => provider === "openai" && modelId === "gpt-routed" ? routedModel : undefined,
+		hasConfiguredAuth: (model: any) => model === routedModel,
+	};
+	let seenConfig: any;
+	let seenPrompt = "";
+	const mockFactory = async (config: any) => {
+		seenConfig = config;
+		const session = {
+			messages: [] as any[],
+			prompt: async (prompt: string) => {
+				seenPrompt = prompt;
+				session.messages = [{ role: "assistant", content: [{ type: "text", text: "routed result" }] }];
+			},
+			abort: async () => {},
+			dispose: () => {},
+			getSessionStats: () => undefined,
+		};
+		return { session: session as any };
+	};
+	registerSpawnTool(pi as any, state, mockFactory as any);
+
+	const result = await pi.tools.get("spawn").execute(
+		"spawn-routed",
+		{ prompt: "Do the task", group: "review", thinking: "xhigh" },
+		undefined,
+		undefined,
+		{ model: { provider: "openai", id: "parent" }, cwd: "/tmp", modelRegistry: parentRegistry },
+	);
+
+	assert.equal(seenConfig.model, routedModel);
+	assert.equal(seenConfig.thinkingLevel, "low");
+	assert.equal(seenConfig.modelRegistry, undefined);
+	assert.equal(seenConfig.authStorage, undefined);
+	assert.deepEqual(
+		new Set(seenConfig.tools),
+		new Set(["read", "bash", "notebook_write", "notebook_read", "notebook_index"]),
+	);
+	assert.ok(seenConfig.customTools.some((tool: any) => tool.name === "bash"));
+	assert.ok(!seenConfig.tools.includes("write"));
+	assert.ok(!seenConfig.tools.includes("edit"));
+	assert.ok(!seenConfig.tools.includes("spawn"));
+	assert.ok(!seenConfig.tools.includes("handoff"));
+	assert.match(seenPrompt, /inherit readonly authority/i);
+	assert.match(seenPrompt, /\[readonly\] write\/edit blocked/i);
+	assert.deepEqual(result.details.route, { status: "routed", group: "review", provider: "openai", modelId: "gpt-routed" });
 });
 
 test("spawn execute builds prompt with notebook pages and task", async () => {
@@ -244,7 +308,7 @@ test("spawn execute returns result and stats", async () => {
 
 	assert.deepEqual(updates, [{
 		content: [],
-		details: { model: "mock-model", thinking: "high", truncated: false, outcome: "running" },
+		details: { model: "mock-model", thinking: "high", truncated: false, outcome: "running", route: { status: "inherited" } },
 	}]);
 	assert.equal(result.content[0].text, "child result");
 	assert.equal(result.details.outcome, "success");
@@ -378,6 +442,55 @@ test("spawn execute fails explicitly without a configured model", async () => {
 		() => pi.tools.get("spawn").execute("spawn-1", { prompt: "Do the task" }, undefined, undefined, { cwd: "/tmp" }),
 		/No model configured\. Cannot spawn child agent\./,
 	);
+});
+
+test("executeSpawn propagates unusable-group errors before creating child work", async () => {
+	const pi = createTestPI();
+	pi.setActiveTools(["read", "bash", "spawn"]);
+	const state = createState();
+	state.modelGroups.groups = [{
+		name: "broken",
+		scope: "project",
+		sourcePath: "<test>",
+		models: [{ provider: "openai", modelId: "missing" }],
+		validation: { unavailableRefs: [], shadowedByProject: false, degraded: true },
+	} as any];
+	let factoryCalls = 0;
+
+	await assert.rejects(
+		() => executeSpawn(
+			"spawn-route-error",
+			pi as any,
+			{
+				model: { provider: "openai", id: "parent" },
+				cwd: "/tmp",
+				modelRegistry: {
+					find: () => undefined,
+					hasConfiguredAuth: () => false,
+				},
+			} as any,
+			state,
+			{ prompt: "Do the task", group: "broken" },
+			undefined,
+			undefined,
+			"medium",
+			async () => {
+				factoryCalls++;
+				throw new Error("sessionFactory must not be called");
+			},
+		),
+		(error: unknown) => {
+			assert.ok(error instanceof SpawnRouteError, "route error must propagate without wrapping");
+			assert.equal(error.kind, "unusable-group");
+			assert.equal(error.group, "broken");
+			assert.equal(error.reason, "no-usable-models");
+			return true;
+		},
+	);
+
+	assert.equal(factoryCalls, 0, "sessionFactory must not be called on routing failure");
+	assert.equal(state.childSessions.size, 0, "no child session registered");
+	assert.equal(state.liveChildSessions.size, 0, "no live child session registered");
 });
 
 test("child tool names inherit active registered builtins and exclude recursive controls", () => {
@@ -930,7 +1043,7 @@ test("spawn execute aborts child session when signal fires during execution", as
 	assert.equal(disposeCalls, 1, "mid-prompt abort disposes exactly once");
 });
 
-test("spawn renderCall shows prompt preview and thinking level", () => {
+test("spawn renderCall shows prompt preview and optional routing controls", () => {
 	const state = createState();
 	const pi = createTestPI();
 	registerSpawnTool(pi as any, state);
@@ -949,10 +1062,32 @@ test("spawn renderCall shows prompt preview and thinking level", () => {
 	const truncatedLines = truncated.render(120);
 	assert.ok(truncatedLines.some((l: string) => l.includes("more lines")));
 
-	// With thinking level
+	// Explicit thinking is shown without a group; grouped calls show only the route.
 	const withThinking = tool.renderCall({ prompt: "Do X", thinking: "high" }, theme, { expanded: false });
 	const thinkingLines = withThinking.render(120);
 	assert.ok(thinkingLines.some((l: string) => l.includes("high")));
+	const withWhitespaceGroup = tool.renderCall(
+		{ prompt: "Do X", group: " \t ", thinking: "high" },
+		theme,
+		{ expanded: false },
+	);
+	assert.ok(withWhitespaceGroup.render(120).some((l: string) => l.includes("high")));
+	const withRouting = tool.renderCall(
+		{ prompt: "Do X", group: "review", thinking: "max" },
+		theme,
+		{ expanded: false },
+	);
+	const routingLines = withRouting.render(120);
+	assert.ok(routingLines.some((l: string) => l.includes("review")));
+	assert.ok(routingLines.every((l: string) => !l.includes("max")));
+	const withEscapedGroup = tool.renderCall(
+		{ prompt: "Do X", group: "review\n\u001b" },
+		theme,
+		{ expanded: false },
+	);
+	const escapedGroupLines = withEscapedGroup.render(120);
+	assert.ok(escapedGroupLines.some((line: string) => line.includes("review\\n\\x1B")));
+	assert.ok(escapedGroupLines.every((line: string) => !line.includes("\u001b")));
 
 	// Expanded: shows full prompt
 	const expanded = tool.renderCall({ prompt: longPrompt }, theme, { expanded: true });
@@ -1184,6 +1319,9 @@ test("spawn tool definitions include prompt hints when registered", () => {
 	registerSpawnTool(pi as any, state);
 
 	const spawnTool = pi.tools.get("spawn")!;
+	assert.ok(spawnTool.parameters.properties.prompt, "spawn should advertise prompt");
+	assert.ok(spawnTool.parameters.properties.group, "spawn should advertise optional group");
+	assert.ok(spawnTool.parameters.properties.thinking, "spawn should advertise optional thinking");
 	assert.ok(typeof spawnTool.promptSnippet === "string", "spawn should have promptSnippet");
 	assert.ok(spawnTool.promptSnippet!.length > 10, "spawn promptSnippet should be non-trivial");
 	assert.ok(Array.isArray(spawnTool.promptGuidelines), "spawn should have promptGuidelines");

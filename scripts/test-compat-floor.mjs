@@ -4,10 +4,10 @@ import { repoRootFromScript, runChecked, runNpm } from "./compat-process.mjs";
 import { assertExactPackageVersions } from "./dependency-graph-assertions.mjs";
 
 const expected = {
-  "@earendil-works/pi-agent-core": "0.80.8",
-  "@earendil-works/pi-ai": "0.80.8",
-  "@earendil-works/pi-coding-agent": "0.80.8",
-  "@earendil-works/pi-tui": "0.80.8",
+  "@earendil-works/pi-agent-core": "0.81.0",
+  "@earendil-works/pi-ai": "0.81.0",
+  "@earendil-works/pi-coding-agent": "0.81.0",
+  "@earendil-works/pi-tui": "0.81.0",
   typebox: "1.1.38",
 };
 
@@ -30,4 +30,4 @@ runChecked(process.execPath, [join(root, "scripts", "run-node-test.mjs"),
   "tests/unit/compat-process.test.ts",
 ], { cwd: root });
 runNpm(root, ["run", "test:e2e"]);
-process.stdout.write("Exact Pi 0.80.8 compatibility floor passed.\n");
+process.stdout.write("Exact Pi 0.81.0 compatibility floor passed.\n");

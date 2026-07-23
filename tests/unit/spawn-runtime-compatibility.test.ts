@@ -145,11 +145,13 @@ test("exact Pi floor real child preserves selected identity and reports effectiv
 	assert.deepEqual(proof.outboundFetches, [], "offline real-child fixture attempted an outbound fetch");
 });
 
-test("spawn source uses only the public selected-model child session boundary", async () => {
+test("spawn routes through the public registry but uses only the selected-model child session boundary", async () => {
 	const source = await readFile(new URL("../../spawn/index.ts", import.meta.url), "utf8");
 	assert.doesNotMatch(source, /\bAuthStorage\b|\bModelRegistry\b/);
-	assert.doesNotMatch(source, /\bauthStorage\s*:|\bmodelRegistry\s*:/);
+	assert.doesNotMatch(source, /\bauthStorage\s*:/);
+	assert.doesNotMatch(source, /sessionFactory\(\{[\s\S]*?\bmodelRegistry\s*:/);
 	assert.doesNotMatch(source, /modelRuntime\s*[:.]|as\s+any[^\n]*(?:auth|runtime)/i);
+	assert.match(source, /modelRegistry:\s*ctx\.modelRegistry/);
 	assert.match(source, /model:\s*childModel/);
 });
 
@@ -176,6 +178,11 @@ test("spawn accepts max and forwards the public ctx.model unchanged", async () =
 	const schemaText = JSON.stringify(tool.parameters);
 	assert.match(schemaText, /max/);
 	assert.equal(Value.Check(tool.parameters, { prompt: "work" }), true, "registered schema accepts inherited/default thinking");
+	assert.equal(
+		Value.Check(tool.parameters, { prompt: "work", group: "review", thinking: "max" }),
+		true,
+		"registered schema composes Model Group routing with explicit thinking",
+	);
 	await tool.execute("spawn-max", { prompt: "work", thinking: "max" }, undefined, undefined, {
 		model,
 		cwd: requestedCwd,

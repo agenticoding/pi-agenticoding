@@ -16,9 +16,9 @@ try {
     private: true,
     type: "module",
     dependencies: {
-      "@earendil-works/pi-ai": "0.80.8",
-      "@earendil-works/pi-coding-agent": "0.80.8",
-      "@earendil-works/pi-tui": "0.80.8",
+      "@earendil-works/pi-ai": "0.81.0",
+      "@earendil-works/pi-coding-agent": "0.81.0",
+      "@earendil-works/pi-tui": "0.81.0",
       typebox: "1.1.38",
       "pi-agenticoding": `file:${tarball}`,
     },
@@ -48,7 +48,7 @@ if (loaded.errors.length > 0) throw new Error(JSON.stringify(loaded.errors));
 if (loaded.extensions.length !== 1) throw new Error("packed extension did not load");
 `);
   runChecked(process.execPath, ["smoke.mjs"], { cwd: host });
-  process.stdout.write("Packed Pi 0.80.8 host smoke passed with host-provided peers.\n");
+  process.stdout.write("Packed Pi 0.81.0 host smoke passed with host-provided peers.\n");
 } finally {
   if (tarball) rmSync(tarball, { force: true });
   rmSync(temp, { recursive: true, force: true });

@@ -20,6 +20,23 @@ export const ansiTheme = {
 	bold: (text: string) => text,
 } as unknown as Theme;
 
+const HOME_ENV_KEYS = ["HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH"] as const;
+
+export function setTempHome(home: string): () => void {
+	const snapshot = Object.fromEntries(HOME_ENV_KEYS.map((key) => [key, process.env[key]])) as Record<typeof HOME_ENV_KEYS[number], string | undefined>;
+	process.env.HOME = home;
+	process.env.USERPROFILE = home;
+	delete process.env.HOMEDRIVE;
+	delete process.env.HOMEPATH;
+	return () => {
+		for (const key of HOME_ENV_KEYS) {
+			const value = snapshot[key];
+			if (value === undefined) delete process.env[key];
+			else process.env[key] = value;
+		}
+	};
+}
+
 export function createRenderContext(overrides: Record<string, unknown> = {}): Record<string, unknown> {
 	return {
 		expanded: false,

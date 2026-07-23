@@ -44,7 +44,7 @@ That's it. Your agent now has `spawn`, `notebook_write`, `notebook_read`, `noteb
 
 ### Compatibility
 
-pi-agenticoding requires **Pi 0.80.8 or later** and **Node.js 22.19.0 or later**. Spawn passes Pi's already-selected public model into a child-owned runtime. Persisted, environment-based, and extension-rediscoverable provider/auth configuration is available to children; parent-only transient credentials, inline provider factories, or in-memory catalog changes are not guaranteed to be rediscoverable. In that unsupported case, spawn reports the child resolution/auth failure and does not silently select another model.
+pi-agenticoding requires **Pi 0.81.0 or later** and **Node.js 22.19.0 or later**. Spawn passes Pi's already-selected public model into a child-owned runtime. Persisted, environment-based, and extension-rediscoverable provider/auth configuration is available to children; parent-only transient credentials, inline provider factories, or in-memory catalog changes are not guaranteed to be rediscoverable. In that unsupported case, spawn reports the child resolution/auth failure and does not silently select another model.
 
 ---
 

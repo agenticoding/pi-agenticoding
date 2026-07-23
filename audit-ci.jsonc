@@ -2,9 +2,9 @@
   "$schema": "https://github.com/IBM/audit-ci/raw/main/docs/schema.json",
   "moderate": true,
   "allowlist": [
-    // npm's audit report exposes this hoisted advisory as the module path
+    // npm's audit report exposes this shrinkwrapped advisory as the module path
     // `protobufjs`; a config invariant separately rejects any vulnerable
-    // protobufjs occurrence outside the exact Pi 0.80.8 development path.
-    { "GHSA-f38q-mgvj-vph7|protobufjs": { "active": true, "expiry": "2026-09-01", "notes": "protobufjs 7.6.1 only via @earendil-works/pi-ai > @google/genai in the exact Pi 0.80.8 development graph" } }
+    // occurrence outside Pi coding agent's exact 0.81.0 shrinkwrapped path.
+    { "GHSA-j3f2-48v5-ccww|protobufjs": { "active": true, "expiry": "2026-09-01", "notes": "protobufjs 7.6.4 only in @earendil-works/pi-coding-agent's shrinkwrap via @earendil-works/pi-ai > @google/genai; consumer overrides cannot replace it, so remove when Pi publishes protobufjs 7.6.5+" } }
   ]
 }

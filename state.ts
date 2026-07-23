@@ -6,6 +6,7 @@
  */
 
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
+import type { ModelGroupsBootValidation, ResolvedModelGroup } from "./model-groups/types.js";
 import type { ReadonlyCacheEntry, ReadonlyCacheIssue } from "./readonly-cache.js";
 import type { NotebookTopicBoundaryHint } from "./notebook/topic.js";
 
@@ -53,6 +54,12 @@ export interface AgenticodingState {
 		/** Turn counter for repeated "you still owe the user a handoff" nudges. */
 		enforcementAttempts: number;
 	} | null;
+
+	/** Boot-time Model Groups validation snapshot used by /model-groups. */
+	modelGroups: {
+		groups: ResolvedModelGroup[];
+		validation: ModelGroupsBootValidation | null;
+	};
 
 	/**
 	 * Published child agent sessions keyed by toolCallId.
@@ -136,6 +143,7 @@ export function createState(): AgenticodingState {
 		handoffGeneration: 0,
 		handoffCompactionGeneration: null,
 		pendingRequestedHandoff: null,
+		modelGroups: { groups: [], validation: null },
 		childSessions,
 		liveChildSessions,
 		childSessionEpoch: 0,
@@ -178,6 +186,8 @@ export function resetState(state: AgenticodingState): void {
 	// /new abandons the previous session completely; do not carry its in-flight
 	// reservation into the fresh session.
 	state.handoffCompactionGeneration = null;
+	state.modelGroups.groups = [];
+	state.modelGroups.validation = null;
 	state.readonlyEnabled = false;
 	state.readonlyNudgePending = false;
 	state.readonlySkillCache.clear();

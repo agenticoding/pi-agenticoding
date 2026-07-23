@@ -123,4 +123,3 @@ test("sandbox allows writes through a symlinked temp path", () => {
 		try { fs.rmSync(realDir, { recursive: true, force: true }); } catch { /* best-effort cleanup */ }
 	}
 });
-

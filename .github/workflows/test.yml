@@ -52,7 +52,9 @@ jobs:
 
       - run: npm ci
 
-      # Uniform pre-flight checks — type errors and security issues on every platform
+      # Uniform pre-flight checks — type errors and security issues on every platform.
+      # audit-ci fails on moderate-or-higher advisories; reviewed exceptions, if ever
+      # needed, must be explicit and expiry-tracked in audit-ci.jsonc.
       - name: Type check
         run: npx tsc --noEmit
 
@@ -69,13 +71,13 @@ jobs:
       - name: E2E tests
         run: npm run test:e2e
 
-      # Upload test results for debugging — artifacts available for 30 days.
+      # Compatibility contracts run from a foreign cwd on the floor and Windows lanes.
       - name: Exact-floor compatibility contract
         if: (matrix.os == 'ubuntu-latest' && matrix.node-version == '22.19.0') || matrix.os == 'windows-latest'
         working-directory: ${{ runner.temp }}
         run: node "${{ github.workspace }}/scripts/test-compat-floor.mjs"
 
-      - name: Packed Pi 0.80.8 host contract
+      - name: Packed Pi 0.81.0 host contract
         if: (matrix.os == 'ubuntu-latest' && matrix.node-version == '22.19.0') || matrix.os == 'windows-latest'
         working-directory: ${{ runner.temp }}
         run: node "${{ github.workspace }}/scripts/test-package-host.mjs"
@@ -85,6 +87,7 @@ jobs:
         working-directory: ${{ runner.temp }}
         run: node "${{ github.workspace }}/scripts/test-compat-current.mjs"
 
+      # Upload test results for debugging — artifacts available for 30 days.
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4

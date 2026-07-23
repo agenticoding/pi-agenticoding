@@ -109,6 +109,8 @@ function assertResetClears(state: AgenticodingState): void {
 	assert.equal(state.pendingHandoff, null, "pendingHandoff must be null after reset");
 	assert.equal(state.pendingRequestedHandoff, null, "pendingRequestedHandoff must be null after reset");
 	assert.equal(state.pendingTopicBoundaryHint, null, "pendingTopicBoundaryHint must be null after reset");
+	assert.equal(state.modelGroups.groups.length, 0, "modelGroups.groups must be empty after reset");
+	assert.equal(state.modelGroups.validation, null, "modelGroups.validation must be null after reset");
 	assert.equal(state.readonlyEnabled, false, "readonlyEnabled must be false after reset");
 	assert.equal(state.readonlyNudgePending, false, "readonlyNudgePending must be false after reset");
 	assert.equal(state.readonlySkillCache.size, 0, "readonlySkillCache must be empty after reset");
@@ -272,6 +274,14 @@ test("Property 4: Reset clears all state fields", async () => {
 					s2.readonlySkillIssues.set("skill-b", { kind: "invalid-readonly-value", filePath: "/tmp/skill-b.md" });
 					s2.readonlyPromptIssues.set("prompt-b", { kind: "unreadable-file", filePath: "/tmp/prompt-b.md" });
 					s2.pendingReadonlyCommands.push({ type: "skill", name: "skill-a" });
+					s2.modelGroups.groups = [{
+						name: "stale",
+						scope: "project",
+						sourcePath: "<project>",
+						models: [],
+						validation: { unavailableRefs: [], shadowedByProject: false, degraded: false },
+					}];
+					s2.modelGroups.validation = { groups: s2.modelGroups.groups, loadIssues: [] };
 					resetState(s2);
 					assertResetClears(s2);
 				},

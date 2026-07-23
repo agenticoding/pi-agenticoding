@@ -1,12 +1,18 @@
 export type ThinkingValue = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 export type SpawnOutcome = "running" | "success" | "aborted" | "error";
 
+export type SpawnRouteDetails =
+	| { status: "inherited" }
+	| { status: "routed"; group: string; provider: string; modelId: string }
+	| { status: "unknown-fallback"; requestedGroup: string; provider: string; modelId: string };
+
 export type SpawnResultDetails = {
 	model: string;
 	/** Effective child-session level after Pi applies model capability clamping. */
 	thinking: ThinkingValue;
 	truncated: boolean;
 	outcome: SpawnOutcome;
+	route?: SpawnRouteDetails;
 	stats?: Record<string, number>;
 	statsUnavailable?: boolean;
 };

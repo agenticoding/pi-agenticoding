@@ -32,6 +32,7 @@ import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import type { Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
 import { Container, Spacer, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { TUI } from "@earendil-works/pi-tui";
+import { escapeDisplayLabel } from "../model-groups/display.js";
 import type { AgenticodingState } from "../state.js";
 import {
 	__setSingletons,
@@ -41,6 +42,8 @@ import {
 	getLastAssistantText,
 	type SpawnOutcome,
 	type SpawnResultDetails,
+	type SpawnRouteDetails,
+	type ThinkingValue,
 } from "./shared.js";
 
 // ── Render-only constants ────────────────────────────────────────────
@@ -105,6 +108,68 @@ function getStopReasonOutcome(stopReason: unknown): SpawnOutcome | undefined {
 	return undefined;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function normalizeRoute(value: unknown): SpawnRouteDetails | undefined {
+	if (!isRecord(value)) return undefined;
+	if (value.status === "inherited") return { status: "inherited" };
+	if (
+		value.status === "routed"
+		&& typeof value.group === "string"
+		&& typeof value.provider === "string"
+		&& typeof value.modelId === "string"
+	) {
+		return { status: "routed", group: value.group, provider: value.provider, modelId: value.modelId };
+	}
+	if (
+		value.status === "unknown-fallback"
+		&& typeof value.requestedGroup === "string"
+		&& typeof value.provider === "string"
+		&& typeof value.modelId === "string"
+	) {
+		return {
+			status: "unknown-fallback",
+			requestedGroup: value.requestedGroup,
+			provider: value.provider,
+			modelId: value.modelId,
+		};
+	}
+	return undefined;
+}
+
+function normalizeSpawnResultDetails(value: unknown): SpawnResultDetails | undefined {
+	if (!isRecord(value) || typeof value.model !== "string") return undefined;
+	const thinkingValues: ThinkingValue[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+	if (!thinkingValues.includes(value.thinking as ThinkingValue)) return undefined;
+
+	const outcome: SpawnOutcome = value.outcome === "success"
+		|| value.outcome === "aborted"
+		|| value.outcome === "error"
+		|| value.outcome === "running"
+		? value.outcome
+		: "running";
+	const details: SpawnResultDetails = {
+		model: value.model,
+		thinking: value.thinking as ThinkingValue,
+		truncated: typeof value.truncated === "boolean" ? value.truncated : false,
+		outcome,
+	};
+	const route = normalizeRoute(value.route);
+	if (route) details.route = route;
+	if (isRecord(value.stats)) {
+		const stats = Object.fromEntries(
+			Object.entries(value.stats).filter((entry): entry is [string, number] => (
+				typeof entry[1] === "number" && Number.isFinite(entry[1])
+			)),
+		);
+		if (Object.keys(stats).length > 0) details.stats = stats;
+	}
+	if (typeof value.statsUnavailable === "boolean") details.statsUnavailable = value.statsUnavailable;
+	return details;
+}
+
 function getOutcomeMarker(outcome: SpawnOutcome): string {
 	switch (outcome) {
 		case "success":
@@ -165,6 +230,26 @@ function equalStats(a?: Record<string, number>, b?: Record<string, number>): boo
 	if (!a || !b) return false;
 	const keys = Object.keys(a);
 	return keys.length === Object.keys(b).length && keys.every(key => a[key] === b[key]);
+}
+
+function equalRoute(a: SpawnResultDetails["route"], b: SpawnResultDetails["route"]): boolean {
+	return JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+}
+
+function formatSpawnIdentity(details: Pick<SpawnResultDetails, "model" | "thinking" | "route">): string {
+	if (details.route?.status === "routed") {
+		const group = escapeDisplayLabel(details.route.group);
+		const provider = escapeDisplayLabel(details.route.provider);
+		const modelId = escapeDisplayLabel(details.route.modelId);
+		return `${group} → ${provider}/${modelId} • ${details.thinking}`;
+	}
+	if (details.route?.status === "unknown-fallback") {
+		const requestedGroup = escapeDisplayLabel(details.route.requestedGroup);
+		const provider = escapeDisplayLabel(details.route.provider);
+		const modelId = escapeDisplayLabel(details.route.modelId);
+		return `${requestedGroup}? fallback → ${provider}/${modelId} • ${details.thinking}`;
+	}
+	return `${escapeDisplayLabel(details.model)} • ${details.thinking}`;
 }
 
 function padVisibleWidth(text: string, width: number): string {
@@ -525,12 +610,24 @@ class NestedAgentSessionComponent extends Container implements SpawnFrameTarget 
 			|| prior.thinking !== details.thinking
 			|| prior.truncated !== details.truncated
 			|| prior.outcome !== details.outcome
+			|| !equalRoute(prior.route, details.route)
 			|| !equalStats(prior.stats, details.stats)
 			|| prior.statsUnavailable !== details.statsUnavailable
 			|| this.nestTheme !== theme;
 		this.details = details;
 		this.nestTheme = theme;
 		this.liveOutcome = details.outcome;
+		if (changed) this.clearRenderCache();
+	}
+
+	setOutcome(outcome: SpawnOutcome, theme: Theme): void {
+		const changed = this.liveOutcome !== outcome
+			|| this.details?.outcome !== outcome
+			|| this.nestTheme !== theme;
+		this.liveOutcome = outcome;
+		this.lastAction = getOutcomeStatusText(outcome) ?? this.lastAction;
+		this.nestTheme = theme;
+		if (this.details) this.details = { ...this.details, outcome };
 		if (changed) this.clearRenderCache();
 	}
 
@@ -880,7 +977,7 @@ class NestedAgentSessionComponent extends Container implements SpawnFrameTarget 
 		// Identity line — distinguishes nested spawns in collapsed view
 		if (details) {
 			lines.push(truncateAndColor(
-				`${getOutcomeMarker(outcome)}${details.model} • ${details.thinking}`,
+				`${getOutcomeMarker(outcome)}${formatSpawnIdentity(details)}`,
 				width,
 				color,
 				"dim",
@@ -934,7 +1031,7 @@ class NestedAgentSessionComponent extends Container implements SpawnFrameTarget 
 		const colorExpanded = (name: ThemeColor, text: string) => this.nestTheme ? this.nestTheme.fg(name, text) : text;
 		// Expanded mode has no shell background — safe to color before truncation
 		if (this.details) {
-			const header = `${getOutcomeMarker(this.liveOutcome)}${this.details.model} • ${this.details.thinking}`;
+			const header = `${getOutcomeMarker(this.liveOutcome)}${formatSpawnIdentity(this.details)}`;
 			lines.push(leftPad + truncateToWidth(
 				colorExpanded("dim", header),
 				childWidth,
@@ -1187,7 +1284,11 @@ function renderSpawnCall(args: any, theme: Theme, context: { expanded: boolean }
 	const prompt = typeof args.prompt === "string" ? args.prompt : "...";
 	const { shown, remaining } = renderPromptPreview(prompt, context.expanded);
 	let text = theme.fg("toolTitle", theme.bold("spawn ")) + theme.fg("accent", "child");
-	if (typeof args.thinking === "string") {
+	const group = typeof args.group === "string" ? args.group.trim() : "";
+	if (group) {
+		text += theme.fg("dim", ` [${escapeDisplayLabel(group)}]`);
+	}
+	if (!group && typeof args.thinking === "string") {
 		text += theme.fg("dim", ` [${args.thinking}]`);
 	}
 	text += `\n${theme.fg("dim", shown)}`;
@@ -1212,14 +1313,10 @@ function renderSpawnResult(
 	result: { content: { type: string; text?: string }[]; details?: unknown },
 	expanded: boolean,
 	theme: Theme,
-	context: { toolCallId: string; lastComponent?: unknown; invalidate: () => void; showImages: boolean },
+	context: { toolCallId: string; lastComponent?: unknown; invalidate: () => void; showImages: boolean; isError?: boolean },
 	state: AgenticodingState,
 ): NestedAgentSessionComponent | Text {
-	// Runtime guard — both parent and child use executeSpawn which produces matching shape,
-	// but an explicit check ensures we don't crash on unexpected input
-	const details: SpawnResultDetails | undefined = result.details && typeof result.details === "object"
-		? (result.details as SpawnResultDetails)
-		: undefined;
+	const details = normalizeSpawnResultDetails(result.details);
 	const component = context.lastComponent instanceof NestedAgentSessionComponent
 		? context.lastComponent
 		: new NestedAgentSessionComponent();
@@ -1232,10 +1329,12 @@ function renderSpawnResult(
 	const child = state.childSessions.get(context.toolCallId);
 	if (child) {
 		component.attachSession(context.toolCallId, child, state);
+		if (context.isError) component.setOutcome("error", theme);
 		state.childSessions.delete(context.toolCallId);
 		return component;
 	}
 	if (component.hasSession()) {
+		if (context.isError) component.setOutcome("error", theme);
 		return component;
 	}
 
@@ -1247,8 +1346,8 @@ function renderSpawnResult(
 		.join("\n\n")
 		.trim();
 	const summary = output || "(no output)";
-	const outcome = details?.outcome ?? "running";
-	const meta = details ? `${getOutcomeMarker(outcome)}${details.model} • ${details.thinking}` : "";
+	const outcome = context.isError ? "error" : details?.outcome ?? "running";
+	const meta = details ? `${getOutcomeMarker(outcome)}${formatSpawnIdentity(details)}` : "";
 	const status = getOutcomeStatusText(outcome);
 	const text = [
 		meta ? theme.fg("dim", meta) : "",
@@ -1258,7 +1357,7 @@ function renderSpawnResult(
 	return new Text(text, SPAWN_SHELL_PADDING_X, SPAWN_SHELL_PADDING_Y, getShellBackground(theme, outcome));
 }
 
-export { NestedAgentSessionComponent, renderSpawnCall, renderSpawnResult };
+export { NestedAgentSessionComponent, formatSpawnIdentity, renderSpawnCall, renderSpawnResult };
 
 // ── Test support ──────────────────────────────────────────────────────
 

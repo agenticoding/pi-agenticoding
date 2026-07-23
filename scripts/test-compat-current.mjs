@@ -49,6 +49,7 @@ try {
     "tests/unit/spawn-runtime-compatibility.test.ts",
     "tests/unit/spawn-lifecycle.test.ts",
     "tests/unit/spawn-event.test.ts",
+    "tests/unit/spawn-render.test.ts",
     "tests/unit/dependency-graph-assertions.test.ts",
     "tests/unit/spawn.test.ts",
     "tests/unit/readonly-spawn.test.ts",

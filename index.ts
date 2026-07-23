@@ -56,6 +56,12 @@ import {
 	buildReadonlyTopicBoundaryNotification,
 } from "./readonly-copy.js";
 import { registerSpawnTool } from "./spawn/index.js";
+import { registerModelGroupsCommand } from "./model-groups/command.js";
+import { registerModelGroupAutocomplete } from "./model-groups/autocomplete.js";
+import { getEffectiveModelGroupNames } from "./model-groups/router.js";
+import { loadModelGroups, summarizeBootValidation, validateModelGroups } from "./model-groups/store.js";
+import { escapeDisplayLabel } from "./model-groups/display.js";
+import type { ModelGroupsAccess } from "./model-groups/types.js";
 import {
 	cacheLookupCommand,
 	cacheLookupCommandIssue,
@@ -186,6 +192,30 @@ function consumePendingReadonlyToggle(
 	}
 }
 
+function modelGroupsAccess(ctx: ExtensionContext): ModelGroupsAccess {
+	return { cwd: ctx.cwd, policy: ctx.isProjectTrusted() ? "global-project" : "global-only" };
+}
+
+function refreshModelGroupsState(state: AgenticodingState, ctx: ExtensionContext) {
+	state.modelGroups.groups = [];
+	state.modelGroups.validation = null;
+	if (!ctx.cwd || !(ctx as any).modelRegistry) return null;
+	const loadedModelGroups = loadModelGroups(modelGroupsAccess(ctx));
+	const resolvedModelGroups = validateModelGroups(loadedModelGroups, (ctx as any).modelRegistry);
+	state.modelGroups.groups = resolvedModelGroups;
+	state.modelGroups.validation = { groups: resolvedModelGroups, loadIssues: loadedModelGroups.issues };
+	return state.modelGroups.validation;
+}
+
+function modelGroupsPromptSection(names: string[]): string | undefined {
+	if (names.length === 0) return undefined;
+	return `\n## Model Groups for spawn\n` +
+		`Available Model Groups: ${names.join(", ")}\n` +
+		`When the operator asks to spawn with one of these groups, or mentions #group-name, call spawn with group set to the exact group name only when the mapping is known and confident. ` +
+		`If no known/confident group is requested, omit group and inherit the parent model/thinking. ` +
+		`The group list is names-only; do not assume provider/model membership, thinking levels, auth status, validation details, or storage paths from it.`;
+}
+
 export default function (pi: ExtensionAPI): void {
 	const state: AgenticodingState = createState();
 
@@ -202,6 +232,7 @@ export default function (pi: ExtensionAPI): void {
 
 	// ── Register commands ───────────────────────────────────────────
 	registerHandoffCommand(pi, state);
+	registerModelGroupsCommand(pi, state);
 
 	// ── Readonly mode ───────────────────────────────────────────────
 
@@ -459,6 +490,7 @@ export default function (pi: ExtensionAPI): void {
 
 		// Update TUI indicators before each user-prompt agent run
 		updateIndicators(ctx, state);
+		refreshModelGroupsState(state, ctx);
 
 		const parts: string[] = [event.systemPrompt];
 
@@ -476,6 +508,11 @@ export default function (pi: ExtensionAPI): void {
 				`\n## Active Notebook Topic\n` +
 				`No active notebook topic is set. Early in the next substantive task, assign a short stable topic with \`notebook_topic_set\`. Human-set topics are authoritative.`,
 			);
+		}
+
+		const modelGroupSection = modelGroupsPromptSection(getEffectiveModelGroupNames(state.modelGroups.groups));
+		if (modelGroupSection) {
+			parts.push(modelGroupSection);
 		}
 
 		// Inject notebook listing so the LLM always knows what's available
@@ -626,6 +663,23 @@ export default function (pi: ExtensionAPI): void {
 				ctx.ui.setWidget(WIDGET_KEY_WARNING, undefined);
 			}
 		}
+
+		registerModelGroupAutocomplete(ctx, state);
+		const validation = refreshModelGroupsState(state, ctx);
+		if (validation && ctx.hasUI) {
+			for (const issue of validation.loadIssues) {
+				const sourcePath = escapeDisplayLabel(issue.sourcePath);
+				const backupPath = issue.backupPath ? escapeDisplayLabel(issue.backupPath) : undefined;
+				const detail = escapeDisplayLabel(issue.message);
+				const backupNote = issue.backupFailed ? `; backup failed${backupPath ? ` (${backupPath})` : ""}, original file left untouched` : "";
+				ctx.ui.notify(`Model Groups config ${issue.kind} in ${issue.scope} scope (${sourcePath}); using empty config for that scope${backupNote}; ${detail}`, "warning");
+			}
+			const { unavailableCount, overrideCount } = summarizeBootValidation(validation.groups);
+			if (unavailableCount > 0 || overrideCount > 0) {
+				ctx.ui.notify(`Model Groups boot validation: ${unavailableCount} unavailable model references · ${overrideCount} project overrides`, "warning");
+			}
+		}
+
 		rehydrateReadonlyState(ctx);
 		updateIndicators(ctx, state);
 	});
