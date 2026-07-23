@@ -1547,15 +1547,15 @@ test("registerSpawnTool registers a tool with correct name and metadata", () => 
 test("spawn docs document active registered inheritance", async () => {
 	const readme = await readFile("README.md", "utf8");
 	const changelog = await readFile("CHANGELOG.md", "utf8");
-	const spawnSection = /### Spawn — Isolate Noise[\s\S]*?### Notebook/.exec(readme)?.[0] ?? "";
-	const unreleased = /## \[Unreleased\][\s\S]*?## \[0\.3\.0\]/.exec(changelog)?.[0] ?? "";
+	const spawnSection = /\| \*\*Spawn\*\* \|[^\|]*\|/.exec(readme)?.[0] ?? "";
+	const v040 = /## \[0\.4\.0\][\s\S]*?## \[0\.3\.0\]/.exec(changelog)?.[0] ?? "";
 
-	assert.match(spawnSection, /active registered tools executable in the child session/);
+	assert.match(spawnSection, /active registered (parent )?tools executable in the child session/);
 	assert.match(spawnSection, /MCP\/extension tools such as ChunkHound/);
 	assert.match(spawnSection, /[Cc]hild-local notebook tools/);
 	assert.match(spawnSection, /cannot spawn grandchildren or handoff/);
 	assert.doesNotMatch(spawnSection, /built-in tools only/);
-	assert.match(unreleased, /active registered parent tools/);
-	assert.match(unreleased, /spawn and handoff/);
-	assert.match(unreleased, /notebook tools/);
+	assert.match(v040, /active registered parent tools/);
+	assert.match(v040, /spawn and handoff/);
+	assert.match(v040, /notebook tools/);
 });

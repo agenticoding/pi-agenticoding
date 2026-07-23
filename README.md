@@ -71,7 +71,7 @@ The agent set a topic, spawned research, saved decisions, delegated implementati
 
 | | |
 |---|---|
-| **Spawn** | Subtask in a clean child context. Parent orchestrates; siblings can run in parallel. Children do not spawn or handoff. |
+| **Spawn** | Subtask in a clean child context. Parent orchestrates; siblings run in parallel. Children inherit active registered parent tools executable in the child session — MCP/extension tools such as ChunkHound — plus child-local notebook tools. Children cannot spawn grandchildren or handoff. |
 | **Notebook** | Named pages coupled to this conversation/task. Carries grounding across handoff; cleared on `/new`. Not a long-lived memory store — lifetime matches the work, so it cannot go stale across unrelated sessions. |
 | **Handoff** | Write a brief, compact, resume clean. Notebook holds reusable grounding for this task; the brief holds only remaining situational context. |
 | **Readonly** | Blocks write/edit and guards bash while researching. Spawn inherits the posture. **macOS/Linux:** bash can run under OS sandbox (`sandbox-exec` / `bwrap`) — syscall-level write denial outside temp. **Windows:** no OS sandbox — **best-effort command classifier only** (interpreters and clever pipes can bypass). A coding guardrail on every OS — not a hardened security boundary. |
