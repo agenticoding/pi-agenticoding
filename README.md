@@ -1,3 +1,9 @@
+<p align="center">
+  <a href="https://pi.dev/packages/pi-schematic">
+    <img src="https://raw.githubusercontent.com/chunkhound/pi-schematic/main/assets/logo-animated.gif" alt="pi-schematic" width="180">
+  </a>
+</p>
+
 # pi-schematic
 
 [![pi.dev package](https://img.shields.io/badge/pi.dev-package-purple)](https://pi.dev/packages/pi-schematic)
