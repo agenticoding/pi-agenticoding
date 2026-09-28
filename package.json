@@ -1,6 +1,6 @@
 {
   "name": "pi-schematic",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "type": "module",
   "description": "Context management primitives for the pi coding agent — spawn, notebook, handoff",
   "license": "MIT",
