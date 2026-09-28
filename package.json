@@ -1,6 +1,6 @@
 {
-  "name": "pi-agenticoding",
-  "version": "0.5.0",
+  "name": "pi-schematic",
+  "version": "0.6.0",
   "type": "module",
   "description": "Context management primitives for the pi coding agent — spawn, notebook, handoff",
   "license": "MIT",
@@ -9,7 +9,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/agenticoding/pi-agenticoding.git"
+    "url": "git+https://github.com/chunkhound/pi-schematic.git"
   },
   "engines": {
     "node": ">=22.19.0"
@@ -43,6 +43,7 @@
     "typescript": "^6.0.3"
   },
   "pi": {
+    "image": "https://raw.githubusercontent.com/chunkhound/pi-schematic/main/assets/logo-animated.gif",
     "extensions": [
       "./index.ts"
     ]

@@ -1,0 +1,111 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- pi-schematic brand mark, Tetris intro (mirrors the pi.dev animation).
+     Pieces fall bottom-up into a SOLID 5x5; the two counter rows are turquoise
+     filler that flashes and CLEARS AWAY, leaving the "S". 5x5 grid unit 117.355
+     (same as Pi). Loops every 6s. Source of truth for the GIF in this folder. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 800" role="img" aria-label="pi-schematic (animated)">
+  <g id="logo">
+    <animateTransform attributeName="transform" type="translate" additive="sum" calcMode="discrete" dur="6s" repeatCount="indefinite" keyTimes="0;0.75;0.79;0.83;1" values="0 0;0 0;0 22;0 0;0 0"/>
+    <g class="piece gold">
+      <animateTransform attributeName="transform" type="translate" calcMode="discrete" dur="6.0s" repeatCount="indefinite" keyTimes="0.00000;0.02500;0.04167;0.05833;0.07500;0.09167;0.10833;0.12500;1.00000" values="0 -704.130;0 -704.130;0 -586.775;0 -469.420;0 -352.065;0 -234.710;0 -117.355;0 -0.000;0 0.000"/>
+      <path fill="#F1BE58" d="M576.033 458.678h117.355v117.355h-117.355ZM106.612 576.033h117.355v117.355h-117.355ZM223.968 576.033h117.355v117.355h-117.355ZM341.322 576.033h117.355v117.355h-117.355ZM458.678 576.033h117.355v117.355h-117.355ZM576.033 576.033h117.355v117.355h-117.355Z"/>
+      <g class="bevel">
+        <animate attributeName="opacity" calcMode="linear" dur="6.0s" repeatCount="indefinite" keyTimes="0;0.75833;0.80833;1" values="1;1;0;0"/>
+        <rect x="576.033" y="458.678" width="117.355" height="10.000" fill="#FFFFFF" opacity="0.3"/>
+        <rect x="576.033" y="458.678" width="10.000" height="117.355" fill="#FFFFFF" opacity="0.16"/>
+        <rect x="683.388" y="458.678" width="10.000" height="117.355" fill="#856930" opacity="0.65"/>
+        <rect x="106.612" y="576.033" width="117.355" height="10.000" fill="#FFFFFF" opacity="0.3"/>
+        <rect x="106.612" y="576.033" width="10.000" height="117.355" fill="#FFFFFF" opacity="0.16"/>
+        <rect x="106.612" y="683.388" width="117.355" height="10.000" fill="#856930" opacity="0.85"/>
+        <rect x="223.968" y="576.033" width="117.355" height="10.000" fill="#FFFFFF" opacity="0.3"/>
+        <rect x="223.968" y="683.388" width="117.355" height="10.000" fill="#856930" opacity="0.85"/>
+        <rect x="341.322" y="576.033" width="117.355" height="10.000" fill="#FFFFFF" opacity="0.3"/>
+        <rect x="341.322" y="683.388" width="117.355" height="10.000" fill="#856930" opacity="0.85"/>
+        <rect x="458.678" y="576.033" width="117.355" height="10.000" fill="#FFFFFF" opacity="0.3"/>
+        <rect x="458.678" y="683.388" width="117.355" height="10.000" fill="#856930" opacity="0.85"/>
+        <rect x="576.033" y="683.388" width="117.355" height="10.000" fill="#856930" opacity="0.85"/>
+        <rect x="683.388" y="576.033" width="10.000" height="117.355" fill="#856930" opacity="0.65"/>
+      </g>
+    </g>
+    <g class="piece tb">
+      <animateTransform attributeName="transform" type="translate" calcMode="discrete" dur="6.0s" repeatCount="indefinite" keyTimes="0.00000;0.13333;0.15000;0.16667;0.18333;0.20000;0.21667;0.23333;1.00000" values="0 -704.130;0 -704.130;0 -586.775;0 -469.420;0 -352.065;0 -234.710;0 -117.355;0 -0.000;0 0.000"/>
+      <animate attributeName="opacity" calcMode="linear" dur="6.0s" repeatCount="indefinite" keyTimes="0;0.72500;0.73833;1" values="1;1;0;0"/>
+      <path fill="#83CCD2" d="M106.612 458.678h117.355v117.355h-117.355ZM223.968 458.678h117.355v117.355h-117.355ZM341.322 458.678h117.355v117.355h-117.355ZM458.678 458.678h117.355v117.355h-117.355Z"/>
+      <g class="bevel">
+        <animate attributeName="opacity" calcMode="linear" dur="6.0s" repeatCount="indefinite" keyTimes="0;0.75833;0.80833;1" values="1;1;0;0"/>
+        <rect x="106.612" y="458.678" width="117.355" height="10.000" fill="#FFFFFF" opacity="0.3"/>
+        <rect x="106.612" y="458.678" width="10.000" height="117.355" fill="#FFFFFF" opacity="0.16"/>
+        <rect x="106.612" y="566.033" width="117.355" height="10.000" fill="#487074" opacity="0.85"/>
+        <rect x="223.968" y="458.678" width="117.355" height="10.000" fill="#FFFFFF" opacity="0.3"/>
+        <rect x="223.968" y="566.033" width="117.355" height="10.000" fill="#487074" opacity="0.85"/>
+        <rect x="341.322" y="458.678" width="117.355" height="10.000" fill="#FFFFFF" opacity="0.3"/>
+        <rect x="341.322" y="566.033" width="117.355" height="10.000" fill="#487074" opacity="0.85"/>
+        <rect x="458.678" y="458.678" width="117.355" height="10.000" fill="#FFFFFF" opacity="0.3"/>
+        <rect x="458.678" y="566.033" width="117.355" height="10.000" fill="#487074" opacity="0.85"/>
+        <rect x="566.033" y="458.678" width="10.000" height="117.355" fill="#487074" opacity="0.65"/>
+      </g>
+    </g>
+    <g class="piece blue">
+      <animateTransform attributeName="transform" type="translate" calcMode="discrete" dur="6.0s" repeatCount="indefinite" keyTimes="0.00000;0.24167;0.25833;0.27500;0.29167;0.30833;0.32500;0.34167;1.00000" values="0 -704.130;0 -704.130;0 -586.775;0 -469.420;0 -352.065;0 -234.710;0 -117.355;0 -0.000;0 0.000"/>
+      <path fill="#4D9ABF" d="M106.612 341.322h117.355v117.355h-117.355ZM223.968 341.322h117.355v117.355h-117.355ZM341.322 341.322h117.355v117.355h-117.355ZM458.678 341.322h117.355v117.355h-117.355ZM576.033 341.322h117.355v117.355h-117.355Z"/>
+      <g class="bevel">
+        <animate attributeName="opacity" calcMode="linear" dur="6.0s" repeatCount="indefinite" keyTimes="0;0.75833;0.80833;1" values="1;1;0;0"/>
+        <rect x="106.612" y="341.322" width="117.355" height="10.000" fill="#FFFFFF" opacity="0.3"/>
+        <rect x="106.612" y="341.322" width="10.000" height="117.355" fill="#FFFFFF" opacity="0.16"/>
+        <rect x="106.612" y="448.678" width="117.355" height="10.000" fill="#2A5569" opacity="0.85"/>
+        <rect x="223.968" y="341.322" width="117.355" height="10.000" fill="#FFFFFF" opacity="0.3"/>
+        <rect x="223.968" y="448.678" width="117.355" height="10.000" fill="#2A5569" opacity="0.85"/>
+        <rect x="341.322" y="341.322" width="117.355" height="10.000" fill="#FFFFFF" opacity="0.3"/>
+        <rect x="341.322" y="448.678" width="117.355" height="10.000" fill="#2A5569" opacity="0.85"/>
+        <rect x="458.678" y="341.322" width="117.355" height="10.000" fill="#FFFFFF" opacity="0.3"/>
+        <rect x="458.678" y="448.678" width="117.355" height="10.000" fill="#2A5569" opacity="0.85"/>
+        <rect x="576.033" y="341.322" width="117.355" height="10.000" fill="#FFFFFF" opacity="0.3"/>
+        <rect x="576.033" y="448.678" width="117.355" height="10.000" fill="#2A5569" opacity="0.85"/>
+        <rect x="683.388" y="341.322" width="10.000" height="117.355" fill="#2A5569" opacity="0.65"/>
+      </g>
+    </g>
+    <g class="piece ta">
+      <animateTransform attributeName="transform" type="translate" calcMode="discrete" dur="6.0s" repeatCount="indefinite" keyTimes="0.00000;0.35000;0.36667;0.38333;0.40000;0.41667;0.43333;0.45000;1.00000" values="0 -704.130;0 -704.130;0 -586.775;0 -469.420;0 -352.065;0 -234.710;0 -117.355;0 -0.000;0 0.000"/>
+      <animate attributeName="opacity" calcMode="linear" dur="6.0s" repeatCount="indefinite" keyTimes="0;0.72500;0.73833;1" values="1;1;0;0"/>
+      <path fill="#83CCD2" d="M223.968 223.968h117.355v117.355h-117.355ZM341.322 223.968h117.355v117.355h-117.355ZM458.678 223.968h117.355v117.355h-117.355ZM576.033 223.968h117.355v117.355h-117.355Z"/>
+      <g class="bevel">
+        <animate attributeName="opacity" calcMode="linear" dur="6.0s" repeatCount="indefinite" keyTimes="0;0.75833;0.80833;1" values="1;1;0;0"/>
+        <rect x="223.968" y="223.968" width="117.355" height="10.000" fill="#FFFFFF" opacity="0.3"/>
+        <rect x="223.968" y="223.968" width="10.000" height="117.355" fill="#FFFFFF" opacity="0.16"/>
+        <rect x="223.968" y="331.322" width="117.355" height="10.000" fill="#487074" opacity="0.85"/>
+        <rect x="341.322" y="223.968" width="117.355" height="10.000" fill="#FFFFFF" opacity="0.3"/>
+        <rect x="341.322" y="331.322" width="117.355" height="10.000" fill="#487074" opacity="0.85"/>
+        <rect x="458.678" y="223.968" width="117.355" height="10.000" fill="#FFFFFF" opacity="0.3"/>
+        <rect x="458.678" y="331.322" width="117.355" height="10.000" fill="#487074" opacity="0.85"/>
+        <rect x="576.033" y="223.968" width="117.355" height="10.000" fill="#FFFFFF" opacity="0.3"/>
+        <rect x="576.033" y="331.322" width="117.355" height="10.000" fill="#487074" opacity="0.85"/>
+        <rect x="683.388" y="223.968" width="10.000" height="117.355" fill="#487074" opacity="0.65"/>
+      </g>
+    </g>
+    <g class="piece coral">
+      <animateTransform attributeName="transform" type="translate" calcMode="discrete" dur="6.0s" repeatCount="indefinite" keyTimes="0.00000;0.45833;0.47500;0.49167;0.50833;0.52500;0.54167;0.55833;1.00000" values="0 -704.130;0 -704.130;0 -586.775;0 -469.420;0 -352.065;0 -234.710;0 -117.355;0 -0.000;0 0.000"/>
+      <path fill="#F09082" d="M106.612 106.612h117.355v117.355h-117.355ZM223.968 106.612h117.355v117.355h-117.355ZM341.322 106.612h117.355v117.355h-117.355ZM458.678 106.612h117.355v117.355h-117.355ZM576.033 106.612h117.355v117.355h-117.355ZM106.612 223.968h117.355v117.355h-117.355Z"/>
+      <g class="bevel">
+        <animate attributeName="opacity" calcMode="linear" dur="6.0s" repeatCount="indefinite" keyTimes="0;0.75833;0.80833;1" values="1;1;0;0"/>
+        <rect x="106.612" y="106.612" width="117.355" height="10.000" fill="#FFFFFF" opacity="0.3"/>
+        <rect x="106.612" y="106.612" width="10.000" height="117.355" fill="#FFFFFF" opacity="0.16"/>
+        <rect x="223.968" y="106.612" width="117.355" height="10.000" fill="#FFFFFF" opacity="0.3"/>
+        <rect x="223.968" y="213.968" width="117.355" height="10.000" fill="#844F48" opacity="0.85"/>
+        <rect x="341.322" y="106.612" width="117.355" height="10.000" fill="#FFFFFF" opacity="0.3"/>
+        <rect x="341.322" y="213.968" width="117.355" height="10.000" fill="#844F48" opacity="0.85"/>
+        <rect x="458.678" y="106.612" width="117.355" height="10.000" fill="#FFFFFF" opacity="0.3"/>
+        <rect x="458.678" y="213.968" width="117.355" height="10.000" fill="#844F48" opacity="0.85"/>
+        <rect x="576.033" y="106.612" width="117.355" height="10.000" fill="#FFFFFF" opacity="0.3"/>
+        <rect x="576.033" y="213.968" width="117.355" height="10.000" fill="#844F48" opacity="0.85"/>
+        <rect x="683.388" y="106.612" width="10.000" height="117.355" fill="#844F48" opacity="0.65"/>
+        <rect x="106.612" y="223.968" width="10.000" height="117.355" fill="#FFFFFF" opacity="0.16"/>
+        <rect x="106.612" y="331.322" width="117.355" height="10.000" fill="#844F48" opacity="0.85"/>
+        <rect x="213.968" y="223.968" width="10.000" height="117.355" fill="#844F48" opacity="0.65"/>
+      </g>
+    </g>
+    <g class="clearflash">
+      <animate attributeName="opacity" calcMode="discrete" dur="6.0s" repeatCount="indefinite" keyTimes="0.00000;0.62500;0.63300;0.65000;0.67000;0.68700;0.70400;0.72100;0.72500;1.00000" values="0;0;1;0;1;0;1;0;0;0"/>
+      <path fill="#FFFFFF" d="M106.612 458.678h117.355v117.355h-117.355ZM223.968 458.678h117.355v117.355h-117.355ZM341.322 458.678h117.355v117.355h-117.355ZM458.678 458.678h117.355v117.355h-117.355ZM223.968 223.968h117.355v117.355h-117.355ZM341.322 223.968h117.355v117.355h-117.355ZM458.678 223.968h117.355v117.355h-117.355ZM576.033 223.968h117.355v117.355h-117.355Z"/>
+    </g>
+  </g>
+</svg>

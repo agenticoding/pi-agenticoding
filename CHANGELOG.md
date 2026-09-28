@@ -7,8 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-26
+
+### Added
+
+- **Brand mark** — the blocky `S` for "schematic", built from Pi's 5×5 grid unit (`117.355`) and palette. Ships a static tri-colour mark, a monochrome variant, and a Tetris-style animated intro (`assets/`) used as the README hero and the pi.dev gallery preview (`pi.image`).
+
 ### Breaking Changes
 
+- **Project renamed to `pi-schematic`** — the package, repository, and config directory move to `chunkhound/pi-schematic`. Runtime identifiers change with no backwards compatibility: session custom entries and TUI keys use the `pi-schematic-*` prefix, Model Groups persist under `~/.pi/agent/pi-schematic/` (or `.pi/pi-schematic/`), and the shared state type is now `SchematicState`. Existing sessions and config files from `pi-agenticoding` are not migrated.
 - **Handoff carries the next instruction verbatim** — the handoff tool now takes `nextInstruction?`, `context?`, `discardPages?` (replacing the old `task` field). The successor's objective is delivered word-for-word in a real user message (`## Next instruction` + `## Context`), so it can no longer be paraphrased away at compaction. Human-facing behavior is unchanged (`/handoff <direction>` works as before); the break is limited to the internal LLM-facing tool contract, where stale callers passing `task` fail loudly.
 
 ### Changed
@@ -170,9 +177,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Comprehensive test suite** — 50+ tests covering spawn execution and rendering (concurrency, cancellation, truncation, stale detection, ownership lifecycle, microtask batching), ledger tools (add/get/list, staleness, rehydration, empty states, prompt hints), handoff (tool, command, compaction), watchdog (nudge injection, enforcement), and extension lifecycle.
 - **MIT licensed** — open-source permissive license.
 
-[Unreleased]: https://github.com/agenticoding/pi-agenticoding/compare/v0.5.0...HEAD
-[0.5.0]: https://github.com/agenticoding/pi-agenticoding/compare/v0.4.0...v0.5.0
-[0.4.0]: https://github.com/agenticoding/pi-agenticoding/compare/v0.3.0...v0.4.0
-[0.3.0]: https://github.com/agenticoding/pi-agenticoding/compare/v0.2.0...v0.3.0
-[0.2.0]: https://github.com/agenticoding/pi-agenticoding/compare/v0.1.0...v0.2.0
-[0.1.0]: https://github.com/agenticoding/pi-agenticoding/releases/tag/v0.1.0
+[Unreleased]: https://github.com/chunkhound/pi-schematic/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/chunkhound/pi-schematic/compare/v0.5.0...v0.6.0
+[0.5.0]: https://github.com/chunkhound/pi-schematic/compare/v0.4.0...v0.5.0
+[0.4.0]: https://github.com/chunkhound/pi-schematic/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/chunkhound/pi-schematic/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/chunkhound/pi-schematic/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/chunkhound/pi-schematic/releases/tag/v0.1.0
