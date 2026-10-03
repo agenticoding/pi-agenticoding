@@ -40,6 +40,10 @@ import { getReadonlyFromBranch } from "./readonly-rehydration.js";
 import { HANDOFF_REQUIRED_STATUS } from "./handoff/copy.js";
 import { registerHandoffCommand } from "./handoff/command.js";
 import { registerHandoffCompaction } from "./handoff/compact.js";
+import { monotonicNow } from "./time/clock.js";
+import { registerTimeAwareness } from "./time/register.js";
+import { reconstructClockFromContext } from "./time/store.js";
+import { formatCurrentPeriod } from "./time/format.js";
 import { getUndeliveredHandoffMessage } from "./handoff/recovery.js";
 import { sendFollowUp } from "./follow-up.js";
 import {
@@ -475,6 +479,7 @@ export default function (pi: ExtensionAPI): void {
 	registerWatchdog(pi, state);
 	registerNotebookRehydration(pi, state);
 	registerHandoffCompaction(pi, state);
+	registerTimeAwareness(pi, state);
 
 	// ── Register commands ───────────────────────────────────────────
 	registerHandoffCommand(pi, state);
@@ -766,6 +771,11 @@ export default function (pi: ExtensionAPI): void {
 		// Inject context management primer at the end of the system prompt
 		parts.push("\n" + CONTEXT_PRIMER);
 
+		// Coarse environment fact for retrieval freshness. Month+year only, so the
+		// text is byte-identical within a calendar month and never churns the cache.
+		// Not an elapsed-time annotation — that is the tool-result footer / cut anchor.
+		parts.push(`\n## Current period\n${formatCurrentPeriod(new Date())}`);
+
 		if (state.activeNotebookTopic) {
 			parts.push(
 				`\n## Active Notebook Topic\n` +
@@ -932,6 +942,7 @@ export default function (pi: ExtensionAPI): void {
 				ctx.ui.setWidget(WIDGET_KEY_WARNING, undefined);
 			}
 		}
+		reconstructClockFromContext(state.clock, ctx, monotonicNow());
 
 		registerModelGroupAutocomplete(ctx, state);
 		const validation = refreshModelGroupsState(state, ctx);
@@ -968,6 +979,7 @@ export default function (pi: ExtensionAPI): void {
 		// branch replaces the in-memory value before any retry could reuse a staged
 		// epoch from the abandoned branch.
 		reconstructNotebook(state, ctx.sessionManager?.getBranch?.() ?? []);
+		reconstructClockFromContext(state.clock, ctx, monotonicNow());
 		ensureNotebookToolsActive(pi);
 		rehydrateReadonlyState(ctx);
 		recoverHandoffMessage(ctx);

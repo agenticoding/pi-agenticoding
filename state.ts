@@ -9,6 +9,7 @@ import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import type { ModelGroupsBootValidation, ResolvedModelGroup } from "./model-groups/types.js";
 import type { FrontmatterEntry, FrontmatterIssue } from "./frontmatter-cache.js";
 import type { NotebookTopicBoundaryHint } from "./notebook/topic.js";
+import { createClock, monotonicNow, type Clock } from "./time/clock.js";
 import type { HandoffPayload } from "./handoff/format.js";
 
 export interface SchematicState {
@@ -149,6 +150,9 @@ export interface SchematicState {
 	 */
 	pendingReadonlyCommands: Array<{ type: "skill" | "command"; name: string }>;
 
+	/** L = accumulated active task ms; reset on /new; reconstructed from the branch. */
+	clock: Clock;
+
 	/**
 	 * Last context-percentage band at which the watchdog nudge was delivered.
 	 * null = never delivered. Bands: null (<30), 0 (30-49), 1 (50-69), 2 (70+).
@@ -194,6 +198,7 @@ export function createState(): SchematicState {
 		frontmatterPromptIssues,
 		pendingReadonlyCommands: [],
 		lastWatchdogBand: null,
+		clock: createClock(monotonicNow()),
 	};
 	// Prevent replacement — spawn lifecycle code and renderer ownership checks
 	// depend on stable map identity. Only .clear() and .delete() are valid —
@@ -215,6 +220,9 @@ export function createState(): SchematicState {
 
 /** Reset all state. Used on /new or session reset. */
 export function resetState(state: SchematicState): void {
+	// A /new starts a fresh task origin: drop the accumulated reading and any
+	// in-flight spans so the new session measures only its own work.
+	state.clock = createClock(monotonicNow());
 	state.childSessionEpoch++;
 	state.notebookPages.clear();
 	state.epoch = 0; // sentinel: 0 = not yet initialized; set to 1 on first write

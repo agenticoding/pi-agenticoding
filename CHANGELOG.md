@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Time awareness** — the agent now sees how much *active* time a task has taken, never wall clock. Each tool result ends with a self-describing footer `[<tool> +<step> | task <elapsed>]`; a body-less result gets a tool-name separator so its footer is never adjacent to the previous one. Assistant messages are never annotated, so the model has no assistant-authored footer to mimic. A compaction cut is anchored with `[task elapsed <reading>]` (plus `; covers <span>` after the first cut), embedded in the handoff summary or appended as a one-shot custom message for native compaction; and the system prompt carries a coarse current-period marker (month + year) for retrieval freshness. `L` is accumulated active time (generation + tool execution, minus human UI-prompt waits) stored as branch-scoped `pi-schematic-clock` entries, so it survives compaction and handoff and stays correct across `/tree` rewinds. Nested calls are skipped and `structuredContent` is preserved.
+
+### Changed
+
+- **Pi minimum is now 0.99.2** — the time-awareness feature needs `parentToolCallId` (nested-call skipping) and preservation of `structuredContent` on `tool_result`, both added after 0.84.1. Peer and dev dependencies moved to `@earendil-works/pi-*@0.99.2` and `typebox@1.3.27`. This pulled a large transitive dependency update; three `brace-expansion` advisories are explicitly allowlisted in `audit-ci.jsonc` with an expiry, and `.pi/` is now gitignored.
+
 ## [0.6.0] - 2026-09-26
 
 ### Added

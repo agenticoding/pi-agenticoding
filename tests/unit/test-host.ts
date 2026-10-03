@@ -73,6 +73,7 @@ export interface TestAccessors {
 	commands: Map<string, any>;
 	shortcuts: Map<string, any>;
 	sentUserMessages: Array<{ content: any; options?: any }>;
+	sentMessages: Array<{ content: any; options?: any }>;
 	appendedEntries: Array<{ customType: string; data: any }>;
 	activeTools: string[];
 	setCommands(commands: any[]): void;
@@ -95,6 +96,7 @@ interface HostState {
 	commands: any[];
 	thinkingLevel: ThinkingLevel;
 	sentUserMessages: Array<{ content: any; options?: any }>;
+	sentMessages: Array<{ content: any; options?: any }>;
 	appendedEntries: Array<{ customType: string; data: any }>;
 }
 
@@ -127,6 +129,7 @@ function buildAllTools(state: HostState): ToolInfo[] {
 		name,
 		description: "",
 		parameters: {} as any,
+		exposure: "direct" as const,
 		sourceInfo: {
 			path: `<${state.toolSources.get(name) ?? defaultToolSource()}:${name}>`,
 			source: state.toolSources.get(name) ?? defaultToolSource(),
@@ -144,6 +147,7 @@ function createHostState(seed: TestHostSeed): HostState {
 		commands: [],
 		thinkingLevel: seed.thinkingLevel ?? "medium",
 		sentUserMessages: [],
+		sentMessages: [],
 		appendedEntries: [],
 	};
 	for (const [name, source] of Object.entries(seed.toolSources ?? {})) state.toolSources.set(name, source);
@@ -163,7 +167,9 @@ function bindHostActions(runtime: ExtensionRuntime, state: HostState): void {
 // Conversation/entry side effects tests assert on.
 function bindConversationActions(runtime: ExtensionRuntime, state: HostState): void {
 	Object.assign(runtime, {
-		sendMessage: () => {},
+		sendMessage: (content: any, options?: any) => {
+			state.sentMessages.push({ content, options });
+		},
 		sendUserMessage: (content: any, options?: any) => {
 			state.sentUserMessages.push({ content, options });
 		},
@@ -207,6 +213,7 @@ function stampAccessors(api: ExtensionAPI, extension: Extension, state: HostStat
 	pi.commands = extension.commands as unknown as Map<string, any>;
 	pi.shortcuts = extension.shortcuts as unknown as Map<string, any>;
 	pi.sentUserMessages = state.sentUserMessages;
+	pi.sentMessages = state.sentMessages;
 	pi.appendedEntries = state.appendedEntries;
 	Object.defineProperty(pi, "tools", { get: () => deriveTools(extension), configurable: true });
 	Object.defineProperty(pi, "activeTools", {

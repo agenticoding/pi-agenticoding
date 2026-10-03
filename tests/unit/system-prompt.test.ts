@@ -86,3 +86,16 @@ test("before_agent_start injects no-topic guidance when the topic is unset", asy
 	assert.match(result.systemPrompt, /No active notebook topic is set\./);
 	assert.match(result.systemPrompt, /notebook_topic_set/);
 });
+
+test("before_agent_start injects coarse current-period marker", async () => {
+	const pi = await createTestHost();
+	const [handler] = pi.handlers.get("before_agent_start")!;
+	const ctx = { ...makeTUICtx({ hasUI: false }), cwd: process.cwd(), isProjectTrusted: () => false };
+	const result = await handler({ systemPrompt: "Base system prompt." }, ctx);
+
+	assert.match(
+		result.systemPrompt,
+		/## Current period\n[A-Z][a-z]+ \d{4}/,
+		"must inject month and year for retrieval freshness",
+	);
+});
