@@ -36,12 +36,13 @@ const AUDIT_CONFIG_PATH = new URL("audit-ci.jsonc", REPO_ROOT_URL);
 const PACKAGE_JSON_PATH = new URL("package.json", REPO_ROOT_URL);
 const WORKFLOW_PATH = new URL(".github/workflows/test.yml", REPO_ROOT_URL);
 const LOCK_PATH = new URL("package-lock.json", REPO_ROOT_URL);
+const README_PATH = new URL("README.md", REPO_ROOT_URL);
 const SPAWN_SOURCE_PATH = new URL("spawn/index.ts", REPO_ROOT_URL);
 const RENDERER_SOURCE_PATH = new URL("spawn/renderer.ts", REPO_ROOT_URL);
 // Pinned versions verified against package.json + lockfile.
 // Update when Pi devDependencies are bumped.
-const EXPECTED_PI_VERSION = "0.84.1";
-const EXPECTED_TYPEBOX_VERSION = "1.3.7";
+const EXPECTED_PI_VERSION = "0.99.2";
+const EXPECTED_TYPEBOX_VERSION = "1.3.27";
 // Approved peer floors — must track the pinned devDependency versions above.
 const EXPECTED_PI_PEER = `>=${EXPECTED_PI_VERSION}`;
 const EXPECTED_TYPEBOX_PEER = `>=${EXPECTED_TYPEBOX_VERSION}`;
@@ -51,7 +52,15 @@ const EXPECTED_MATRIX = new Set([
 	"macos-latest@24",
 	"windows-latest@24",
 ]);
-const EXPECTED_ALLOWLIST_KEYS = new Set<string>();
+// Path-scoped: audit-ci reports the same advisory at several dependency paths
+// (module name AND the full chain), and an allowlist key must match every path.
+// The ``*`` wildcard covers both `brace-expansion` and
+// `@earendil-works/pi-coding-agent>minimatch>brace-expansion`.
+const EXPECTED_ALLOWLIST_KEYS = new Set<string>([
+	"GHSA-6j4f-fj2g-mc7p|*brace-expansion",
+	"GHSA-q2hr-2g5m-vwhr|*brace-expansion",
+	"GHSA-qhr7-859c-m2p7|*brace-expansion",
+]);
 
 function readText(url: URL): string {
 	return readFileSync(url, "utf8");
@@ -140,6 +149,20 @@ test("pinned Pi compatibility metadata and source boundaries stay exact", () => 
 	assert.equal(packageJson.devDependencies.typebox, EXPECTED_TYPEBOX_VERSION);
 	assert.equal(lock.packages["node_modules/typebox"]?.version, EXPECTED_TYPEBOX_VERSION);
 
+	// The README is the user-facing install contract: a stale Pi floor silently
+	// sends users to a host that cannot run the extension. Pin both known phrasings
+	// and fail on any stale floor, so package.json stays the single source of truth.
+	const readme = readText(README_PATH);
+	assert.ok(
+		readme.includes(`[Pi](https://pi.dev) ${EXPECTED_PI_VERSION} or later`),
+		`README quick start must require Pi ${EXPECTED_PI_VERSION}`,
+	);
+	assert.ok(
+		readme.includes(`Requires Pi ${EXPECTED_PI_VERSION}+`),
+		`README runtime row must require Pi ${EXPECTED_PI_VERSION}+`,
+	);
+	assert.doesNotMatch(readme, /\b0\.84\.\d+\b/, "README must not pin a stale Pi version");
+
 	const spawnSource = readText(SPAWN_SOURCE_PATH);
 	assert.doesNotMatch(spawnSource, /\bAuthStorage\b|\bModelRegistry\b/);
 	assert.doesNotMatch(spawnSource, /\bauthStorage\s*:/);
@@ -152,7 +175,7 @@ test("pinned Pi compatibility metadata and source boundaries stay exact", () => 
 	assert.doesNotMatch(rendererSource, /process\.(?:stdout|stderr)\.write\s*\(/);
 });
 
-test("audit-ci config enforces the empty allowlist policy", () => {
+test("audit-ci config enforces the pinned allowlist policy", () => {
 	const config = parseAuditConfig();
 	assert.equal(config.$schema, AUDIT_SCHEMA);
 	assert.equal(config.moderate, true);

@@ -1,5 +1,27 @@
 {
   "$schema": "https://github.com/IBM/audit-ci/raw/main/docs/schema.json",
   "moderate": true,
-  "allowlist": []
+  "allowlist": [
+    {
+      "GHSA-6j4f-fj2g-mc7p|*brace-expansion": {
+        "active": true,
+        "expiry": "2026-11-01",
+        "notes": "Transitive dependency in shrinkwrapped @earendil-works/pi-coding-agent@0.99.2; awaiting upstream patch release"
+      }
+    },
+    {
+      "GHSA-q2hr-2g5m-vwhr|*brace-expansion": {
+        "active": true,
+        "expiry": "2026-11-01",
+        "notes": "Transitive dependency in shrinkwrapped @earendil-works/pi-coding-agent@0.99.2; awaiting upstream patch release"
+      }
+    },
+    {
+      "GHSA-qhr7-859c-m2p7|*brace-expansion": {
+        "active": true,
+        "expiry": "2026-11-01",
+        "notes": "Transitive dependency in shrinkwrapped @earendil-works/pi-coding-agent@0.99.2; awaiting upstream patch release"
+      }
+    }
+  ]
 }
