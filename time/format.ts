@@ -63,7 +63,7 @@ const MONTH_NAMES = [
 	"July", "August", "September", "October", "November", "December",
 ] as const;
 
-/** Local month + year: matches the user's wall calendar. It carries no clock reading, so it is deliberately not timezone-invariant. */
-export function formatCurrentPeriod(date: Date): string {
+/** Local month + year: matches the user's wall calendar. Carries no time of day, so it is deliberately not timezone-invariant. */
+export function formatCurrentDate(date: Date): string {
 	return `${MONTH_NAMES[date.getMonth()]} ${date.getFullYear()}`;
 }

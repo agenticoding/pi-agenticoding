@@ -5,8 +5,8 @@ The agent cannot feel time. Most wall-clock is spent inside tools, and a few cal
 Three rules carry the design:
 
 1. **Measure work, not wall clock.** A footer reports one call's own execution, never a timestamp difference that spans idle. A call that fails or is cancelled is still observed execution; it carries a footer when Pi invokes the result hook (see [Tool footer](#tool-footer)).
-2. **Every model-visible time is relative.** The only annotated surface is a tool-result footer, and it is a delta of one block — never a task-cumulative reading. The single exception is the coarse current period (month and year) injected as an environment fact for retrieval freshness; see §3. It is not an elapsed-time annotation and carries no time of day.
-3. **Record once, at the event.** A written footer is a historical fact — append-only, cache-stable, rewind-correct. Nothing is injected per request except the cache-stable current period.
+2. **Every model-visible time is relative.** The only annotated surface is a tool-result footer, and it is a delta of one block — never a task-cumulative reading. The single exception is the coarse current date (month and year) injected as an environment fact for retrieval freshness; see [Current date](#current-date-month-and-year). It is not an elapsed-time annotation and carries no time of day.
+3. **Record once, at the event.** A written footer is a historical fact — append-only, cache-stable, rewind-correct. Nothing is injected per request except the cache-stable current date.
 
 **Out of scope:** *time instructions* and *per-request time values* in the system prompt. Adding time instructions there was considered and dropped — there is no evidence it improves agent behavior, and a value that changes every request does not belong in the longest-lived cache prefix. Each footer carries its own tool-name label, so the annotation is self-describing without a legend.
 
@@ -45,19 +45,19 @@ Self-describing, token-efficient, and relative:
 | Surface      | Format          | Examples                                     |
 | ------------ | --------------- | -------------------------------------------- |
 | Tool footer  | `[<tool> +<n>]` | `[read +6.1s]`, `[bash +2m14s]`, `[grep]`     |
-| Current period | `<Month> <Year>` | `July 2025`                                 |
+| Current date | `<Month> <Year>`| `July 2025`                                   |
 
 - `<tool>` names the tool whose result carries the footer, so each footer states *what* it measures, not just when. A missing start renders `[<tool>]` with no delta.
 - `<n>` is the element's own independently measured execution, signed, and **always rendered**; a zero or sub-100ms step floors to `0.1s`.
 - One shared `formatDuration(ms)` renders the delta: `0.1s` (nonzero sub-100ms floors up so an abort never reads `+0s`), `0.4s` (one decimal under 10s), `42s`, `2m14s`, `1h02m`. Values are floored, never rounded; `0`, negative, or non-finite reads `0s`.
 - No ISO, no timezone, no emoji.
 
-## Current period (month and year)
+## Current date (month and year)
 
 For web searches and prompts that reference "latest" / "current" / "bleeding edge", the agent needs a coarse sense of *when* it is. This is deliberately separate from every elapsed measurement:
 
 - **Content:** month and year only (for example `July 2025`). No day, weekday, time, or timezone — those invite exactly the wall-clock reasoning the rest of this design avoids.
-- **Placement:** a stable system-prompt section, present from the first request. The system prompt is never compacted, so it survives compaction and `/handoff` unchanged; only the month value rolls over.
+- **Placement:** a stable system-prompt section `## Current date`, present from the first request. The system prompt is never compacted, so it survives compaction and `/handoff` unchanged; only the month value rolls over.
 - **Cadence:** refreshed at each run boundary. Because the text is invariant within a calendar month, re-rendering produces byte-identical content and does not churn the cached prefix; it changes only when the month rolls over.
 - **Rationale:** it answers "what period is this?" for retrieval freshness, not "how long have I been working?". It is an environment fact, not an elapsed-time annotation.
 
@@ -65,4 +65,4 @@ For web searches and prompts that reference "latest" / "current" / "bleeding edg
 
 - A written footer is history: rewinding re-reads it, and the shared prefix stays byte-identical, so branches stay cache-hot.
 - Never edit a written footer — that invalidates cache from that block. Footers stay correct because they record a per-call delta at the event, not a live clock.
-- The only injected surface is the current period; its text is invariant within a calendar month, so it does not churn the prefix.
+- The only injected surface is the current date; its text is invariant within a calendar month, so it does not churn the prefix.

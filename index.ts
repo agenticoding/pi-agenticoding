@@ -41,7 +41,7 @@ import { HANDOFF_REQUIRED_STATUS } from "./handoff/copy.js";
 import { registerHandoffCommand } from "./handoff/command.js";
 import { registerHandoffCompaction } from "./handoff/compact.js";
 import { registerToolTimings } from "./time/register.js";
-import { formatCurrentPeriod } from "./time/format.js";
+import { formatCurrentDate } from "./time/format.js";
 import { getUndeliveredHandoffMessage } from "./handoff/recovery.js";
 import { sendFollowUp } from "./follow-up.js";
 import {
@@ -772,7 +772,7 @@ export default function (pi: ExtensionAPI): void {
 		// Coarse environment fact for retrieval freshness. Month+year only, so the
 		// text is byte-identical within a calendar month and never churns the cache.
 		// Not an elapsed-time annotation — that is the tool-result footer.
-		parts.push(`\n## Current period\n${formatCurrentPeriod(new Date())}`);
+		parts.push(`\n## Current date\n${formatCurrentDate(new Date())}`);
 
 		if (state.activeNotebookTopic) {
 			parts.push(

@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`formatCurrentPeriod` renamed to `formatCurrentDate`** — the system-prompt section is now `## Current date`.
 - **Pi minimum is now 0.99.2** — the time-awareness feature needs `parentToolCallId` (nested-call skipping) and preservation of `structuredContent` on `tool_result`, both added after 0.84.1. Peer and dev dependencies moved to `@earendil-works/pi-*@0.99.2` and `typebox@1.3.27`. This pulled a large transitive dependency update; three `brace-expansion` advisories are explicitly allowlisted in `audit-ci.jsonc` with an expiry, and `.pi/` is now gitignored.
 
 ## [0.6.0] - 2026-09-26
