@@ -7,8 +7,6 @@ import { registerHandoffCommand } from "../../handoff/command.js";
 import { registerHandoffTool } from "../../handoff/tool.js";
 import { buildContinuationFrame, buildHandoffCompactionSummary, buildNextUserMessage } from "../../handoff/format.js";
 import { registerHandoffCompaction } from "../../handoff/compact.js";
-import { formatCutAnchor } from "../../time/format.js";
-import { restore } from "../../time/clock.js";
 import { STATUS_KEY_HANDOFF, WIDGET_KEY_WARNING, updateIndicators } from "../../tui.js";
 import { registerWatchdog } from "../../watchdog.js";
 import { createTestHost } from "./test-host.js";
@@ -447,7 +445,7 @@ test("handoff compaction keeps the frame constant and the state contract intact"
 	// Notebook topic is cleared in handoff tool's onComplete, not in compaction itself
 	assert.equal(state.activeNotebookTopic, "oauth");
 	assert.equal(state.activeNotebookTopicSource, "human");
-	assert.equal(result.compaction.summary, buildHandoffCompactionSummary("recovery-key", formatCutAnchor(0, null)));
+	assert.equal(result.compaction.summary, buildHandoffCompactionSummary("recovery-key"));
 	assert.equal(result.compaction.tokensBefore, 123);
 	assert.equal(result.compaction.firstKeptEntryId, "leaf-1-handoff-cut");
 	assert.deepEqual(result.compaction.details, {
@@ -455,40 +453,6 @@ test("handoff compaction keeps the frame constant and the state contract intact"
 		payload: { version: 1, nextInstruction: "next task", context: "remaining state" },
 		recoveryKey: "recovery-key",
 	});
-});
-
-test("handoff compaction anchors the cut on elapsed time and the covered span", async () => {
-	// A previous cut is on the branch, with the clock reading persisted at that cut
-	// immediately before its compaction entry (what time/register.ts appends). The
-	// new summary must carry elapsed since task origin plus the compacted-away span.
-	const state = createState();
-	restore(state.clock, 30_000, Date.now());
-	state.pendingHandoff = { generation: state.handoffGeneration };
-	state.pendingHandoffDelivery = {
-		generation: state.handoffGeneration,
-		payload: { version: 1, nextInstruction: "next task", context: "" },
-		recoveryKey: "second-cut",
-	};
-	const pi = await createTestHost((api) => {
-		registerHandoffCompaction(api, state);
-	});
-
-	const [handler] = pi.handlers.get("session_before_compact")!;
-	const result = await handler(
-		{
-			preparation: { tokensBefore: 1 },
-			branchEntries: [
-				{ type: "custom", customType: "pi-schematic-clock", id: "k1", data: { version: 1, l: 10_000 } },
-				{ type: "compaction", id: "c1" },
-				{ id: "leaf-1" },
-			],
-		},
-		{},
-	);
-
-	// 30s at the cut minus 10s at the previous cut -> 20s of work compacted away.
-	assert.ok(result.compaction.summary.includes("[task elapsed 30s; covers 20s]"), result.compaction.summary);
-	assert.equal(result.compaction.summary, buildHandoffCompactionSummary("second-cut", formatCutAnchor(30_000, 20_000)));
 });
 
 test("/handoff sets the handoff status indicator", async () => {
@@ -1026,19 +990,17 @@ test("the continuation frame is constant and carries no task or constraints", ()
 });
 
 test("handoff compaction summaries identify each cut without changing the frame", () => {
-	const first = buildHandoffCompactionSummary("first-cut", formatCutAnchor(1_000, null));
-	const second = buildHandoffCompactionSummary("second-cut", formatCutAnchor(1_000, null));
+	const first = buildHandoffCompactionSummary("first-cut");
+	const second = buildHandoffCompactionSummary("second-cut");
 	assert.notEqual(first, second, "Pi must be able to identify each compaction entry");
 	assert.ok(first.startsWith(buildContinuationFrame()));
 	assert.match(first, /<!-- handoff-cut:first-cut -->$/);
 });
 
-test("the cut anchor is the only session-specific line and never moves the marker", () => {
-	const anchored = buildHandoffCompactionSummary("key", "[task elapsed 2m14s]");
-	assert.ok(anchored.startsWith(buildContinuationFrame()), "frame stays the constant prefix");
-	assert.match(anchored, /<!-- handoff-cut:key -->$/, "cut marker stays last so Pi finds the entry by summary");
-	const middle = anchored.slice(buildContinuationFrame().length + 2, anchored.indexOf("\n\n<!-- handoff-cut:key -->"));
-	assert.equal(middle, "[task elapsed 2m14s]", "the anchor sits alone between frame and marker");
+test("the summary is the constant frame plus the cut marker", () => {
+	const summary = buildHandoffCompactionSummary("key");
+	assert.equal(summary, `${buildContinuationFrame()}\n\n<!-- handoff-cut:key -->`, "frame + marker, nothing between");
+	assert.match(summary, /<!-- handoff-cut:key -->$/, "cut marker stays last so Pi finds the entry by summary");
 });
 
 test("the continuation frame is pinned byte-for-byte", () => {

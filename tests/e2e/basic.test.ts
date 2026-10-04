@@ -456,14 +456,13 @@ describe("pi-schematic E2E", () => {
 		await h.waitForText("ERR:unknown command");
 	}));
 
-	it("time awareness appends a tool footer and persists a clock entry", async () => withHarness(async (h) => {
+	it("tool timing appends a footer with the measured step", async () => withHarness(async (h) => {
 		h.write("time-smoke");
 		await h.waitForText("OK:");
 		const line = h.snapshot().split("\n").find((line) => line.startsWith("OK:"));
-		assert.ok(line, "host reports time-awareness output");
+		assert.ok(line, "host reports tool-timing output");
 		const result = JSON.parse(line.slice(3));
-		assert.match(result.footer, /^\[read \+\d[^\s]* \| task \d[^\s]*\]$/, "tool result carries labeled durations");
-		assert.equal(result.clockEntries, 1, "a clock entry is persisted at the boundary");
+		assert.match(result.footer, /^\[read \+\d[^\s]*\]$/, "tool result carries the labeled step");
 	}));
 
 });

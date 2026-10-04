@@ -16,7 +16,6 @@ import {
 	clearActiveNotebookTopic,
 } from "../../notebook/topic.js";
 import { saveNotebookPage } from "../../notebook/store.js";
-import { advance, read } from "../../time/clock.js";
 import { createTestHarness } from "../test-utils.js";
 
 // ── Mock ExtensionAPI ─────────────────────────────────────────────────
@@ -120,10 +119,6 @@ function assertResetClears(state: SchematicState): void {
 	assert.equal(state.frontmatterPromptIssues.size, 0, "frontmatterPromptIssues must be empty after reset");
 	assert.equal(state.pendingReadonlyCommands.length, 0, "pendingReadonlyCommands must be empty after reset");
 	assert.equal(state.lastWatchdogBand, null, "lastWatchdogBand must be null after reset");
-	assert.equal(read(state.clock), 0, "clock reading must be 0 after reset");
-	// Behavioral invariant: clock is idle after reset so idle wall time does not advance reading.
-	advance(state.clock, Date.now() + 10_000);
-	assert.equal(read(state.clock), 0, "clock reading must not advance while idle after reset");
 }
 
 // ── Properties ────────────────────────────────────────────────────────

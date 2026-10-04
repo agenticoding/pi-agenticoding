@@ -34,14 +34,12 @@ export function buildContinuationFrame(): string {
 /**
  * Add the cut identity Pi needs to report the just-created compaction entry.
  *
- * The visible frame stays constant; the ONE session-specific exception is the
- * logical cut `anchor` — an elapsed duration, never a timestamp or mutable
- * posture (see the cut anchor in `docs/time-awareness-design.md`). The invisible
- * `handoff-cut` marker stays LAST so Pi can still locate the compaction entry
- * by summary; the anchor never leaks instruction or readonly state.
+ * The summary is the constant frame plus the invisible `handoff-cut` marker. The
+ * marker stays LAST so Pi can locate the compaction entry by summary, and it
+ * never leaks instruction or readonly state into the visible frame.
  */
-export function buildHandoffCompactionSummary(recoveryKey: string, anchor: string): string {
-	return `${buildContinuationFrame()}\n\n${anchor}\n\n<!-- handoff-cut:${recoveryKey} -->`;
+export function buildHandoffCompactionSummary(recoveryKey: string): string {
+	return `${buildContinuationFrame()}\n\n<!-- handoff-cut:${recoveryKey} -->`;
 }
 
 /**

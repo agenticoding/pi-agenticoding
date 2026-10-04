@@ -6,7 +6,7 @@ pi-schematic is a Pi extension. It registers tools and hooks into the agent life
 
 | Hook | Role |
 |---|---|
-| `before_agent_start` | Refreshes Model Groups, resolves deferred readonly frontmatter, then injects the context-management primer, the coarse current-period marker (month + year), names-only group guidance, and live notebook index |
+| `before_agent_start` | Refreshes Model Groups, resolves deferred readonly frontmatter, then injects the context-management primer, the current-date marker (month + year), names-only group guidance, and live notebook index |
 | `context` | Advisory watchdog reminders when context is elevated; readonly toggle nudges |
 | `input` | Resolves model-selection frontmatter during idle input; blocks it during streaming; queues readonly resolution |
 | `tool_call` | Readonly blocks write/edit/unguarded bash; blocks handoff unless a requested bypass is active |
@@ -15,12 +15,9 @@ pi-schematic is a Pi extension. It registers tools and hooks into the agent life
 | `turn_end` | Updates TUI indicators (context %, notebook count, topic, readonly) |
 | `agent_end` | Records last context usage percent; handoff enforcement cleanup |
 | `agent_settled` | Clears the recovery latch and, when no queued messages remain, resends an absent successor handoff message |
-| `message_start` / `message_end` | Active-time clock: assistant generation start/end. `message_end` persists a clock reading. Assistant messages are never annotated — generation time still advances `L`, but the model sees no assistant-authored footer to mimic |
-| `tool_execution_start` / `tool_execution_end` | Active-time clock: per-`toolCallId` tool interval. `tool_execution_end` balances depth for calls whose `tool_result` hook Pi skips (blocked/immediate, aborted before execution, output-truncated); those blocks carry no footer because Pi never surfaces a `tool_result` to annotate. Nested calls (`parentToolCallId`) are skipped |
-| `tool_result` | Appends the `[<toolName> +<step> \| task <elapsed>]` tool-result footer and persists a clock reading; preserves `structuredContent`. A body-less result gets a tool-name separator block so its footer is never adjacent to the previous footer |
-| `ui_prompt_start` / `ui_prompt_end` | Subtracts human UI-prompt waits from the active clock (they are pauses, not work) |
-| `session_before_compact` | Advances/persists the clock, then emits a fixed continuation frame plus a per-cut elapsed anchor and identity marker as the compaction summary; the successor's next instruction + context arrive as one real user message after compaction |
-| `session_compact` | For native (non-extension) compactions, sends a one-shot custom-message cut anchor. Pi 0.99.2 can defer streaming sends past immediate continuation; see [time-awareness host limitations](time-awareness-design.md#2-track-the-clock-on-the-history-tree). |
+| `tool_execution_start` / `tool_execution_end` | Tool-run timing: records a start keyed by `toolCallId`. `tool_execution_end` deletes an orphaned start for a call whose `tool_result` hook Pi skips (blocked/immediate, aborted before execution, output-truncated) — cleanup only, no footer and no persistence. Nested calls (`parentToolCallId`) are skipped |
+| `tool_result` | Appends the `[<toolName> +<step>]` tool-result footer from `now − start`; preserves `structuredContent`. A body-less result gets a tool-name separator block so its footer is never adjacent to the previous footer. No start means `[<toolName>]` with no invented delta |
+| `session_before_compact` | Emits a fixed continuation frame plus an identity marker as the compaction summary; the successor's next instruction + context arrive as one real user message after compaction |
 
 ## State
 
@@ -36,7 +33,6 @@ interface SchematicState {
     validation: ModelGroupsBootValidation | null
   }
   epoch: number
-  clock: Clock // L = accumulated active task ms; reset on /new, reconstructed from the branch
   discardEpochWatermark: number
   lastContextPercent: number | null
   pendingHandoff: { generation } | null
@@ -89,7 +85,7 @@ Coding-agent guardrail on every OS — not a hardened security boundary. Stronge
 | `notebook/` | Page store, tools, topic, rehydration |
 | `handoff/` | Verbatim next-instruction delivery, model-owned context prep, constant-frame compaction bridge, live readonly nudge |
 | `readonly-*.ts` / `os-sandbox.ts` | Readonly posture, bash policy, sandbox |
-| `time/` | Pure active-time clock, duration formatting, and branch-scoped clock persistence |
+| `time/` | Tool-run timing and duration formatting (footer only) |
 | `watchdog.ts` / `tui.ts` / `state.ts` | Pressure advisories, status UI, shared state |
 
 ## See also

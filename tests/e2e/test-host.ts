@@ -275,8 +275,7 @@ for await (const line of rl) {
 		const names = Array.from(commands.keys()).sort().join(",");
 		process.stdout.write("OK:" + names + "\n");
 	} else if (trimmed === "time-smoke") {
-		// Drive the real time-awareness handlers and report the model-facing footer
-		// plus the number of clock entries persisted at the boundary.
+		// Drive the real tool-timing handlers and report the model-facing footer.
 		const runEvent = async (name: string, event: any): Promise<any[]> => {
 			const results: any[] = [];
 			for (const handler of pi.handlers.get(name) ?? []) {
@@ -285,7 +284,6 @@ for await (const line of rl) {
 			}
 			return results;
 		};
-		const clockBefore = pi.appendedEntries.filter((entry) => entry.customType === "pi-schematic-clock").length;
 		await runEvent("tool_execution_start", { toolCallId: "e2e-time", toolName: "read", args: {} });
 		const results = await runEvent("tool_result", {
 			toolCallId: "e2e-time",
@@ -296,8 +294,7 @@ for await (const line of rl) {
 			details: undefined,
 		});
 		const footer = results[0]?.content?.at(-1)?.text ?? "";
-		const clockEntries = pi.appendedEntries.filter((entry) => entry.customType === "pi-schematic-clock").length - clockBefore;
-		process.stdout.write("OK:" + JSON.stringify({ footer, clockEntries }) + "\n");
+		process.stdout.write("OK:" + JSON.stringify({ footer }) + "\n");
 	} else if (trimmed.startsWith("toolcall ")) {
 		const rest = trimmed.slice(9).trim();
 		const spaceIdx = rest.indexOf(" ");

@@ -9,7 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Time awareness** — the agent now sees how much *active* time a task has taken, never wall clock. Each tool result ends with a self-describing footer `[<tool> +<step> | task <elapsed>]`; a body-less result gets a tool-name separator so its footer is never adjacent to the previous one. Assistant messages are never annotated, so the model has no assistant-authored footer to mimic. A compaction cut is anchored with `[task elapsed <reading>]` (plus `; covers <span>` after the first cut), embedded in the handoff summary or appended as a one-shot custom message for native compaction; and the system prompt carries a coarse current-period marker (month + year) for retrieval freshness. `L` is accumulated active time (generation + tool execution, minus human UI-prompt waits) stored as branch-scoped `pi-schematic-clock` entries, so it survives compaction and handoff and stays correct across `/tree` rewinds. Nested calls are skipped and `structuredContent` is preserved.
+- **Time awareness** — each tool result ends with a self-describing footer `[<tool> +<step>]` that reports that call's own execution, never wall clock. A body-less result gets a tool-name separator so its footer is never adjacent to the previous one. Nested calls are skipped and `structuredContent` is preserved. The system prompt carries a coarse current-date marker (month + year) for retrieval freshness.
+
+### Removed
+
+- **Cumulative task clock** — the depth-counter active-time clock (`time/clock.ts`) that accumulated task elapsed across generation + tool execution, minus UI-prompt waits, with idle-gap exclusion and union semantics for parallel calls. Time is now measured per-call at the event, not accumulated.
+- **Branch-scoped clock persistence** — the `pi-schematic-clock` custom entries persisted at every boundary (`time/store.ts`), reconstructed on `session_start`/`session_tree` and used for rewind-correct readings. Footers are now write-once history, needing no branch reconstruction.
+- **Compaction cut anchors** — the `[task elapsed <reading>; covers <span>]` anchor rendered into handoff compaction summaries (`formatCutAnchor`). The summary is now the constant continuation frame plus only the identity marker.
+- **`task <elapsed>`** — the cumulative segment removed from tool-result footers; footers are now `[<tool> +<step>]` only.
+- **`message_start`/`message_end`, `ui_prompt_start`/`ui_prompt_end`, `session_compact`** — time hooks that advanced or persisted the removed clock; `session_compact` no longer sends a one-shot native cut-anchor custom message.
 
 ### Changed
 

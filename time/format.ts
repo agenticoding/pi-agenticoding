@@ -1,12 +1,12 @@
 /**
- * Duration formatting — the single source of truth for every elapsed/delta
- * field rendered in a tool-result footer or cut anchor.
+ * Duration formatting — the single source of truth for the tool-run delta
+ * rendered in a tool-result footer.
  *
- * WHY pure (no project imports): the formatting rules are a stable contract
- * reused by clock, register, and handoff wiring; isolating them keeps the math
- * unit-testable and lets the rule set evolve without touching event glue.
+ * WHY pure (no project imports): the formatting rules are a stable contract;
+ * isolating them keeps the math unit-testable and lets the rule set evolve
+ * without touching event glue.
  *
- * WHY floor (not round): time is accumulated agent work, never rounded human
+ * WHY floor (not round): a tool run is observed execution, never rounded human
  * idle. Floored tenths avoid crediting a pause or a sub-100ms abort as work,
  * and the 0.1s floor for tiny non-zero deltas keeps an aborted block honest as
  * non-zero instead of a misleading "+0s".
@@ -39,36 +39,23 @@ export function formatDuration(ms: number): string {
 }
 
 /**
- * `[<tool> +<step> | task <elapsed>]` — the tool-result footer.
+ * `[<tool> +<step>]` — the tool-result footer. The single model-visible time surface.
  *
- * WHY the kind label: a bare `[2m14s +3.2s]` names neither number and cannot say
- * which tool ran. One result's footer can sit directly above the next result's,
- * so an unlabeled pair is unassignable.
+ * WHY the kind label: a bare `[+3.2s]` names nothing; one result's footer can sit
+ * directly above the next result's, so an unlabeled pair is unassignable.
  *
  * WHY the step delta is always rendered: a uniform shape makes every footer read
- * the same way. The old "omit sub-500ms on success" rule made the absence of a
- * step indistinguishable from a measurement that was never taken.
+ * the same way. A sub-500ms step is not omitted — its absence would be
+ * indistinguishable from a measurement that was never taken.
  *
  * `kind` is the tool's name. `deltaMs` is null when the span was never recorded
- * (e.g. a blocked call).
+ * (for example a blocked call), rendering `[<tool>]` rather than an invented value.
  */
-export function formatBlockFooter(kind: string, elapsedMs: number, deltaMs: number | null): string {
-	const task = `task ${formatDuration(elapsedMs)}`;
-	if (deltaMs === null) return `[${kind} | ${task}]`;
+export function formatBlockFooter(kind: string, deltaMs: number | null): string {
+	if (deltaMs === null) return `[${kind}]`;
 	// A zero step floors to "0.1s" so an aborted instant block never reads "+0s".
 	const step = deltaMs === 0 ? "0.1s" : formatDuration(deltaMs);
-	return `[${kind} +${step} | ${task}]`;
-}
-
-/**
- * Cut anchor for the retained compaction tail: `[task elapsed <elapsed>]`,
- * optionally `[task elapsed <elapsed>; covers <span>]`. Elapsed is computed
- * once and reused so the two measurements never duplicate or diverge.
- */
-export function formatCutAnchor(elapsedMs: number, coveredMs: number | null): string {
-	const elapsed = formatDuration(elapsedMs);
-	if (coveredMs === null) return `[task elapsed ${elapsed}]`;
-	return `[task elapsed ${elapsed}; covers ${formatDuration(coveredMs)}]`;
+	return `[${kind} +${step}]`;
 }
 
 const MONTH_NAMES = [

@@ -9,10 +9,7 @@ import {
 	createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager,
 	type AgentSession, type ExtensionAPI, type SessionEntry,
 } from "@earendil-works/pi-coding-agent";
-import { createState } from "../../state.js";
-import { createClock } from "../../time/clock.js";
-import { CLOCK_ENTRY_TYPE, reconstructClock, resolveCutAnchor } from "../../time/store.js";
-import { registerTimeAwareness } from "../../time/register.js";
+import { registerToolTimings } from "../../time/register.js";
 import { createDeferred } from "./helpers.js";
 
 const usage = {
@@ -23,7 +20,6 @@ const usage = {
 /** The offline provider and tools drive the installed agent loop, never dispatch events. */
 class TimeHost {
 	now = 0;
-	state = createState();
 	session!: AgentSession;
 	manager!: SessionManager;
 	started = createDeferred();
@@ -39,7 +35,6 @@ class TimeHost {
 	constructor(root: string, early: string) {
 		this.root = root;
 		this.early = early;
-		this.state.clock = createClock(0);
 	}
 
 	async open(manager = SessionManager.create(this.root, join(this.root, "sessions"))): Promise<void> {
@@ -74,13 +69,7 @@ class TimeHost {
 	}
 
 	register(pi: ExtensionAPI): void {
-		registerTimeAwareness(pi, this.state, () => this.now);
-		pi.on("session_start", (_event, ctx) => {
-			reconstructClock(this.state.clock, ctx.sessionManager.getBranch(), this.now);
-		});
-		pi.on("message_start", (event) => {
-			if (event.message.role === "assistant" && this.requests === 2) this.now = 6000;
-		});
+		registerToolTimings(pi, () => this.now);
 		pi.on("tool_result", (event) => {
 			this.completions.push(event.toolCallId);
 			if (event.toolCallId === this.early) this.earlyResult.resolve();
@@ -91,7 +80,7 @@ class TimeHost {
 	registerOperations(pi: ExtensionAPI): void {
 		this.registerProvider(pi);
 		pi.registerTool({
-			name: "time_probe", label: "Time probe", description: "Complete at an injected clock boundary.",
+			name: "time_probe", label: "Time probe", description: "Complete at an injected time boundary.",
 			parameters: Type.Object({}), execute: (id) => this.execute(id),
 		});
 	}
@@ -160,31 +149,17 @@ function footer(entry: SessionEntry): string {
 	return block.text;
 }
 
-function assertRestored(host: TimeHost, expected: number): void {
-	assert.equal(host.state.clock.elapsedMs, expected);
-	assert.equal(resolveCutAnchor(host.state.clock, host.manager.getBranch(), null, host.now).elapsed, expected);
-}
-
 function assertBatch(host: TimeHost): void {
-	const branch = host.manager.getBranch();
-	const retained = results(branch);
+	const retained = results(host.manager.getBranch());
 	assert.equal(retained.length, 2);
 	assert.deepEqual(host.completions, [host.early, host.early === "first" ? "second" : "first"]);
 	for (const [index, id] of ["first", "second"].entries()) {
 		const elapsed = id === host.early ? 1000 : 5000;
-		assert.equal(footer(retained[index]), `[time_probe +${elapsed / 1000}.0s | task ${elapsed / 1000}.0s]`);
-		const reading = branch.find((entry) => entry.type === "custom" && entry.customType === CLOCK_ENTRY_TYPE
-			&& (entry.data as { toolCallId?: string }).toolCallId === id);
-		assert.ok(reading && branch.indexOf(reading) < branch.indexOf(retained[0]));
-		assert.deepEqual(reading.type === "custom" && reading.data, { version: 1, l: elapsed, toolCallId: id });
+		assert.equal(footer(retained[index]), `[time_probe +${elapsed / 1000}.0s]`);
 	}
 }
 
-function assertFinalBoundary(manager: SessionManager): void {
-	const clocks = manager.getBranch().filter((entry) => entry.type === "custom" && entry.customType === CLOCK_ENTRY_TYPE);
-	const final = clocks.at(-1);
-	assert.ok(final?.type === "custom");
-	assert.deepEqual(final.data, { version: 1, l: 6000 });
+function assertFinalAssistant(manager: SessionManager): void {
 	const assistant = manager.buildSessionProjection().messages.at(-1);
 	assert.equal(assistant?.role, "assistant");
 	assert.deepEqual(assistant?.content, [{ type: "text", text: "done" }]);
@@ -194,8 +169,6 @@ async function assertFirstRetained(host: TimeHost): Promise<void> {
 	const first = results(host.manager.getBranch())[0];
 	host.manager.branch(first.id);
 	await host.reopen();
-	const expected = host.early === "first" ? 1000 : 5000;
-	assertRestored(host, expected);
 	assert.equal(results(host.manager.getBranch()).length, 1);
 	assertProjection(host.manager, first);
 }
@@ -214,12 +187,9 @@ function assertProjection(manager: SessionManager, first: SessionEntry): void {
 async function assertFullCarry(host: TimeHost, leaf: string): Promise<void> {
 	host.manager.branch(leaf);
 	await host.reopen();
-	assertRestored(host, 6000);
-	assert.equal(resolveCutAnchor(host.state.clock, host.manager.getBranch(), null, host.now).anchor, "[task elapsed 6.0s]");
 	await host.session.prompt("Continue with carried time");
-	assert.equal(footer(results(host.manager.getBranch()).at(-1)!), "[time_probe +2.0s | task 8.0s]");
+	assert.equal(footer(results(host.manager.getBranch()).at(-1)!), "[time_probe +2.0s]");
 	await host.reopen();
-	assertRestored(host, 8000);
 	assert.deepEqual(host.errors, []);
 }
 
@@ -240,11 +210,11 @@ async function withOfflineHost(early: string, run: (host: TimeHost) => Promise<v
 }
 
 for (const early of ["first", "second"]) {
-	test(`installed offline host restores parallel result position when ${early} finishes first`, { timeout: 10_000 }, async () => {
+	test(`installed offline host measures each parallel tool's own span and footers survive branch/reopen unchanged when ${early} finishes first`, { timeout: 10_000 }, async () => {
 		await withOfflineHost(early, async (host) => {
 			await host.session.prompt("Run the parallel batch");
 			assertBatch(host);
-			assertFinalBoundary(host.manager);
+			assertFinalAssistant(host.manager);
 			const leaf = host.manager.getLeafId();
 			assert.ok(leaf);
 			await assertFirstRetained(host);
