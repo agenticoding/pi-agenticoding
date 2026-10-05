@@ -27,7 +27,7 @@ import { registerNotebookTools } from "./notebook/tools.js";
 import { ensureNotebookToolsActive, registerNotebookRehydration, reconstructNotebook } from "./notebook/rehydration.js";
 import { registerNotebookTopicTool } from "./notebook/topic-tool.js";
 import { setActiveNotebookTopic } from "./notebook/topic.js";
-import { formatPagePreview, formatPageTuiPreview } from "./notebook/store.js";
+import { formatPageTuiPreview } from "./notebook/store.js";
 import { registerHandoffTool } from "./handoff/tool.js";
 import {
 	canPromoteBoundary,

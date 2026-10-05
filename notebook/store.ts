@@ -82,6 +82,21 @@ export function formatPageTuiPreview(content: string, clipped: boolean): string 
 	return preview ? `${preview} [truncated]` : "[truncated]";
 }
 
+/**
+ * Render a byte limit as a binary unit with its exact byte count.
+ * Derived from the applied limit so the user-facing cap cannot drift from the
+ * truncation behavior.
+ */
+export function formatByteCap(bytes: number): string {
+	for (const [unit, size] of [
+		["MiB", 1024 * 1024],
+		["KiB", 1024],
+	] as const) {
+		if (bytes % size === 0) return `${bytes / size} ${unit} (${bytes} bytes)`;
+	}
+	return `${bytes} bytes`;
+}
+
 /** Ephemeral write-time truncation account; never persisted. */
 export interface TruncationReport {
 	truncatedBy: "lines" | "bytes";
@@ -110,7 +125,16 @@ export async function saveNotebookPage(
 		// prior page and its clipped flag stay intact.
 		if (truncated.firstLineExceedsLimit) {
 			throw new Error(
-				`Notebook page "${name}" rejected: first line exceeds 50 KiB (51200 bytes). Split it into shorter lines or smaller pages.`,
+				`Notebook page "${name}" rejected: first line exceeds ${formatByteCap(truncated.maxBytes)}. Split it into shorter lines or smaller pages.`,
+			);
+		}
+
+		// A blank first line followed by an oversized line truncates to an empty
+		// head. Reject it the same way instead of overwriting the prior body with
+		// nothing (issue #42: never overwrite a page with nothing).
+		if (truncated.truncated && truncated.outputBytes === 0) {
+			throw new Error(
+				`Notebook page "${name}" rejected: the first non-empty line exceeds ${formatByteCap(truncated.maxBytes)}, so truncation would retain no content. Split it into shorter lines or smaller pages.`,
 			);
 		}
 

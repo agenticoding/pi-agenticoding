@@ -3,9 +3,10 @@ import assert from "node:assert/strict";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { Text } from "@earendil-works/pi-tui";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
+import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES } from "@earendil-works/pi-coding-agent";
 import { createState, resetState, invalidateHandoffState } from "../../state.js";
 import { registerNotebookRehydration, reconstructNotebook } from "../../notebook/rehydration.js";
-import { commitNotebookDiscard, formatPagePreview, prepareNotebookDiscard, saveNotebookPage, resetNotebookWriteLock } from "../../notebook/store.js";
+import { commitNotebookDiscard, formatByteCap, formatPagePreview, prepareNotebookDiscard, saveNotebookPage, resetNotebookWriteLock } from "../../notebook/store.js";
 import { createNotebookToolDefinitions } from "../../notebook/tools.js";
 import { __setSingletons, createWriteLock, getSingletons } from "../../runtime-singletons.js";
 import { STATUS_KEY_TOPIC, WIDGET_KEY_WARNING } from "../../tui.js";
@@ -43,9 +44,14 @@ const M = "a".repeat(25600) + "\n" + "b".repeat(25599);
 const Tlines = { truncatedBy: "lines", totalLines: 2001, totalBytes: 4001, outputLines: 2000, outputBytes: 3999 } as const;
 const Tbytes = { truncatedBy: "bytes", totalLines: 2, totalBytes: 51201, outputLines: 1, outputBytes: 25600 } as const;
 const ReportLines = "TRUNCATED by lines: kept 2000 of 2001 lines (3999 of 4001 bytes); tail dropped. Split this page into smaller pages.";
+const ReportBytes = "TRUNCATED by bytes: kept 1 of 2 lines (25600 of 51201 bytes); tail dropped. Split this page into smaller pages.";
 const Notice = "Notice: This page was clipped at write time; its stored body is incomplete.";
-const rejectMessage = (name: string) => `Notebook page "${name}" rejected: first line exceeds 50 KiB (51200 bytes). Split it into shorter lines or smaller pages.`;
-const DescriptionSuffix = "Content is limited to 2000 lines / 50 KiB (51200 bytes). The beginning is kept, the tail is dropped, and truncation is reported. A first line exceeding 50 KiB (51200 bytes) is rejected.";
+const rejectMessage = (name: string) => `Notebook page "${name}" rejected: first line exceeds ${formatByteCap(DEFAULT_MAX_BYTES)}. Split it into shorter lines or smaller pages.`;
+const emptyHeadRejectMessage = (name: string) => `Notebook page "${name}" rejected: the first non-empty line exceeds ${formatByteCap(DEFAULT_MAX_BYTES)}, so truncation would retain no content. Split it into shorter lines or smaller pages.`;
+const DescriptionSuffix =
+	`Content is limited to ${DEFAULT_MAX_LINES} lines / ${formatByteCap(DEFAULT_MAX_BYTES)}. ` +
+	"The beginning is kept, the tail is dropped, and truncation is reported. " +
+	"A write whose retained head would be empty (for example, an oversized first line) is rejected.";
 
 /** Complete-write final text for a single page. */
 function completeFinalText(name: string, body: string): string {
@@ -753,6 +759,7 @@ test("notebook tool definitions include prompt hints when withPromptHints is tru
 	assert.match(JSON.stringify(notebookWrite.parameters), /high-value knowledge/i);
 	assert.doesNotMatch(JSON.stringify(notebookWrite.parameters), /grounding/i);
 	assert.match(notebookRead.description, /notebook page|page/i);
+	assert.match(notebookRead.description, /truncation notice/i);
 	assert.match(notebookIndex.description, /notebook index|index/i);
 });
 
@@ -1105,6 +1112,22 @@ test("write final and update text report clipping without a badge", async () => 
 	assert.doesNotMatch(update.content[0].text, /\[truncated\]/);
 });
 
+test("write final and update text report byte clipping", async () => {
+	const pi = await createTestHost();
+	const state = createState();
+	const [notebookWrite] = createNotebookToolDefinitions(pi as any, state);
+
+	let update: any;
+	const result = await notebookWrite.execute("1", { name: "page", content: B }, undefined, (payload: any) => { update = payload; }, makeTUICtx({ hasUI: false }));
+
+	const body = "a".repeat(25600);
+	assert.equal((result.content[0] as any).text, clippedFinalText("page", body, ReportBytes));
+	assert.equal(update.content[0].text, clippedUpdateText("page", body, ReportBytes));
+	assert.deepEqual(result.details, { entries: ["page"], preview: formatPagePreview(body), truncation: Tbytes, clipped: true });
+	assert.deepEqual(update.details, result.details);
+	assert.match((result.content[0] as any).text, /TRUNCATED by bytes/);
+});
+
 test("read appends a generic notice only for a flagged page", async () => {
 	const pi = await createTestHost();
 	const state = createState();
@@ -1185,6 +1208,57 @@ test("rejected overwrite preserves prior body and clipped flag", async () => {
 	read = await notebookRead.execute("3", { name: "page" }, undefined, undefined, {} as any);
 	assert.equal((read.details as any).clipped, true);
 	assert.equal((read.content[0] as any).text.endsWith(`\n\n${Notice}`), true);
+});
+
+test("blank first line plus oversized line rejects and preserves prior page state", async () => {
+	const pi = await createTestHost();
+	const state = createState();
+	const [notebookWrite, notebookRead] = createNotebookToolDefinitions(pi as any, state);
+	const record = { statuses: new Map<string, string | undefined>(), widgets: new Map<string, string[] | undefined>() };
+	const blankFirstLineOverflow = "\n" + "x".repeat(DEFAULT_MAX_BYTES + 1);
+
+	await saveNotebookPage(pi as any, state, "page", C);
+	const epochBefore = state.epoch;
+	const entriesBefore = pi.appendedEntries.length;
+
+	await assert.rejects(
+		() => saveNotebookPage(pi as any, state, "page", blankFirstLineOverflow),
+		(error: unknown) => error instanceof Error && error.message === emptyHeadRejectMessage("page"),
+	);
+
+	let updateCalled = false;
+	await assert.rejects(
+		() => notebookWrite.execute("2", { name: "page", content: blankFirstLineOverflow }, undefined, () => { updateCalled = true; }, makeTUICtx({ hasUI: true, record })),
+		(error: unknown) => error instanceof Error && error.message === emptyHeadRejectMessage("page"),
+	);
+	assert.equal(updateCalled, false);
+	assert.equal(state.notebookPages.get("page"), C);
+	assert.equal(state.clippedPages.has("page"), false);
+	assert.equal(state.epoch, epochBefore);
+	assert.equal(pi.appendedEntries.length, entriesBefore);
+	assert.equal(record.statuses.size, 0);
+	assert.equal(record.widgets.size, 0);
+
+	// A clipped prior page is equally protected: body, flag, epoch and entries stay.
+	await saveNotebookPage(pi as any, state, "page", L(2001));
+	const epochClipped = state.epoch;
+	const entriesClipped = pi.appendedEntries.length;
+	await assert.rejects(
+		() => saveNotebookPage(pi as any, state, "page", blankFirstLineOverflow),
+		(error: unknown) => error instanceof Error && error.message === emptyHeadRejectMessage("page"),
+	);
+	const read = await notebookRead.execute("3", { name: "page" }, undefined, undefined, {} as any);
+	assert.equal(state.notebookPages.get("page"), L(2000));
+	assert.equal(state.clippedPages.has("page"), true);
+	assert.equal(state.epoch, epochClipped);
+	assert.equal(pi.appendedEntries.length, entriesClipped);
+	assert.equal((read.details as any).body, L(2000));
+	assert.equal((read.details as any).clipped, true);
+
+	// An untruncated empty write is still accepted by the new guard.
+	await saveNotebookPage(pi as any, state, "page", "");
+	assert.equal(state.notebookPages.get("page"), "");
+	assert.equal(state.clippedPages.has("page"), false);
 });
 
 test("clipped flag survives fresh reconstruction without persisted quantities", async () => {
