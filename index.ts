@@ -716,8 +716,12 @@ export default function (pi: ExtensionAPI): void {
 							if (idx >= 0) selectList.setSelectedIndex(idx);
 						}
 						selectList.onSelect = ({ value }) => {
-							// Guard: selectList is set to undefined below, so this handler
-							// cannot fire twice — no re-entrancy guard needed here.
+							// Guard: `finished` (shared with onCancel/handleInput below) is what
+							// prevents this handler from firing twice, not the `selectList = undefined`
+							// below — that only happens in the no-pager branch. The pager branch never
+							// nulls `selectList`, so without this check a second select event arriving
+							// before the overlay tears down could re-enter onSelect.
+							if (finished) return;
 							const body = state.notebookPages.get(value);
 							if (body === undefined) { done(undefined); return; }
 							// Prefer a real pager when available; else fall back to a

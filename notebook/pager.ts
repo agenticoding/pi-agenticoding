@@ -125,18 +125,31 @@ export async function openInPager(
 ): Promise<Error | undefined> {
 	const ignoreSigint = () => {};
 	process.on("SIGINT", ignoreSigint);
-	tui.stop();
 	try {
+		tui.stop();
 		await pagerRuntime.spawnPager(body, pager);
 		return undefined;
 	} catch (err) {
 		return err as Error;
 	} finally {
+		process.removeListener("SIGINT", ignoreSigint);
 		tui.start();
 		tui.requestRender(true);
-		process.removeListener("SIGINT", ignoreSigint);
 	}
 }
 
+interface PagerRuntime {
+	resolvePager: typeof resolvePager;
+	spawnPager: typeof spawnPager;
+	openInPager: typeof openInPager;
+}
+
+const defaultPagerRuntime: PagerRuntime = { resolvePager, spawnPager, openInPager };
+
 /** Test seam: index.ts calls pagerRuntime.* so tests can swap per-test. */
-export const pagerRuntime = { resolvePager, spawnPager, openInPager };
+export let pagerRuntime: PagerRuntime = defaultPagerRuntime;
+
+/** Test seam: swap one or more pagerRuntime methods; pass null to restore the originals. */
+export function __setPagerRuntimeForTests(next: Partial<PagerRuntime> | null): void {
+	pagerRuntime = next ? { ...defaultPagerRuntime, ...next } : defaultPagerRuntime;
+}
