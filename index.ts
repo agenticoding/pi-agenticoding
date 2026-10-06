@@ -28,7 +28,7 @@ import { registerNotebookTools } from "./notebook/tools.js";
 import { ensureNotebookToolsActive, registerNotebookRehydration, reconstructNotebook } from "./notebook/rehydration.js";
 import { registerNotebookTopicTool } from "./notebook/topic-tool.js";
 import { setActiveNotebookTopic } from "./notebook/topic.js";
-import { formatPagePreview } from "./notebook/store.js";
+import { formatPageTuiPreview } from "./notebook/store.js";
 import { registerHandoffTool } from "./handoff/tool.js";
 import {
 	canPromoteBoundary,
@@ -690,7 +690,7 @@ export default function (pi: ExtensionAPI): void {
 					const items: SelectItem[] = entries.map(([name, content]) => ({
 						value: name,
 						label: name,
-						description: formatPagePreview(content),
+						description: formatPageTuiPreview(content, state.clippedPages.has(name)),
 					}));
 
 					selectList = new SelectList(items, Math.min(items.length, 10), {

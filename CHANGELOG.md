@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Current-date anchor** — `before_agent_start` injects a `## Current date` block (ISO date, weekday, IANA zone, UTC offset, plus a resolve-relative-references directive) into the system prompt. It is rebuilt once per run and is byte-stable within a calendar day, so the provider-cached prefix does not churn; on a DST transition day the offset adds one more change. A zone Intl cannot render falls back to `UTC` rather than throwing.
 
+### Changed
+
+- **Pi minimum** — Pi 0.99.2 is now the documented minimum for the `@earendil-works/pi-ai`, `@earendil-works/pi-coding-agent` and `@earendil-works/pi-tui` peers, and the `typebox` peer minimum is 1.3.27.
+
 ## [0.6.0] - 2026-09-26
 
 ### Added
