@@ -15,7 +15,7 @@ import { fileURLToPath } from "node:url";
 import { RpcClient, SessionManager, type RpcClientOptions, type SessionEntry } from "@earendil-works/pi-coding-agent";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const SCHEMATIC_ENTRY = resolve(HERE, "..", "..", "index.ts");
+export const SCHEMATIC_ENTRY = resolve(HERE, "..", "..", "index.ts");
 const PROBE_ENTRY = resolve(HERE, "real-host-probe.ts");
 const CLI_PATH = join(dirname(fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent"))), "cli.js");
 const REQUIRED_COMMANDS = ["handoff", "notebook", "readonly", "e2e-barrier"];
@@ -116,6 +116,14 @@ export function messageText(content: unknown): string {
 		.join("\n");
 }
 
+/** Tool results named `name` in an `entries()` snapshot, in session order. */
+export function toolResults(entries: SessionEntry[], name: string): ToolResult[] {
+	return entries.flatMap((entry) => {
+		if (entry.type !== "message" || entry.message.role !== "toolResult" || entry.message.toolName !== name) return [];
+		return [{ isError: entry.message.isError, text: messageText(entry.message.content) }];
+	});
+}
+
 export class RealHost {
 	client: RpcClient;
 	events: RpcEvent[];
@@ -199,7 +207,7 @@ export class RealHost {
 		return projectStatuses(this.events);
 	}
 
-	/** Run an extension command; it must report "handled" without an extension_error. */
+	/** Run an extension command; it must report "handled" without an extension_error, from the command or from any handler it triggers. */
 	async command(text: string): Promise<void> {
 		if (!text.startsWith("/")) throw new Error(`command() needs a slash command, got: ${text}`);
 		const mark = this.events.length;
@@ -211,6 +219,7 @@ export class RealHost {
 			.slice(mark)
 			.find((event) => event.type === "extension_error" && event.extensionPath === `command:${name}`);
 		if (failure) throw new Error(`${text} failed: ${requireString(failure, "error")}`);
+		this.assertNoExtensionErrors(mark, text);
 	}
 
 	/** Submit a user prompt on an idle session and wait until its run and everything it left behind drained. */
@@ -219,6 +228,7 @@ export class RealHost {
 		const disposition = await this.client.prompt(text);
 		if (disposition !== "started") throw new Error(`"${text}" reported "${disposition}", expected "started"`);
 		await this.runWait(mark);
+		this.assertNoExtensionErrors(mark, `"${text}"`);
 	}
 
 	/** Run a command whose handler starts a run on an idle session, then wait for that run to drain. */
@@ -226,6 +236,7 @@ export class RealHost {
 		const mark = this.events.length;
 		await this.command(text);
 		await this.runWait(mark);
+		this.assertNoExtensionErrors(mark, text);
 	}
 
 	async arm(calls: ScriptedCall[]): Promise<void> {
@@ -233,12 +244,16 @@ export class RealHost {
 	}
 
 	async script(calls: ScriptedCall[]): Promise<void> {
+		const mark = this.events.length;
 		await this.arm(calls);
 		await this.say("go");
+		this.assertNoExtensionErrors(mark, "script");
 	}
 
 	async settle(): Promise<void> {
+		const mark = this.events.length;
 		await this.command("/e2e-barrier");
+		this.assertNoExtensionErrors(mark, "/e2e-barrier");
 	}
 
 	async entries(): Promise<{ entries: SessionEntry[]; leafId: string | null }> {
@@ -256,23 +271,19 @@ export class RealHost {
 		return this.probeLog().filter((record): record is Extract<ProbeRecord, { kind: "successor-send" }> => record.kind === "successor-send");
 	}
 
-	async toolResults(name: string): Promise<ToolResult[]> {
-		const { entries } = await this.entries();
-		return entries.flatMap((entry) => {
-			if (entry.type !== "message" || entry.message.role !== "toolResult" || entry.message.toolName !== name) return [];
-			return [{ isError: entry.message.isError, text: messageText(entry.message.content) }];
-		});
-	}
-
 	async navigate(entryId: string): Promise<void> {
+		const mark = this.events.length;
 		await this.command("/e2e-tree " + entryId);
 		await this.settle();
+		this.assertNoExtensionErrors(mark, `/e2e-tree ${entryId}`);
 	}
 
 	/** Stop the CLI and start a new one on the same session file, temp root and probe log. */
 	async restart(): Promise<void> {
 		const { sessionFile } = await this.client.getState();
-		if (!sessionFile) throw new Error("restart() needs a persisted session file; get_state reported none");
+		if (!sessionFile || !existsSync(sessionFile)) {
+			throw new Error(`restart() needs a session file on disk (${sessionFile}); pi writes it only after a user or assistant message`);
+		}
 		await this.client.stop();
 		const args = [...(this.options.args ?? [])];
 		const sessionIndex = args.indexOf("--session");
@@ -286,6 +297,16 @@ export class RealHost {
 
 	async close(): Promise<void> {
 		await withCleanup(() => this.client.stop(), () => removeRoot(this.root));
+	}
+
+	/** Throw when any extension_error event, from a command or an event handler, arrived at or after `mark`. */
+	private assertNoExtensionErrors(mark: number, action: string): void {
+		const failure = this.events.slice(mark).find((event) => event.type === "extension_error");
+		if (!failure) return;
+		throw new Error(
+			`${action} raised an extension error in ${requireString(failure, "extensionPath")} ` +
+			`(event ${requireString(failure, "event")}): ${requireString(failure, "error")}`,
+		);
 	}
 
 	/** Wait for an agent_settled event at or after `mark`, then drain with settle(). */

@@ -59,9 +59,11 @@ function appendEntry(entry: any): void {
 	entries.push(entry);
 }
 
-// Model Pi's follow-up queue centrally: every extension send with
-// deliverAs "followUp" waits here until a run drains it. Recovery sends must
-// queue too, so the override cannot live inside a single REPL command.
+// Record Pi's follow-up queue centrally: every extension send with deliverAs
+// "followUp" is appended here, so hasPendingMessages() reports true after it.
+// Nothing drains the queue: the REPL verbs that did were removed, so the entry
+// stays for the life of the process. Recovery sends are recorded too, so the
+// override cannot live inside a single REPL command.
 const originalSendUserMessage = pi.sendUserMessage;
 pi.sendUserMessage = (content: any, options?: any) => {
 	originalSendUserMessage.call(pi, content, options);

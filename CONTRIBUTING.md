@@ -44,7 +44,7 @@ Before submitting, check that your change:
 - `npm test` — runs the unit suite under `tests/unit/` via the in-repo Node test runner.
 - `npm run test:snapshots:check` — runs only the render-snapshot tests; fails on any drift in `tests/snapshots/`.
 - `npm run test:snapshots:update` — rewrites the golden files in `tests/snapshots/` after an intentional render change. Review the diff carefully: snapshot updates are the only signal that catches unintended UI regressions.
-- `npm run test:e2e` — runs the end-to-end suites under `tests/e2e/`: the real-host suite drives the pi CLI in RPC mode through `RpcClient` with schematic and a scripted probe provider; the line host covers scenarios RPC cannot reach (headless mode, injected context usage, compaction races, line-protocol errors). `E2E_REAL_HOST_TIMEOUT_MS` sets how long the real-host harness waits for a run's `agent_settled` event (default 20 000 ms).
+- `npm run test:e2e` — runs the end-to-end suites under `tests/e2e/`: the real-host suite drives the pi CLI in RPC mode through `RpcClient` with schematic and a scripted probe provider; the line host covers scenarios RPC cannot reach (headless mode, injected context usage, compaction races, the no-model spawn error, line-protocol errors). `E2E_REAL_HOST_TIMEOUT_MS` sets how long the real-host harness waits for a run's `agent_settled` event (default 20 000 ms).
 
 ## CI
 

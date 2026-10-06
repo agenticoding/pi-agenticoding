@@ -7,13 +7,27 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import { HANDOFF_IN_PROGRESS_STATUS, HANDOFF_REQUIRED_STATUS } from "../../handoff/copy.js";
 import { buildNextUserMessage } from "../../handoff/format.js";
-import { READONLY_ACTIVE_SUMMARY, READONLY_HANDOFF_EXCEPTION_SUMMARY } from "../../notifications.js";
+import {
+	READONLY_ACTIVE_SUMMARY,
+	READONLY_HANDOFF_BLOCK_REASON,
+	READONLY_HANDOFF_EXCEPTION_SUMMARY,
+	READONLY_WRITE_EDIT_BLOCK_REASON,
+} from "../../notifications.js";
 import { STATUS_KEY_HANDOFF } from "../../tui.js";
-import { messageText, projectStatuses, withRealHost, type ProbeRecord, type RealHost, type ScriptedCall } from "./real-host.js";
+import {
+	messageText,
+	projectStatuses,
+	SCHEMATIC_ENTRY,
+	toolResults,
+	withRealHost,
+	type ProbeRecord,
+	type RealHost,
+	type ScriptedCall,
+} from "./real-host.js";
 
 const TEST_OPTIONS = { timeout: 90_000 };
 
@@ -101,10 +115,11 @@ describe("pi-schematic real-host E2E", () => {
 
 	it("commands are registered", TEST_OPTIONS, async () => withRealHost(async (host) => {
 		const commands = await host.client.getCommands();
-		const names = commands.filter((command) => command.source === "extension").map((command) => command.name);
-		for (const name of ["notebook", "handoff", "readonly"]) {
-			assert.ok(names.includes(name), `/${name} command registered`);
-		}
+		const names = commands
+			.filter((command) => command.source === "extension" && resolve(command.sourceInfo.path) === SCHEMATIC_ENTRY)
+			.map((command) => command.name)
+			.sort();
+		assert.deepEqual(names, ["handoff", "model-groups", "notebook", "readonly"]);
 	}));
 
 	it("notebook write/read round-trip", TEST_OPTIONS, async () => withRealHost(async (host) => {
@@ -112,8 +127,9 @@ describe("pi-schematic real-host E2E", () => {
 			{ name: "notebook_write", arguments: { name: "my-page", content: "Hello World" } },
 			{ name: "notebook_read", arguments: { name: "my-page" } },
 		]);
-		const write = onlyResult(await host.toolResults("notebook_write"), "notebook_write");
-		const read = onlyResult(await host.toolResults("notebook_read"), "notebook_read");
+		const { entries } = await host.entries();
+		const write = onlyResult(toolResults(entries, "notebook_write"), "notebook_write");
+		const read = onlyResult(toolResults(entries, "notebook_read"), "notebook_read");
 		assert.equal(write.isError, false);
 		assert.ok(write.text.startsWith("Saved notebook page"), write.text);
 		assert.equal(read.isError, false);
@@ -130,7 +146,8 @@ describe("pi-schematic real-host E2E", () => {
 			{ name: "notebook_write", arguments: { name: "page-b", content: "Page B" } },
 			{ name: "notebook_index", arguments: {} },
 		]);
-		const indexes = await host.toolResults("notebook_index");
+		const { entries } = await host.entries();
+		const indexes = toolResults(entries, "notebook_index");
 		assert.equal(indexes.length, 2, "two notebook_index results");
 		assert.ok(indexes[0].text.includes("page-a"), "page-a in first index");
 		assert.ok(indexes[1].text.includes("page-a"), "page-a in second index");
@@ -143,7 +160,8 @@ describe("pi-schematic real-host E2E", () => {
 			{ name: "notebook_write", arguments: { name: "page", content: "v2" } },
 			{ name: "notebook_read", arguments: { name: "page" } },
 		]);
-		const read = onlyResult(await host.toolResults("notebook_read"), "notebook_read");
+		const { entries } = await host.entries();
+		const read = onlyResult(toolResults(entries, "notebook_read"), "notebook_read");
 		assert.ok(read.text.includes("v2"), "overwritten content present");
 		assert.ok(!read.text.includes("v1"), "old content absent");
 	}));
@@ -151,21 +169,24 @@ describe("pi-schematic real-host E2E", () => {
 	it("notebook topic lifecycle: set via command, agent-set blocked", TEST_OPTIONS, async () => withRealHost(async (host) => {
 		await host.command("/notebook my-e2e-topic");
 		await host.script([{ name: "notebook_topic_set", arguments: { topic: "agent-topic" } }]);
-		const result = onlyResult(await host.toolResults("notebook_topic_set"), "notebook_topic_set");
+		const { entries } = await host.entries();
+		const result = onlyResult(toolResults(entries, "notebook_topic_set"), "notebook_topic_set");
 		assert.equal(result.isError, true);
 		assert.ok(result.text.includes("authoritative"), result.text);
 	}));
 
 	it("agent-set topic works when unset", TEST_OPTIONS, async () => withRealHost(async (host) => {
 		await host.script([{ name: "notebook_topic_set", arguments: { topic: "fresh-agent-topic" } }]);
-		const result = onlyResult(await host.toolResults("notebook_topic_set"), "notebook_topic_set");
+		const { entries } = await host.entries();
+		const result = onlyResult(toolResults(entries, "notebook_topic_set"), "notebook_topic_set");
 		assert.ok(result.text.startsWith("Active notebook topic:"), result.text);
 		assert.ok(result.text.includes("fresh-agent-topic"), result.text);
 	}));
 
 	it("handoff tool rejects a missing instruction", TEST_OPTIONS, async () => withRealHost(async (host) => {
 		await handoff(host, { context: "situational only" });
-		const result = onlyResult(await host.toolResults("handoff"), "handoff");
+		const { entries } = await host.entries();
+		const result = onlyResult(toolResults(entries, "handoff"), "handoff");
 		assert.equal(result.isError, true);
 		assert.ok(result.text.includes("Empty handoff nextInstruction rejected"), result.text);
 	}));
@@ -175,9 +196,9 @@ describe("pi-schematic real-host E2E", () => {
 		await host.say("start");
 		await handoffCommand(host, "continue readonly work", { context: "mid-task state" });
 
-		const result = onlyResult(await host.toolResults("handoff"), "handoff");
-		assert.ok(result.text.startsWith("Handoff started."), result.text);
 		const { entries } = await host.entries();
+		const result = onlyResult(toolResults(entries, "handoff"), "handoff");
+		assert.ok(result.text.startsWith("Handoff started."), result.text);
 		const compaction = onlyHandoffCompaction(entries);
 		const successors = userEntriesWithText(entries, buildNextUserMessage({ nextInstruction: "continue readonly work", context: "mid-task state" }));
 		assert.equal(successors.length, 1, "exactly one successor user entry");
@@ -278,10 +299,11 @@ describe("pi-schematic real-host E2E", () => {
 		assert.equal(handoffStatuses.at(-1)?.statusText, HANDOFF_REQUIRED_STATUS, "the handoff stays required");
 
 		await handoff(host, { nextInstruction: "retry after failure" });
-		const results = await host.toolResults("handoff");
+		const retried = await host.entries();
+		const results = toolResults(retried.entries, "handoff");
 		assert.equal(results.length, 2, "two handoff results");
 		assert.ok(results[1].text.startsWith("Handoff started."), results[1].text);
-		onlyHandoffCompaction((await host.entries()).entries);
+		onlyHandoffCompaction(retried.entries);
 	}));
 
 	it("readonly lifecycle: handoff bypass clears after compaction while readonly persists", TEST_OPTIONS, async () => withRealHost(async (host) => {
@@ -294,17 +316,20 @@ describe("pi-schematic real-host E2E", () => {
 			{ name: "write", arguments: { path: blocked, content: "x" } },
 		]);
 
-		const handoffResults = await host.toolResults("handoff");
+		const { entries } = await host.entries();
+		const handoffResults = toolResults(entries, "handoff");
 		assert.equal(handoffResults.length, 2, "two handoff results");
 		assert.ok(handoffResults[0].text.startsWith("Handoff started."), handoffResults[0].text);
-		const compaction = onlyHandoffCompaction((await host.entries()).entries);
+		const compaction = onlyHandoffCompaction(entries);
 		assert.ok(
 			requestsAfterCompaction(host.probeLog(), compaction.id).some((record) => containsText(record, READONLY_ACTIVE_SUMMARY)),
 			"readonly is re-announced after the handoff",
 		);
 		assert.equal(handoffResults[1].isError, true, "handoff is blocked again after compaction");
-		const write = onlyResult(await host.toolResults("write"), "write");
+		assert.equal(handoffResults[1].text, READONLY_HANDOFF_BLOCK_REASON);
+		const write = onlyResult(toolResults(entries, "write"), "write");
 		assert.equal(write.isError, true, "write stays blocked");
+		assert.equal(write.text, READONLY_WRITE_EDIT_BLOCK_REASON);
 		assert.equal(existsSync(blocked), false, "blocked write left no file");
 	}));
 
@@ -335,14 +360,16 @@ describe("pi-schematic real-host E2E", () => {
 		assert.equal(statusesAfterCompaction.at(-1)?.statusText, undefined, "handoff status cleared after the compaction");
 		assert.ok(host.notifications.some((notification) => notification.message.includes("Readonly topic boundary detected")), "boundary promotion notified");
 
-		const handoffResults = await host.toolResults("handoff");
+		const { entries } = await host.entries();
+		const handoffResults = toolResults(entries, "handoff");
 		assert.equal(handoffResults.length, 2, "two handoff results");
 		assert.ok(handoffResults[0].text.startsWith("Handoff started."), handoffResults[0].text);
-		const compaction = onlyHandoffCompaction((await host.entries()).entries);
+		const compaction = onlyHandoffCompaction(entries);
 		assert.ok(
 			requestsAfterCompaction(log, compaction.id).some((record) => containsText(record, READONLY_ACTIVE_SUMMARY)),
 			"readonly is re-announced after the handoff",
 		);
 		assert.equal(handoffResults[1].isError, true, "handoff is blocked again after compaction");
+		assert.equal(handoffResults[1].text, READONLY_HANDOFF_BLOCK_REASON);
 	}));
 });
