@@ -75,7 +75,6 @@ export function spawnPager(body: string, pager: ResolvedPager): Promise<void> {
 	return new Promise((resolve, reject) => {
 		const child = spawn(pager.cmd, pager.args, {
 			stdio: ["pipe", "inherit", "inherit"],
-			windowsHide: true,
 			shell: process.platform === "win32",
 		});
 		child.on("error", (err) => {
