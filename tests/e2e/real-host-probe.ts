@@ -144,6 +144,13 @@ export default function realHostProbe(pi: ExtensionAPI): void {
 	pi.registerCommand("e2e-barrier", {
 		description: "Return once every run, deferred settled action and queued message has drained",
 		handler: async (_args, ctx) => {
+			// Assumes a compaction's successor send starts its run within one macrotask. From
+			// onComplete's sendUserMessage to `_isAgentRunActive = true`, nothing pi awaits does I/O
+			// (auto-compaction is disabled, the successor has no images, the provider has an apiKey),
+			// and neither do the extension handlers on that path: schematic's "input" returns at once
+			// for source "extension", its "before_agent_start" has no await, and this file's "input"
+			// has none. So the setImmediate tick below runs after the run started. Real async I/O in
+			// those handlers would let this return before the successor run starts.
 			for (;;) {
 				await ctx.waitForIdle();
 				await new Promise<void>((resolve) => setImmediate(resolve));

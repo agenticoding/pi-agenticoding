@@ -68,8 +68,8 @@ jobs:
 
       # E2E tests — two suites: the real-host suite runs the pi CLI in RPC mode, and the
       # line-host harness runs a child process over stdin/stdout (no PTY).
-      # Verified cross-platform: runs on Linux, macOS, and Windows.
-      # See https://github.com/chunkhound/pi-schematic/issues/12
+      # Issue #12 concerns the line-host harness's cross-platform run only, not the real-host suite:
+      # https://github.com/chunkhound/pi-schematic/issues/12
       - name: E2E tests
         run: npm run test:e2e
 

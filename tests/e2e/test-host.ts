@@ -42,7 +42,6 @@ type CompactRequest = { onComplete?: () => void; onError?: (error: Error) => voi
 
 let currentUsage: MockContextUsage = null;
 let lastCompactRequest: CompactRequest | null = null;
-const queuedFollowUps: string[] = [];
 const statuses = new Map<string, string | undefined>();
 const notifications: Array<{ message: string; level: string }> = [];
 // `branch` models the active path while `entries` preserves the session history.
@@ -58,19 +57,6 @@ function appendEntry(entry: any): void {
 	branch.push(entry);
 	entries.push(entry);
 }
-
-// Record Pi's follow-up queue centrally: every extension send with deliverAs
-// "followUp" is appended here, so hasPendingMessages() reports true after it.
-// Nothing drains the queue: the REPL verbs that did were removed, so the entry
-// stays for the life of the process. Recovery sends are recorded too, so the
-// override cannot live inside a single REPL command.
-const originalSendUserMessage = pi.sendUserMessage;
-pi.sendUserMessage = (content: any, options?: any) => {
-	originalSendUserMessage.call(pi, content, options);
-	if (options?.deliverAs === "followUp") {
-		queuedFollowUps.push(typeof content === "string" ? content : content.map((part: any) => part.text ?? "").join("\n"));
-	}
-};
 
 const mockCtx = {
 	hasUI: true,
@@ -111,7 +97,8 @@ const mockCtx = {
 	isIdle: () => true,
 	signal: new AbortController().signal,
 	abort: () => {},
-	hasPendingMessages: () => queuedFollowUps.length > 0,
+	// The line host keeps no follow-up queue: sends are only recorded in pi.sentUserMessages.
+	hasPendingMessages: () => false,
 	shutdown: () => process.exit(0),
 	compact: (request: { onComplete?: () => void; onError?: (error: Error) => void }) => {
 		lastCompactRequest = request;

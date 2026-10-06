@@ -12,6 +12,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import os from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { TestContext } from "node:test";
 import { RpcClient, SessionManager, type RpcClientOptions, type SessionEntry } from "@earendil-works/pi-coding-agent";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -131,6 +132,7 @@ export class RealHost {
 	private readonly root: string;
 	private readonly logPath: string;
 	private options: RpcClientOptions;
+	private closing: Promise<void> | null = null;
 
 	private constructor(root: string, logPath: string, options: RpcClientOptions, client: RpcClient, events: RpcEvent[]) {
 		this.root = root;
@@ -215,11 +217,7 @@ export class RealHost {
 		if (disposition !== "handled") throw new Error(`${text} reported "${disposition}", expected "handled"`);
 		const spaceIndex = text.indexOf(" ");
 		const name = spaceIndex === -1 ? text.slice(1) : text.slice(1, spaceIndex);
-		const failure = this.events
-			.slice(mark)
-			.find((event) => event.type === "extension_error" && event.extensionPath === `command:${name}`);
-		if (failure) throw new Error(`${text} failed: ${requireString(failure, "error")}`);
-		this.assertNoExtensionErrors(mark, text);
+		this.assertNoExtensionErrors(mark, text, `command:${name}`);
 	}
 
 	/** Submit a user prompt on an idle session and wait until its run and everything it left behind drained. */
@@ -227,16 +225,14 @@ export class RealHost {
 		const mark = this.events.length;
 		const disposition = await this.client.prompt(text);
 		if (disposition !== "started") throw new Error(`"${text}" reported "${disposition}", expected "started"`);
-		await this.runWait(mark);
-		this.assertNoExtensionErrors(mark, `"${text}"`);
+		await this.runWait(mark, `"${text}"`);
 	}
 
 	/** Run a command whose handler starts a run on an idle session, then wait for that run to drain. */
 	async turn(text: string): Promise<void> {
 		const mark = this.events.length;
 		await this.command(text);
-		await this.runWait(mark);
-		this.assertNoExtensionErrors(mark, text);
+		await this.runWait(mark, text);
 	}
 
 	async arm(calls: ScriptedCall[]): Promise<void> {
@@ -244,16 +240,12 @@ export class RealHost {
 	}
 
 	async script(calls: ScriptedCall[]): Promise<void> {
-		const mark = this.events.length;
 		await this.arm(calls);
 		await this.say("go");
-		this.assertNoExtensionErrors(mark, "script");
 	}
 
 	async settle(): Promise<void> {
-		const mark = this.events.length;
 		await this.command("/e2e-barrier");
-		this.assertNoExtensionErrors(mark, "/e2e-barrier");
 	}
 
 	async entries(): Promise<{ entries: SessionEntry[]; leafId: string | null }> {
@@ -272,10 +264,8 @@ export class RealHost {
 	}
 
 	async navigate(entryId: string): Promise<void> {
-		const mark = this.events.length;
 		await this.command("/e2e-tree " + entryId);
 		await this.settle();
-		this.assertNoExtensionErrors(mark, `/e2e-tree ${entryId}`);
 	}
 
 	/** Stop the CLI and start a new one on the same session file, temp root and probe log. */
@@ -290,18 +280,34 @@ export class RealHost {
 		if (sessionIndex !== -1) args.splice(sessionIndex, 2);
 		args.push("--session", sessionFile);
 		this.options = { ...this.options, args };
-		const { client, events } = await startClient(this.options);
+		// A timed-out test body keeps running after its after-hook closed the host; whatever the
+		// new CLI wrote into the removed root, and the CLI itself when it started, is cleared here.
+		const { client, events } = await cleanupOnFailure(() => startClient(this.options), () => {
+			if (this.closing) removeRoot(this.root);
+		});
+		if (this.closing) {
+			await withCleanup(() => client.stop(), () => removeRoot(this.root));
+			throw new Error("restart() finished after close(); the new CLI was stopped");
+		}
 		this.client = client;
 		this.events = events;
 	}
 
-	async close(): Promise<void> {
-		await withCleanup(() => this.client.stop(), () => removeRoot(this.root));
+	/** Stop the CLI and remove the temp root. Runs once: every call returns the first call's outcome. */
+	close(): Promise<void> {
+		this.closing ??= withCleanup(() => this.client.stop(), () => removeRoot(this.root));
+		return this.closing;
 	}
 
-	/** Throw when any extension_error event, from a command or an event handler, arrived at or after `mark`. */
-	private assertNoExtensionErrors(mark: number, action: string): void {
-		const failure = this.events.slice(mark).find((event) => event.type === "extension_error");
+	/**
+	 * Throw when any extension_error event, from a command or an event handler, arrived at or
+	 * after `mark`. An error from extension path `commandPath` is reported as the command's own failure.
+	 */
+	private assertNoExtensionErrors(mark: number, action: string, commandPath?: string): void {
+		const failures = this.events.slice(mark).filter((event) => event.type === "extension_error");
+		const own = commandPath === undefined ? undefined : failures.find((event) => event.extensionPath === commandPath);
+		if (own) throw new Error(`${action} failed: ${requireString(own, "error")}`);
+		const failure = failures[0];
 		if (!failure) return;
 		throw new Error(
 			`${action} raised an extension error in ${requireString(failure, "extensionPath")} ` +
@@ -309,8 +315,8 @@ export class RealHost {
 		);
 	}
 
-	/** Wait for an agent_settled event at or after `mark`, then drain with settle(). */
-	private async runWait(mark: number): Promise<void> {
+	/** Wait for an agent_settled event at or after `mark`, drain with settle(), then require no extension_error since `mark`. */
+	private async runWait(mark: number, action: string): Promise<void> {
 		const events = this.events;
 		const settled = () => events.slice(mark).some((event) => event.type === "agent_settled");
 		if (!settled()) {
@@ -328,6 +334,7 @@ export class RealHost {
 			});
 		}
 		await this.settle();
+		this.assertNoExtensionErrors(mark, action);
 	}
 }
 
@@ -357,7 +364,18 @@ export function startRealHost(options?: RealHostOptions): Promise<RealHost> {
 	return RealHost.start(options);
 }
 
-export async function withRealHost(run: (host: RealHost) => Promise<void>, options?: RealHostOptions): Promise<void> {
+/**
+ * Start a host and run `run` against it, then close it. The close also hangs off an after-hook
+ * on `t`: node:test does not cancel a timed-out test body, so only a hook still runs then.
+ * `close()` runs once however many of these paths reach it. The inline close keeps a cleanup
+ * error visible next to a body failure; node:test ignores an after-hook error once the test
+ * has failed (timeout included), so the hook also records it as a diagnostic.
+ */
+export async function withRealHost(t: TestContext, run: (host: RealHost) => Promise<void>, options?: RealHostOptions): Promise<void> {
 	const host = await startRealHost(options);
+	t.after(() => host.close().catch((error: unknown) => {
+		t.diagnostic(`cleanup failed: ${describeError(error)}`);
+		throw error;
+	}));
 	await withCleanup(() => run(host), () => host.close());
 }
