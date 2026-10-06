@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Pi minimum** — Pi 0.99.2 is now the documented minimum for the `@earendil-works/pi-ai`, `@earendil-works/pi-coding-agent` and `@earendil-works/pi-tui` peers, and the `typebox` peer minimum is 1.3.27.
+
 ## [0.6.0] - 2026-09-26
 
 ### Added
