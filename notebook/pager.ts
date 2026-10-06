@@ -42,10 +42,12 @@ export function resolvePager(
 		if (cmd) {
 			const executable = platform === "win32" ? win32.basename(cmd).toLowerCase() : posix.basename(cmd);
 			if (executable === "less" || (platform === "win32" && executable === "less.exe")) {
-				// Override -F (including inherited LESS) so short pages stay readable
-				// until dismissed. Keep it last, but before any end-of-options marker.
+				// Override -F and -X (including inherited LESS) so short pages stay
+				// readable until dismissed and page text doesn't linger in the
+				// terminal's scrollback. Keep them last, but before any
+				// end-of-options marker.
 				const endOfOptions = args.indexOf("--");
-				args.splice(endOfOptions === -1 ? args.length : endOfOptions, 0, "-+F");
+				args.splice(endOfOptions === -1 ? args.length : endOfOptions, 0, "-+F", "-+X");
 			}
 			return { cmd, args };
 		}
@@ -53,7 +55,7 @@ export function resolvePager(
 	// Skip probing on Windows: `command -v` isn't standard and less is
 	// rarely present. Respect $PAGER above, otherwise fall through.
 	if (platform === "win32") return undefined;
-	if (commandExists("less")) return { cmd: "less", args: ["-R", "-+F"] };
+	if (commandExists("less")) return { cmd: "less", args: ["-R", "-+F", "-+X"] };
 	return undefined;
 }
 
@@ -66,10 +68,11 @@ export function resolvePager(
  * its own keystrokes from /dev/tty when stdin is not a TTY, so navigation
  * still works.
  *
- * ENOENT becomes a readable error. EPIPE on the stdin pipe is normal (the
+ * ENOENT becomes a readable error. EPIPE/EOF on the stdin pipe is normal (the
  * pager quit before consuming all stdin) and stays silent. Nonzero exit
  * codes are intentionally ignored — a pager's exit code shouldn't break the
- * caller's UX.
+ * caller's UX. On Windows (shell: true) a missing binary is just a cmd.exe
+ * exit code, so it is ignored too, matching Pi's external editor.
  */
 export function spawnPager(body: string, pager: ResolvedPager): Promise<void> {
 	return new Promise((resolve, reject) => {
@@ -82,19 +85,11 @@ export function spawnPager(body: string, pager: ResolvedPager): Promise<void> {
 			if (code === "ENOENT") reject(new Error(`${pager.cmd} not found`));
 			else reject(err);
 		});
-		// Under shell: true (Windows), a missing binary surfaces as cmd.exe
-		// exit 9009 ("not recognized") rather than ENOENT. Promote that one
-		// code to a rejection; keep ignoring every other nonzero exit so a
-		// pager's own exit code never breaks the caller's UX.
-		child.on("close", (code) => {
-			if (process.platform === "win32" && code === 9009) {
-				reject(new Error(`${pager.cmd} not found`));
-			} else {
-				resolve();
-			}
-		});
+		child.on("close", () => resolve());
+		// Windows (libuv) reports a closed read end as EOF rather than EPIPE.
 		child.stdin?.on("error", (err) => {
-			if ((err as NodeJS.ErrnoException).code !== "EPIPE") reject(err);
+			const code = (err as NodeJS.ErrnoException).code;
+			if (code !== "EPIPE" && code !== "EOF") reject(err);
 		});
 		child.stdin?.end(body);
 	});

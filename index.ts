@@ -669,7 +669,7 @@ export default function (pi: ExtensionAPI): void {
 				return;
 			}
 
-			let lastSelectedName: string | undefined = state.activeNotebookTopic ?? undefined;
+			let lastSelectedName: string | undefined;
 			// Resolve once per /notebook invocation: $PAGER and `command -v less`
 			// don't change mid-session, and running execSync inside the render
 			// callback on every Enter is needless UI-thread work.
