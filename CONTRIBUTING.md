@@ -44,7 +44,7 @@ Before submitting, check that your change:
 - `npm test` — runs the unit suite under `tests/unit/` via the in-repo Node test runner.
 - `npm run test:snapshots:check` — runs only the render-snapshot tests; fails on any drift in `tests/snapshots/`.
 - `npm run test:snapshots:update` — rewrites the golden files in `tests/snapshots/` after an intentional render change. Review the diff carefully: snapshot updates are the only signal that catches unintended UI regressions.
-- `npm run test:e2e` — runs the process-isolated end-to-end suite under `tests/e2e/`.
+- `npm run test:e2e` — runs the end-to-end suites under `tests/e2e/`: the real-host suite drives the pi CLI in RPC mode through `RpcClient` with schematic and a scripted probe provider; the line host covers scenarios RPC cannot reach (headless mode, injected context usage, compaction races, line-protocol errors). `E2E_REAL_HOST_TIMEOUT_MS` sets how long the real-host harness waits for a run's `agent_settled` event (default 20 000 ms).
 
 ## CI
 
@@ -60,7 +60,7 @@ Pull requests are automatically tested via GitHub Actions. A cross-platform matr
 Node 22 (minimum) is tested only on Linux — the primary platform and the only one guaranteed to have the oldest toolchain. macOS and Windows test Node 24 (latest) to catch regressions in the newest runtime while balancing CI cost.
 
 Snapshot golden files in `tests/snapshots/` are stored with LF line endings (enforced by `.gitattributes`). The `normalizeEOL` helper in the snapshot test file normalizes `\r\n` to `\n` on read, so Windows developers get correct comparisons even if their working tree has CRLF. If you update snapshots, the CI matrix validates them on all platforms.
-The E2E suite runs on all platforms including Windows (verified in issue #12).
+Both E2E suites run on Linux, macOS and Windows.
 
 ## Community
 
