@@ -12,6 +12,7 @@ import { createTestHost } from "./test-host.js";
 import { STATUS_KEY_HANDOFF } from "../../tui.js";
 import { MAX_HANDOFF_ATTEMPTS } from "../../watchdog.js";
 import { buildContinuationFrame } from "../../handoff/format.js";
+import { READONLY_POWERSHELL_BLOCK_REASON } from "../../notifications.js";
 
 async function createHandoffPI() {
 	const pi = await createTestHost();
@@ -121,6 +122,9 @@ test("/handoff command creates temporary bypass for handoff tool only", async ()
 		"handoff should be unblocked after explicit /handoff");
 	assert.equal((await toolCall({ toolName: "write", input: { path: "/tmp/test", content: "x" } }, {})).block, true,
 		"write should stay blocked");
+	const powershell = await toolCall({ toolName: "powershell", input: { command: "Get-ChildItem" } }, {});
+	assert.equal(powershell.block, true, "powershell should stay blocked");
+	assert.equal(powershell.reason, READONLY_POWERSHELL_BLOCK_REASON);
 	await assertNonTempBashBlocked(toolCall);
 });
 

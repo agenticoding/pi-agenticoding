@@ -55,7 +55,7 @@ export const READONLY_WRITE_EDIT_BLOCK_REASON =
 	"Readonly mode: write/edit blocked until the user disables readonly. Do not attempt alternative write strategies.";
 
 export const READONLY_POWERSHELL_BLOCK_REASON =
-	"Readonly mode: powershell blocked until the user disables readonly. Do not attempt alternative shell strategies.";
+	"Readonly mode: powershell blocked until the user disables readonly. Do not run PowerShell through another tool.";
 
 export const READONLY_HANDOFF_BLOCK_REASON =
 	`Readonly mode: handoff blocked until an ${READONLY_HANDOFF_TRIGGER} enables the temporary exception. Use spawn for same-topic delegation.`;

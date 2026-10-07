@@ -103,6 +103,7 @@ test("summary constants use [readonly] prefix", () => {
 test("block reasons use 'Readonly mode:' prefix", () => {
 	assert.ok(READONLY_WRITE_EDIT_BLOCK_REASON.startsWith("Readonly mode:"));
 	assert.ok(READONLY_POWERSHELL_BLOCK_REASON.startsWith("Readonly mode:"));
+	assert.match(READONLY_POWERSHELL_BLOCK_REASON, /powershell/);
 	assert.ok(READONLY_HANDOFF_BLOCK_REASON.startsWith("Readonly mode:"));
 	assert.ok(buildReadonlyBashBlockReason("test", "cmd").startsWith("Readonly mode:"));
 });

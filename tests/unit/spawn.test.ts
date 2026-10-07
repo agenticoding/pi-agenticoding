@@ -203,7 +203,7 @@ test("spawn execute composes Model Group routing with readonly child guards", as
 		return { session: mockSessionFactory({
 			prompt: async (p?: string) => { seenPrompt = p ?? ""; },
 		}), extensionsResult: undefined as any };
-	}), { activeTools: ["read", "bash", "write", "edit", "spawn", "handoff"], allTools: ["read", "bash", "write", "edit", "spawn", "handoff"] });
+	}), { activeTools: ["read", "bash", "write", "edit", "powershell", "spawn", "handoff"], allTools: ["read", "bash", "write", "edit", "powershell", "spawn", "handoff"] });
 
 	const result = await pi.tools.get("spawn").execute(
 		"spawn-routed",
@@ -224,6 +224,7 @@ test("spawn execute composes Model Group routing with readonly child guards", as
 	assert.ok(seenConfig.customTools.some((tool: any) => tool.name === "bash"));
 	assert.ok(!seenConfig.tools.includes("write"));
 	assert.ok(!seenConfig.tools.includes("edit"));
+	assert.ok(!seenConfig.tools.includes("powershell"));
 	assert.ok(!seenConfig.tools.includes("spawn"));
 	assert.ok(!seenConfig.tools.includes("handoff"));
 	assert.match(seenPrompt, /inherit readonly authority/i);

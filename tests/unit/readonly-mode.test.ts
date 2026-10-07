@@ -4,7 +4,7 @@ import os from "node:os";
 import { READONLY_POWERSHELL_BLOCK_REASON } from "../../notifications.js";
 import { registerReadonlyPI, makeReadonlyUICtx } from "./helpers.js";
 
-test("readonly toggle on blocks write, edit, handoff, and bash mutations", async () => {
+test("readonly toggle on blocks write, edit, powershell, handoff, and bash mutations", async () => {
 	const { pi, toolCall } = await registerReadonlyPI();
 	const ctx = makeReadonlyUICtx();
 
@@ -21,7 +21,7 @@ test("readonly toggle on blocks write, edit, handoff, and bash mutations", async
 	assert.equal(await toolCall({ toolName: "read", input: { path: "/tmp/x" } }, {}), undefined);
 });
 
-test("readonly toggle off restores write, handoff, and bash access", async () => {
+test("readonly toggle off restores write, powershell, handoff, and bash access", async () => {
 	const { pi, toolCall } = await registerReadonlyPI();
 	const ctx = makeReadonlyUICtx();
 
