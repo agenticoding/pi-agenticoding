@@ -42,10 +42,11 @@ export function createPromptSectionRegistry(): PromptSectionRegistry {
 
 /**
  * Writes rendered sections into the event's prompt options. Returns a forced
- * prompt only when an earlier handler already forced one, because pi ignores
- * every section for a forced run. The sections appended to that prompt are
- * tagged the way pi renders sections, so the model sees one shape whether or
- * not the prompt is forced.
+ * prompt only when an earlier handler already forced one, because pi leaves
+ * every section out of the request for a forced run (it still records them in
+ * the transcript). The sections appended to that prompt are tagged the way pi
+ * renders sections, so the model sees one shape whether or not the prompt is
+ * forced.
  */
 export function applyPromptSections(
 	event: BeforeAgentStartEvent,

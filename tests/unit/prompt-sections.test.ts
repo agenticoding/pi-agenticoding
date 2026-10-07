@@ -48,6 +48,10 @@ for (const name of ["schematic", "schematic_model_groups"]) {
 for (const { name, reason } of [
 	{ name: "other", reason: "wrong prefix" },
 	{ name: "schematic-x", reason: "valid for pi, invalid here" },
+	{ name: "schematicfoo", reason: "no underscore separator after the prefix" },
+	{ name: "schematic_", reason: "empty part after the separator" },
+	{ name: "schematic__x", reason: "empty middle part" },
+	{ name: "schematic_Foo", reason: "uppercase letter" },
 ]) {
 	test(`rejects names outside the schematic prefix: ${name} (${reason})`, () => {
 		const registry = createPromptSectionRegistry();
@@ -164,13 +168,17 @@ test("hands a later extension a prompt that already holds schematic's content", 
 
 	const { prompt } = await emitBeforeAgentStart({ after: [forcer] });
 
-	assert.ok(prompt.includes("FORCED-MARKER"));
+	const contentIndex = prompt.indexOf("## Context management");
+	const markerIndex = prompt.indexOf("FORCED-MARKER");
+	assert.ok(contentIndex >= 0, "schematic's content is missing from the prompt");
+	assert.ok(markerIndex >= 0, "the later extension's marker is missing from the prompt");
+	assert.ok(contentIndex < markerIndex, "schematic's content must precede the later extension's marker");
 	assert.ok(prompt.includes("## Context management"));
 });
 
 // ── Handler level ───────────────────────────────────────────────────
 
-test("keeps the primer section byte-identical when notebook state changes", async () => {
+test("keeps the primer section byte-identical while the topic and notebook sections change", async () => {
 	const pi = await createTestHost();
 	const handler = pi.handlers.get("before_agent_start")![0];
 	const ctx = { ...makeTUICtx({ hasUI: false }), cwd: process.cwd(), isProjectTrusted: () => false };

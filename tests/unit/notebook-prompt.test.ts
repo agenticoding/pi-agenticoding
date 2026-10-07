@@ -27,12 +27,12 @@ test("labels a topic with an unknown source", () => {
 
 test("lists notebook pages sorted by name", () => {
 	const state = createState();
-	state.notebookPages.set("beta", "beta summary");
-	state.notebookPages.set("alpha", "alpha summary");
+	state.notebookPages.set("a", "a summary");
+	state.notebookPages.set("B", "B summary");
 
 	const listing = notebookPagesSection(state).render()!.split("\n").filter((line) => line.startsWith("  "));
 
-	assert.deepEqual(listing, ["  alpha: alpha summary", "  beta: beta summary"]);
+	assert.deepEqual(listing, ["  B: B summary", "  a: a summary"]);
 });
 
 test("lists only the first line of each page", () => {

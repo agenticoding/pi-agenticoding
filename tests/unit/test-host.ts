@@ -40,61 +40,38 @@ type InternalLoader = {
 	): Promise<Extension>;
 };
 
-const internalUrl = new URL(
-	"core/extensions/index.js",
-	import.meta.resolve("@earendil-works/pi-coding-agent"),
-).href;
-
 // Resolving the shipped dist path pins Pi's internal layout. Fail with the
 // expected path + fix when Pi reorganizes it, instead of an opaque import error.
-async function importInternalLoader(): Promise<InternalLoader> {
+async function importInternal<T>(relativePath: string, exportNames: readonly string[]): Promise<T> {
+	const url = new URL(relativePath, import.meta.resolve("@earendil-works/pi-coding-agent")).href;
+	const guidance = "This host pins Pi's internal dist layout; update tests/unit/test-host.ts for the installed Pi version.";
+	let mod: Record<string, unknown>;
 	try {
-		const mod = (await import(internalUrl)) as Partial<InternalLoader>;
-		if (typeof mod.loadExtensionFromFactory !== "function") {
-			throw new Error("loadExtensionFromFactory is not exported");
-		}
-		return mod as InternalLoader;
+		mod = (await import(url)) as Record<string, unknown>;
 	} catch (cause) {
-		throw new Error(
-			`createTestHost could not load pi's internal loader at ${internalUrl}. ` +
-			"This host pins Pi's internal dist layout; update tests/unit/test-host.ts for the installed Pi version.",
-			{ cause },
-		);
+		throw new Error(`The test host could not load pi's internal module at ${url}. ${guidance}`, { cause });
 	}
+	for (const exportName of exportNames) {
+		if (typeof mod[exportName] !== "function") {
+			throw new Error(`pi's internal module at ${url} does not export ${exportName} as a function. ${guidance}`);
+		}
+	}
+	return mod as T;
 }
 
-const { loadExtensionFromFactory } = await importInternalLoader();
+const { loadExtensionFromFactory } = await importInternal<InternalLoader>("core/extensions/index.js", [
+	"loadExtensionFromFactory",
+]);
 
 type InternalSystemPrompt = {
 	normalizeBuildSystemPromptOptions(input: BuildSystemPromptOptions): NormalizedBuildSystemPromptOptions;
 	buildSystemPrompt(input: BuildSystemPromptOptions): string;
 };
 
-const systemPromptUrl = new URL(
+const { normalizeBuildSystemPromptOptions, buildSystemPrompt } = await importInternal<InternalSystemPrompt>(
 	"core/system-prompt.js",
-	import.meta.resolve("@earendil-works/pi-coding-agent"),
-).href;
-
-async function importInternalSystemPrompt(): Promise<InternalSystemPrompt> {
-	try {
-		const mod = (await import(systemPromptUrl)) as Partial<InternalSystemPrompt>;
-		if (typeof mod.normalizeBuildSystemPromptOptions !== "function") {
-			throw new Error("normalizeBuildSystemPromptOptions is not exported");
-		}
-		if (typeof mod.buildSystemPrompt !== "function") {
-			throw new Error("buildSystemPrompt is not exported");
-		}
-		return mod as InternalSystemPrompt;
-	} catch (cause) {
-		throw new Error(
-			`The test host could not load pi's internal system-prompt module at ${systemPromptUrl}. ` +
-			"This host pins Pi's internal dist layout; update tests/unit/test-host.ts for the installed Pi version.",
-			{ cause },
-		);
-	}
-}
-
-const { normalizeBuildSystemPromptOptions, buildSystemPrompt } = await importInternalSystemPrompt();
+	["normalizeBuildSystemPromptOptions", "buildSystemPrompt"],
+);
 
 /** Raw tool definitions as tests consume them (unwrapped; loose to keep call sites ergonomic). */
 export type TestToolMap = Map<string, any>;

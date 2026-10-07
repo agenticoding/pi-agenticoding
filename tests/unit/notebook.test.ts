@@ -1511,6 +1511,10 @@ test("model listing surfaces remain free of clipping decorations", async () => {
 	assert.doesNotMatch(listing, /\[truncated\]/);
 	assert.doesNotMatch(listing, /Notice:/);
 	assert.match(listing, /  page: x/);
+	const assembled = event.systemPrompt;
+	assert.match(assembled, /  page: x/);
+	assert.doesNotMatch(assembled, /\[truncated\]/);
+	assert.doesNotMatch(assembled, /Notice:/);
 
 	// Spawn prompt through the real child-session seam.
 	const proof = await runRealChildInvocation({ prompt: "Do the task.", notebookPages: { page: L(2001) } });
