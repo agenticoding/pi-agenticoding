@@ -9,15 +9,21 @@
 // keeps the API surface real (compile-checked by `factory`) with no mirror.
 
 import type {
+	BeforeAgentStartEvent,
+	BuildSystemPromptOptions,
 	EventBus,
 	Extension,
 	ExtensionAPI,
+	ExtensionError,
 	ExtensionFactory,
 	ExtensionRuntime,
+	ModelRegistry,
+	NormalizedBuildSystemPromptOptions,
+	Skill,
 	SlashCommandInfo,
 	ToolInfo,
 } from "@earendil-works/pi-coding-agent";
-import { createEventBus, createExtensionRuntime } from "@earendil-works/pi-coding-agent";
+import { createEventBus, createExtensionRuntime, ExtensionRunner, SessionManager } from "@earendil-works/pi-coding-agent";
 import registerSchematic from "../../index.js";
 
 // `ThinkingLevel` is not re-exported from the package root; derive it from the
@@ -34,30 +40,38 @@ type InternalLoader = {
 	): Promise<Extension>;
 };
 
-const internalUrl = new URL(
-	"core/extensions/index.js",
-	import.meta.resolve("@earendil-works/pi-coding-agent"),
-).href;
-
 // Resolving the shipped dist path pins Pi's internal layout. Fail with the
 // expected path + fix when Pi reorganizes it, instead of an opaque import error.
-async function importInternalLoader(): Promise<InternalLoader> {
+async function importInternal<T>(relativePath: string, exportNames: readonly string[]): Promise<T> {
+	const url = new URL(relativePath, import.meta.resolve("@earendil-works/pi-coding-agent")).href;
+	const guidance = "This host pins Pi's internal dist layout; update tests/unit/test-host.ts for the installed Pi version.";
+	let mod: Record<string, unknown>;
 	try {
-		const mod = (await import(internalUrl)) as Partial<InternalLoader>;
-		if (typeof mod.loadExtensionFromFactory !== "function") {
-			throw new Error("loadExtensionFromFactory is not exported");
-		}
-		return mod as InternalLoader;
+		mod = (await import(url)) as Record<string, unknown>;
 	} catch (cause) {
-		throw new Error(
-			`createTestHost could not load pi's internal loader at ${internalUrl}. ` +
-			"This host pins Pi's internal dist layout; update tests/unit/test-host.ts for the installed Pi version.",
-			{ cause },
-		);
+		throw new Error(`The test host could not load pi's internal module at ${url}. ${guidance}`, { cause });
 	}
+	for (const exportName of exportNames) {
+		if (typeof mod[exportName] !== "function") {
+			throw new Error(`pi's internal module at ${url} does not export ${exportName} as a function. ${guidance}`);
+		}
+	}
+	return mod as T;
 }
 
-const { loadExtensionFromFactory } = await importInternalLoader();
+const { loadExtensionFromFactory } = await importInternal<InternalLoader>("core/extensions/index.js", [
+	"loadExtensionFromFactory",
+]);
+
+type InternalSystemPrompt = {
+	normalizeBuildSystemPromptOptions(input: BuildSystemPromptOptions): NormalizedBuildSystemPromptOptions;
+	buildSystemPrompt(input: BuildSystemPromptOptions): string;
+};
+
+const { normalizeBuildSystemPromptOptions, buildSystemPrompt } = await importInternal<InternalSystemPrompt>(
+	"core/system-prompt.js",
+	["normalizeBuildSystemPromptOptions", "buildSystemPrompt"],
+);
 
 /** Raw tool definitions as tests consume them (unwrapped; loose to keep call sites ergonomic). */
 export type TestToolMap = Map<string, any>;
@@ -249,4 +263,63 @@ export async function createTestHost(
 		runtime,
 	);
 	return stampAccessors(api, extension, state);
+}
+
+/**
+ * A `before_agent_start` event shaped like pi's: fresh normalized prompt options
+ * and a `systemPrompt` getter that renders them. Without `systemPrompt`, pi's
+ * default preamble applies.
+ */
+export function createBeforeAgentStartEvent(init?: { systemPrompt?: string; skills?: Skill[] }): BeforeAgentStartEvent {
+	const systemPromptOptions = normalizeBuildSystemPromptOptions({
+		cwd: process.cwd(),
+		skills: init?.skills ?? [],
+		customPrompt: init?.systemPrompt,
+	});
+	return {
+		type: "before_agent_start",
+		prompt: "",
+		images: undefined,
+		get systemPrompt() {
+			return buildSystemPrompt(systemPromptOptions);
+		},
+		systemPromptOptions,
+	};
+}
+
+/**
+ * Dispatch one `before_agent_start` run through pi's real `ExtensionRunner` with
+ * the `before` factories, then schematic, then the `after` factories loaded in
+ * that order. Throws when any handler threw, because pi reports handler errors
+ * and continues. `prompt` is `buildSystemPrompt` over the resulting options: it
+ * is faithful for extension sections, while pi finalizes its own tools section
+ * later in the run.
+ */
+export async function emitBeforeAgentStart(init: {
+	before?: ExtensionFactory[];
+	after?: ExtensionFactory[];
+}): Promise<{ result: Awaited<ReturnType<ExtensionRunner["emitBeforeAgentStart"]>>; prompt: string }> {
+	const state = createHostState({});
+	const runtime = createExtensionRuntime();
+	bindHostActions(runtime, state);
+	const eventBus = createEventBus();
+	const extensions: Extension[] = [];
+	for (const factory of [...(init.before ?? []), registerSchematic, ...(init.after ?? [])]) {
+		extensions.push(await loadExtensionFromFactory(factory, process.cwd(), eventBus, runtime));
+	}
+	// No registry: refreshModelGroupsState skips loading, so model-group config in the real home directory cannot leak in.
+	const runner = new ExtensionRunner(
+		extensions,
+		runtime,
+		process.cwd(),
+		SessionManager.inMemory(process.cwd()),
+		undefined as unknown as ModelRegistry,
+	);
+	const errors: ExtensionError[] = [];
+	runner.onError((error) => {
+		errors.push(error);
+	});
+	const result = await runner.emitBeforeAgentStart("", undefined, { cwd: process.cwd() });
+	if (errors.length > 0) throw new AggregateError(errors, "before_agent_start handler failed");
+	return { result, prompt: buildSystemPrompt(result.systemPromptOptions) };
 }

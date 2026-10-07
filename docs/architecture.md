@@ -6,7 +6,7 @@ pi-schematic is a Pi extension. It registers tools and hooks into the agent life
 
 | Hook | Role |
 |---|---|
-| `before_agent_start` | Refreshes Model Groups, resolves deferred readonly frontmatter, then injects the context-management primer, names-only group guidance, and live notebook index |
+| `before_agent_start` | Resolves deferred readonly frontmatter, refreshes Model Groups, then writes schematic's prompt sections (see **Prompt sections** under Behavioral notes) |
 | `context` | Advisory watchdog reminders when context is elevated; readonly toggle nudges |
 | `input` | Resolves model-selection frontmatter during idle input; blocks it during streaming; queues readonly resolution |
 | `tool_call` | Readonly blocks write/edit/unguarded bash; blocks handoff unless a requested bypass is active |
@@ -47,7 +47,9 @@ interface SchematicState {
 
 **Spawn** — Without a Model Group, the child inherits the parent's public model and explicit/default thinking level. An exact known group randomly selects a registry-resolved, authenticated entry; an entry-specific thinking level overrides explicit/inherited thinking and is clamped for the selected model. An unknown group reports fallback and uses the parent model/thinking. A known empty group or one with no usable authenticated entries fails before child-session creation. The selected public model enters a child-owned runtime. Children also inherit cwd and active registered tools executable in that session, retain child-local notebook tools, cannot spawn or handoff, and inherit readonly posture.
 
-**Model Groups** — `/model-groups` manages versioned global and trusted-project JSON configuration. Project groups shadow same-named global groups. Configuration is loaded and validated against Pi's model registry into the `modelGroups` snapshot; only names are injected into the agent prompt. Routing uses the parent registry only to select configured/authenticated entries—the registry/auth objects are not passed into the child runtime.
+**Model Groups** — `/model-groups` manages versioned global and trusted-project JSON configuration. Project groups shadow same-named global groups. Configuration is loaded and validated against Pi's model registry into the `modelGroups` snapshot; only group names and their effective modalities reach the agent prompt (see **Prompt sections**). Routing uses the parent registry only to select configured/authenticated entries—the registry/auth objects are not passed into the child runtime.
+
+**Prompt sections** — Schematic adds its prompt content as named Pi prompt sections rather than as a replacement system prompt. The `schematic` section holds the static context-management primer. `schematic_topic` frames the active notebook topic, or asks for one when none is set. `schematic_model_groups` lists group names and effective modalities when groups exist. `schematic_notebook` lists notebook pages when the notebook has any. Each section's text lives with its domain module; `index.ts` registers the sections in prompt order. When an earlier extension has already replaced the system prompt (a forced prompt, in Pi's terms), schematic still writes its sections, so the transcript stays current, and also appends them to that prompt, tagged the way Pi renders them, because Pi leaves sections out of the request for a replaced prompt. The primer stays in its own section, so a topic, Model Groups, or notebook change does not re-send it. A run whose system prompt another extension replaces loses that benefit.
 
 **Notebook** — Agent-curated named pages **scoped to the active session branch**, not a long-lived memory product. Stored as session custom entries so pages survive handoff and resume of the same work stream; `/new` (fresh session) clears them with the conversation. The visible pages and the committed generation epoch follow the branch the user navigated to: `/tree` reconstruction rehydrates from the newly active branch, so branches diverge without cross-contamination and returning to an earlier branch restores its state; writes land on the current branch's generation. Discard is transactional — survivors are staged at the next epoch and committed only on successful handoff compaction — and the epoch high-water mark is derived from the branch during reconstruction, so a failed attempt can never resurrect staged pages after a restart. Active topic (`notebook_topic_set` or `/notebook <topic>`) frames spawn-vs-handoff preference; human-set topics are authoritative. Topic clears after a successful handoff.
 
@@ -78,9 +80,10 @@ Coding-agent guardrail on every OS — not a hardened security boundary. Stronge
 | Area | Role |
 |---|---|
 | `index.ts` | Extension entry: tools, hooks, wiring |
+| `prompt-sections.ts` / `system-prompt.ts` | Prompt-section registry and the static context-management primer |
 | `spawn/` | Child sessions and live TUI rendering |
-| `model-groups/` | Persistence, boot validation, CRUD TUI/autocomplete, and spawn routing |
-| `notebook/` | Page store, tools, topic, rehydration |
+| `model-groups/` | Persistence, boot validation, CRUD TUI/autocomplete, spawn routing, prompt section |
+| `notebook/` | Page store, tools, topic, rehydration, prompt sections |
 | `handoff/` | Verbatim next-instruction delivery, model-owned context prep, constant-frame compaction bridge, live readonly nudge |
 | `readonly-*.ts` / `os-sandbox.ts` | Readonly posture, bash policy, sandbox |
 | `watchdog.ts` / `tui.ts` / `state.ts` | Pressure advisories, status UI, shared state |
