@@ -169,7 +169,7 @@ test("index session_start includes backup-failure detail in load issue notificat
 	assert.ok(notifications.some((m) => /corrupt-json/.test(m) && /backup failed.*original file left untouched/.test(m) && m.includes(escapeDisplayLabel(modelGroupsPath("project", cwd)))));
 }));
 
-test("before_agent_start injects fresh names-and-effective-modalities guidance", async () => withTemp(async ({ cwd }) => {
+test("before_agent_start writes fresh names-and-effective-modalities guidance", async () => withTemp(async ({ cwd }) => {
 	fs.mkdirSync(path.dirname(modelGroupsPath("project", cwd)), { recursive: true });
 	fs.writeFileSync(modelGroupsPath("project", cwd), JSON.stringify({ version: 1, groups: { review: { models: [{ provider: "openai", modelId: "gpt-5" }] } } }), "utf8");
 	const pi = await createTestHost();
@@ -216,7 +216,7 @@ test("before_agent_start labels empty effective modalities unambiguously", async
 	assert.doesNotMatch(section, /foo \(none\),/);
 }));
 
-test("before_agent_start reinjects updated effective modalities after registry changes", async () => withTemp(async ({ cwd }) => {
+test("before_agent_start rewrites updated effective modalities after registry changes", async () => withTemp(async ({ cwd }) => {
 	fs.mkdirSync(path.dirname(modelGroupsPath("project", cwd)), { recursive: true });
 	fs.writeFileSync(modelGroupsPath("project", cwd), JSON.stringify({ version: 2, groups: { review: { models: [{ provider: "openai", modelId: "gpt-5" }] } } }), "utf8");
 	let model = { provider: "openai", id: "gpt-5", input: ["text", "image"], reasoning: false, thinkingLevelMap: { xhigh: "x" } };

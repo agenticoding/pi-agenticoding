@@ -39,7 +39,7 @@ test("omits a section whose body is empty", () => {
 });
 
 for (const name of ["schematic", "schematic_model_groups"]) {
-	test(`accepts multi-part names: ${name}`, () => {
+	test(`accepts names with the schematic prefix: ${name}`, () => {
 		const registry = createPromptSectionRegistry();
 		assert.doesNotThrow(() => registry.register({ name, render: () => "body" }));
 	});
@@ -171,15 +171,20 @@ test("keeps the primer section byte-identical when notebook state changes", asyn
 	const pi = await createTestHost();
 	const handler = pi.handlers.get("before_agent_start")![0];
 	const ctx = { ...makeTUICtx({ hasUI: false }), cwd: process.cwd(), isProjectTrusted: () => false };
-	const before = createBeforeAgentStartEvent();
-	await handler(before, ctx);
+	const beforeEvent = createBeforeAgentStartEvent();
+	await handler(beforeEvent, ctx);
+	const before = beforeEvent.systemPromptOptions.sections;
+	assert.ok(before.schematic !== undefined);
 
 	await pi.tools.get("notebook_write").execute("1", { name: "alpha", content: "first line" }, undefined, undefined, makeTUICtx());
 	await pi.commands.get("notebook")!.handler("oauth", { hasUI: false, getContextUsage: () => null });
-	const after = createBeforeAgentStartEvent();
-	await handler(after, ctx);
+	const afterEvent = createBeforeAgentStartEvent();
+	await handler(afterEvent, ctx);
+	const after = afterEvent.systemPromptOptions.sections;
+	assert.notEqual(after.schematic_topic, before.schematic_topic);
+	assert.ok(after.schematic_notebook !== undefined && before.schematic_notebook === undefined);
 
-	assert.equal(after.systemPromptOptions.sections.schematic, before.systemPromptOptions.sections.schematic);
+	assert.equal(after.schematic, before.schematic);
 });
 
 for (const sectionName of ["schematic", "schematic_topic", "schematic_model_groups", "schematic_notebook"]) {
@@ -202,6 +207,7 @@ for (const sectionName of ["schematic", "schematic_topic", "schematic_model_grou
 		await handler(event, { hasUI: false, isProjectTrusted: () => true, cwd, modelRegistry, getContextUsage: () => null });
 
 		const body = event.systemPromptOptions.sections[sectionName];
+		assert.ok(body !== undefined, `section ${sectionName} is missing`);
 		assert.equal(body, body.trim());
 	}));
 }

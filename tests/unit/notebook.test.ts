@@ -1499,7 +1499,7 @@ test("model listing surfaces remain free of clipping decorations", async () => {
 		assert.doesNotMatch(text, /Notice:/, `notice must not leak into non-read surfaces: ${text}`);
 	}
 
-	// System prompt listing through the real before_agent_start hook.
+	// Notebook section through the real before_agent_start hook.
 	const [beforeAgentStart] = pi.handlers.get("before_agent_start")!;
 	const event = createBeforeAgentStartEvent({ systemPrompt: "Base system prompt." });
 	await beforeAgentStart(

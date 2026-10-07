@@ -1,8 +1,6 @@
 /**
- * Context management system prompt primer.
- *
- * Contributed as the `schematic` prompt section.
- * Teaches the LLM about spawn, notebook, and handoff primitives.
+ * Static context-management primer, contributed as the `schematic` prompt section
+ * (see prompt-sections.ts).
  */
 
 import type { PromptSection } from "./prompt-sections.js";

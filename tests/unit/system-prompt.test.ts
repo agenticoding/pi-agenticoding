@@ -58,7 +58,7 @@ test("CONTEXT_PRIMER states the notebook, topic, and handoff contracts", () => {
 	assert.match(primer, /overlong child output is truncated/i);
 });
 
-test("before_agent_start injects notebook contracts plus live topic and page data", async () => {
+test("before_agent_start writes notebook contracts plus live topic and page data", async () => {
 	const pi = await createTestHost();
 	await pi.commands.get("notebook")!.handler("oauth", { hasUI: false, getContextUsage: () => null });
 	const notebookWrite = pi.tools.get("notebook_write");
@@ -79,7 +79,7 @@ test("before_agent_start injects notebook contracts plus live topic and page dat
 	assert.match(sections.schematic_notebook, /alpha: first line/);
 });
 
-test("before_agent_start injects no-topic guidance when the topic is unset", async () => {
+test("before_agent_start writes no-topic guidance when the topic is unset", async () => {
 	const pi = await createTestHost();
 	const handler = pi.handlers.get("before_agent_start")![0];
 	const ctx = { ...makeTUICtx({ hasUI: false }), cwd: process.cwd(), isProjectTrusted: () => false };

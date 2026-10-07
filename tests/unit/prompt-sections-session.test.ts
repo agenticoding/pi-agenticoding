@@ -99,8 +99,11 @@ describe("prompt sections in a real agent session", () => {
 		const firstRequestSectionNames = systemMessagesPerRequest[0].flatMap((message) => Object.keys(message.sections ?? {}));
 		assert.ok(firstRequestSectionNames.includes("schematic"), `first request sections: ${firstRequestSectionNames.join(", ")}`);
 		const secondRunPatches = systemMessagesPerRequest[2].slice(systemMessagesPerRequest[1].length);
-		const patchedSectionNames = secondRunPatches.flatMap((message) => Object.keys(message.sections ?? {}));
-		assert.ok(patchedSectionNames.includes("schematic_topic"), `patched sections: ${patchedSectionNames.join(", ")}`);
-		assert.ok(!patchedSectionNames.includes("schematic"), `patched sections: ${patchedSectionNames.join(", ")}`);
+		assert.ok(secondRunPatches.length > 0, "request 3 carried no new system messages");
+		for (const message of secondRunPatches) {
+			assert.deepEqual(Object.keys(message.sections ?? {}), ["schematic_topic"]);
+			const topicBody = message.sections?.schematic_topic;
+			assert.ok(typeof topicBody === "string" && topicBody.includes("oauth"), `schematic_topic patch: ${String(topicBody)}`);
+		}
 	});
 });

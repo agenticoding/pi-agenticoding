@@ -314,7 +314,9 @@ export function createBeforeAgentStartEvent(init?: { systemPrompt?: string; skil
  * Dispatch one `before_agent_start` run through pi's real `ExtensionRunner` with
  * the `before` factories, then schematic, then the `after` factories loaded in
  * that order. Throws when any handler threw, because pi reports handler errors
- * and continues. `prompt` is the text the model receives at the start of the run.
+ * and continues. `prompt` is `buildSystemPrompt` over the resulting options: it
+ * is faithful for extension sections, while pi finalizes its own tools section
+ * later in the run.
  */
 export async function emitBeforeAgentStart(init: {
 	before?: ExtensionFactory[];
