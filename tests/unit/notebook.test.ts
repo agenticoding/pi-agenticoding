@@ -10,7 +10,7 @@ import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES } from "@earendil-works/pi-coding-
 import { createState, resetState, invalidateHandoffState } from "../../state.js";
 import { registerNotebookRehydration, reconstructNotebook } from "../../notebook/rehydration.js";
 import { commitNotebookDiscard, formatByteCap, formatPagePreview, prepareNotebookDiscard, saveNotebookPage, resetNotebookWriteLock } from "../../notebook/store.js";
-import { pagerRuntime, resolvePager, spawnPager, __setPagerRuntimeForTests } from "../../notebook/pager.js";
+import { openInPager, resolvePager, spawnPager, __setPagerRuntimeForTests } from "../../notebook/pager.js";
 import { createNotebookToolDefinitions } from "../../notebook/tools.js";
 import { __setSingletons, createWriteLock, getSingletons } from "../../runtime-singletons.js";
 import { STATUS_KEY_TOPIC, WIDGET_KEY_WARNING } from "../../tui.js";
@@ -537,7 +537,7 @@ test("/notebook selection previews the chosen entry when no pager is available",
 	const bodyLines = stripAnsi(overlay.render(120).join("\n"));
 	assert.match(bodyLines, /body line/);
 	assert.match(bodyLines, /alpha/);
-	// Second keypress closes the overlay
+	// Second keypress leaves the inline preview
 	overlay.handleInput("\r");
 	assert.equal(doneCalls, 1);
 });
@@ -566,20 +566,39 @@ test("/notebook overlay sorts entries consistently", async () => {
 
 test("resolvePager keeps fallback less interactive without changing LESS", () => {
 	for (const PAGER of [undefined, "", "   "]) {
-		const env = { PAGER, LESS: "-FRX" };
+		const env = { PI_PAGER: PAGER, PAGER, LESS: "-FRX" };
 		assert.deepEqual(
 			resolvePager(env, "linux", () => true),
 			{ cmd: "less", args: ["-R", "-+F", "-+X"] },
 		);
-		assert.deepEqual(env, { PAGER, LESS: "-FRX" });
+		assert.deepEqual(env, { PI_PAGER: PAGER, PAGER, LESS: "-FRX" });
 	}
 	assert.deepEqual(
 		resolvePager({}, "darwin", () => true),
 		{ cmd: "less", args: ["-R", "-+F", "-+X"] },
 	);
 	assert.equal(resolvePager({}, "linux", () => false), undefined);
-	// Windows never probes less — $PAGER is the only way to get a pager.
+	// Windows never probes less — $PI_PAGER/$PAGER are the only way to get a pager.
 	assert.equal(resolvePager({}, "win32", () => assert.fail("must not probe on Windows")), undefined);
+});
+
+test("resolvePager prefers PI_PAGER over PAGER and falls back when it is blank", () => {
+	const noProbe = () => assert.fail("configured pagers must not probe less");
+	assert.deepEqual(
+		resolvePager({ PI_PAGER: "batcat --plain", PAGER: "more" }, "linux", noProbe),
+		{ cmd: "batcat", args: ["--plain", "--paging=always"] },
+	);
+	assert.deepEqual(
+		resolvePager({ PI_PAGER: "less -R" }, "linux", noProbe),
+		{ cmd: "less", args: ["-R", "-+F", "-+X"] },
+	);
+	for (const PI_PAGER of [undefined, "", "   "]) {
+		assert.deepEqual(
+			resolvePager({ PI_PAGER, PAGER: "more -s" }, "linux", noProbe),
+			{ cmd: "more", args: ["-s"] },
+			`PI_PAGER=${JSON.stringify(PI_PAGER)}`,
+		);
+	}
 });
 
 test("resolvePager overrides quit-if-one-screen and no-init for configured less executables", () => {
@@ -612,16 +631,36 @@ test("resolvePager overrides quit-if-one-screen and no-init for configured less 
 	}
 });
 
+test("resolvePager forces paging for configured bat executables", () => {
+	const cases: Array<{ pager: string; platform: NodeJS.Platform; cmd: string; args: string[] }> = [
+		{ pager: "bat", platform: "linux", cmd: "bat", args: ["--paging=always"] },
+		{ pager: "batcat --plain", platform: "linux", cmd: "batcat", args: ["--plain", "--paging=always"] },
+		{ pager: "bat --paging=never", platform: "linux", cmd: "bat", args: ["--paging=never", "--paging=always"] },
+		{ pager: "/opt/less/bat --plain", platform: "linux", cmd: "/opt/less/bat", args: ["--plain", "--paging=always"] },
+		{ pager: "/usr/bin/batcat -p --", platform: "linux", cmd: "/usr/bin/batcat", args: ["-p", "--paging=always", "--"] },
+		{ pager: "bat.exe --plain", platform: "win32", cmd: "bat.exe", args: ["--plain", "--paging=always"] },
+		{ pager: "C:\\tools\\BATCAT.EXE", platform: "win32", cmd: "C:\\tools\\BATCAT.EXE", args: ["--paging=always"] },
+	];
+	for (const { pager, platform, cmd, args } of cases) {
+		assert.deepEqual(
+			resolvePager({ PAGER: pager }, platform, () => assert.fail("configured pagers must not probe less")),
+			{ cmd, args },
+			`${platform}: ${pager}`,
+		);
+	}
+});
+
 test("resolvePager leaves other pagers and wrappers unchanged", () => {
 	const cases: Array<{ pager: string; platform: NodeJS.Platform; cmd: string; args: string[] }> = [
-		{ pager: "bat --plain", platform: "linux", cmd: "bat", args: ["--plain"] },
-		{ pager: "/opt/less/bat --plain", platform: "linux", cmd: "/opt/less/bat", args: ["--plain"] },
 		{ pager: "less-wrapper -F", platform: "linux", cmd: "less-wrapper", args: ["-F"] },
 		{ pager: "env less -FRX", platform: "linux", cmd: "env", args: ["less", "-FRX"] },
 		{ pager: "LESS -F", platform: "linux", cmd: "LESS", args: ["-F"] },
 		{ pager: "less.exe -F", platform: "linux", cmd: "less.exe", args: ["-F"] },
 		{ pager: "less.cmd -F", platform: "win32", cmd: "less.cmd", args: ["-F"] },
-		{ pager: "bat.exe --plain", platform: "win32", cmd: "bat.exe", args: ["--plain"] },
+		{ pager: "env bat --plain", platform: "linux", cmd: "env", args: ["bat", "--plain"] },
+		{ pager: "bat-wrapper", platform: "linux", cmd: "bat-wrapper", args: [] },
+		{ pager: "bat.exe --plain", platform: "linux", cmd: "bat.exe", args: ["--plain"] },
+		{ pager: "bat.cmd --plain", platform: "win32", cmd: "bat.cmd", args: ["--plain"] },
 	];
 	for (const { pager, platform, cmd, args } of cases) {
 		assert.deepEqual(
@@ -795,7 +834,7 @@ test("openInPager removes the SIGINT guard even if tui.start throws", async (t) 
 	};
 
 	await assert.rejects(
-		pagerRuntime.openInPager(tui as any, "body", { cmd: "pager", args: [] }),
+		openInPager(tui as any, "body", { cmd: "pager", args: [] }),
 		/start boom/,
 	);
 	assert.equal(process.listeners("SIGINT").length, baselineSigint, "SIGINT guard must not leak when tui.start throws");
@@ -835,28 +874,40 @@ test("/notebook surfaces pager spawn errors as a warning notification", async (t
 	assert.deepEqual(notifications, [{ message: "pager failed: boom", level: "warning" }]);
 });
 
-test("/notebook inline preview closes on any key when no pager is available", async (t) => {
+test("/notebook inline preview returns to the list on any key when no pager is available", async (t) => {
 	__setPagerRuntimeForTests({ resolvePager: () => undefined });
 	t.after(() => __setPagerRuntimeForTests(null));
 
 	const pi = await createTestHost();
 	const notebookWrite = pi.tools.get("notebook_write");
-	await notebookWrite.execute("1", { name: "alpha", content: "body line" }, undefined, undefined, makeTUICtx());
+	await notebookWrite.execute("1", { name: "zeta", content: "body line" }, undefined, undefined, makeTUICtx());
+	await notebookWrite.execute("2", { name: "alpha", content: "other" }, undefined, undefined, makeTUICtx());
 
 	let customCalls = 0;
+	const renders: string[] = [];
 	await pi.commands.get("notebook")!.handler("", makeTUICtx({
 		percent: 20,
 		custom: async (build: any) => {
 			customCalls++;
-			let result: unknown = "sentinel";
+			let result: unknown;
 			const overlay = build({ requestRender: () => {} }, theme, {}, (value: unknown) => { result = value; });
-			overlay.handleInput("\r"); // opens the inline preview
-			overlay.handleInput(" ");  // any key closes it
-			return result;
+			if (customCalls === 1) {
+				// Move off the default index 0 so the reopen assertion proves cursor restore.
+				overlay.handleInput("\x1b[B");
+				overlay.handleInput("\r"); // opens the inline preview
+				overlay.handleInput(" ");  // any key returns to the list
+				return result;
+			}
+			renders.push(stripAnsi(overlay.render(120).join("\n")));
+			return undefined;
 		},
 	}));
 
-	assert.equal(customCalls, 1);
+	assert.equal(customCalls, 2, "list must reopen after the inline preview");
+	const arrowLine = renders[0]!.split("\n").find((l) => l.includes("→"));
+	assert.ok(arrowLine, `expected a cursor row, got:\n${renders[0]}`);
+	assert.match(arrowLine!, /zeta/);
+	assert.doesNotMatch(arrowLine!, /alpha/);
 });
 
 test("/notebook selecting an empty-content page opens the preview instead of closing the picker", async (t) => {
@@ -867,23 +918,19 @@ test("/notebook selecting an empty-content page opens the preview instead of clo
 	const notebookWrite = pi.tools.get("notebook_write");
 	await notebookWrite.execute("1", { name: "alpha", content: "" }, undefined, undefined, makeTUICtx());
 
-	let customCalls = 0;
 	let doneCalls = 0;
 	await pi.commands.get("notebook")!.handler("", makeTUICtx({
 		percent: 20,
 		custom: async (build: any) => {
-			customCalls++;
 			const overlay = build({ requestRender: () => {} }, theme, {}, () => { doneCalls++; });
 			overlay.handleInput("\r"); // Enter on the empty-content page
 			assert.equal(doneCalls, 0, "an empty page body must not close the picker early");
 			const preview = stripAnsi(overlay.render(120).join("\n"));
 			assert.match(preview, /alpha/, "inline preview header must show the page name");
-			overlay.handleInput(" "); // any key closes the inline preview
+			overlay.handleInput(" "); // any key leaves the inline preview
 			assert.equal(doneCalls, 1);
 		},
 	}));
-
-	assert.equal(customCalls, 1, "picker must not reopen a second time in this flow");
 });
 
 // ── saveNotebookPage tests ────────────────────────────────────────────

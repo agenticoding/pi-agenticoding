@@ -1,10 +1,10 @@
 /**
  * External pager integration for the /notebook TUI.
  *
- * Resolves a pager command (respecting $PAGER, falling back to `less` on
- * POSIX) and runs it with the page body fed via stdin. Exports a mutable
- * `pagerRuntime` seam so tests can swap resolvePager/spawnPager without
- * shelling out.
+ * Resolves a pager command (respecting $PI_PAGER, then $PAGER, falling back to
+ * `less` on POSIX) and runs it with the page body fed via stdin. Exports a
+ * mutable `pagerRuntime` seam so tests can swap resolvePager/spawnPager
+ * without shelling out.
  */
 
 import { execSync, spawn } from "node:child_process";
@@ -26,34 +26,45 @@ function defaultCommandExists(cmd: string): boolean {
 }
 
 /**
- * $PAGER may carry args (e.g. "less -R"). Whitespace-split matches git's
+ * $PI_PAGER takes precedence over $PAGER, as $GIT_PAGER does in git, so a
+ * pager can be chosen for Pi alone. This matters for bat < 0.22, which uses
+ * $PAGER as its own pager and recurses forever on PAGER=batcat. Unlike git,
+ * a blank value counts as unset and falls through; it never disables paging.
+ *
+ * The pager value may carry args (e.g. "less -R"). Whitespace-split matches git's
  * historical behavior; no shell quoting, and no `sh -c` (which would be
  * Windows-hostile). Users needing complex pager invocations should wrap
- * them in a script and point $PAGER at it.
+ * them in a script and point $PI_PAGER or $PAGER at it.
  */
 export function resolvePager(
 	env: NodeJS.ProcessEnv = process.env,
 	platform: NodeJS.Platform = process.platform,
 	commandExists: (cmd: string) => boolean = defaultCommandExists,
 ): ResolvedPager | undefined {
-	const raw = env.PAGER?.trim();
+	const raw = env.PI_PAGER?.trim() || env.PAGER?.trim();
 	if (raw) {
 		const [cmd, ...args] = raw.split(/\s+/);
 		if (cmd) {
-			const executable = platform === "win32" ? win32.basename(cmd).toLowerCase() : posix.basename(cmd);
-			if (executable === "less" || (platform === "win32" && executable === "less.exe")) {
+			const executable = platform === "win32" ? win32.basename(cmd).toLowerCase().replace(/\.exe$/, "") : posix.basename(cmd);
+			// Injected args go last, but before any end-of-options marker.
+			const endOfOptions = args.indexOf("--");
+			const at = endOfOptions === -1 ? args.length : endOfOptions;
+			if (executable === "less") {
 				// Override -F and -X (including inherited LESS) so short pages stay
 				// readable until dismissed and page text doesn't linger in the
-				// terminal's scrollback. Keep them last, but before any
-				// end-of-options marker.
-				const endOfOptions = args.indexOf("--");
-				args.splice(endOfOptions === -1 ? args.length : endOfOptions, 0, "-+F", "-+X");
+				// terminal's scrollback.
+				args.splice(at, 0, "-+F", "-+X");
+			} else if (executable === "bat" || executable === "batcat") {
+				// bat's default --paging=auto runs less with -F, so short pages
+				// would vanish immediately. The last --paging wins in bat. An
+				// inherited LESS=-F still applies to bat's less; not overridden.
+				args.splice(at, 0, "--paging=always");
 			}
 			return { cmd, args };
 		}
 	}
 	// Skip probing on Windows: `command -v` isn't standard and less is
-	// rarely present. Respect $PAGER above, otherwise fall through.
+	// rarely present. Respect $PI_PAGER/$PAGER above, otherwise fall through.
 	if (platform === "win32") return undefined;
 	if (commandExists("less")) return { cmd: "less", args: ["-R", "-+F", "-+X"] };
 	return undefined;
@@ -135,12 +146,11 @@ export async function openInPager(
 interface PagerRuntime {
 	resolvePager: typeof resolvePager;
 	spawnPager: typeof spawnPager;
-	openInPager: typeof openInPager;
 }
 
-const defaultPagerRuntime: PagerRuntime = { resolvePager, spawnPager, openInPager };
+const defaultPagerRuntime: PagerRuntime = { resolvePager, spawnPager };
 
-/** Test seam: index.ts calls pagerRuntime.* so tests can swap per-test. */
+/** Test seam: index.ts and openInPager call pagerRuntime.* so tests can swap per-test. */
 export let pagerRuntime: PagerRuntime = defaultPagerRuntime;
 
 /** Test seam: swap one or more pagerRuntime methods; pass null to restore the originals. */

@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Notebook page view via `$PAGER`/`less`** — in the interactive `/notebook` picker, Enter now opens the selected page in `$PAGER` (or `less` if unset) on POSIX. On platforms without either (typically Windows without `PAGER`), the existing 500-char inline preview is used as a fallback and any key closes it. The list reopens with the cursor on the just-viewed page. `$PAGER` may include args (whitespace-split, no shell quoting); on Windows the pager must accept piped stdin (`bat`, `less`), so `more.exe` won't work. An intentionally empty page opens the same way as any other page (pager or inline preview) instead of closing the picker.
+- **Notebook page view via `$PI_PAGER`/`$PAGER`/`less`** — in the interactive `/notebook` picker, Enter now opens the selected page in `$PI_PAGER`, else `$PAGER` (or `less` if both are unset) on POSIX. On platforms without any of these (typically Windows without `PI_PAGER`/`PAGER`), the existing 500-char inline preview is used as a fallback. Quitting the pager, or pressing any key in the inline preview, reopens the list with the cursor on the just-viewed page. The pager value may include args (whitespace-split, no shell quoting); `less` gets `-+F -+X` so short pages stay open even with `LESS=-F`; `bat`/`batcat` gets `--paging=always`, but an exported `LESS=-F` still makes bat's `less` quit on short pages. On Windows the pager must accept piped stdin (`bat`, `less`), so `more.exe` won't work. An intentionally empty page opens the same way as any other page (pager or inline preview) instead of closing the picker.
 
 ### Changed
 

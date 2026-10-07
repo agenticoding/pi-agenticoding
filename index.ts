@@ -29,7 +29,7 @@ import { ensureNotebookToolsActive, registerNotebookRehydration, reconstructNote
 import { registerNotebookTopicTool } from "./notebook/topic-tool.js";
 import { setActiveNotebookTopic } from "./notebook/topic.js";
 import { formatPageTuiPreview } from "./notebook/store.js";
-import { pagerRuntime } from "./notebook/pager.js";
+import { openInPager, pagerRuntime } from "./notebook/pager.js";
 import { registerHandoffTool } from "./handoff/tool.js";
 import {
 	canPromoteBoundary,
@@ -670,7 +670,7 @@ export default function (pi: ExtensionAPI): void {
 			}
 
 			let lastSelectedName: string | undefined;
-			// Resolve once per /notebook invocation: $PAGER and `command -v less`
+			// Resolve once per /notebook invocation: $PI_PAGER/$PAGER and `command -v less`
 			// don't change mid-session, and running execSync inside the render
 			// callback on every Enter is needless UI-thread work.
 			const pager = pagerRuntime.resolvePager();
@@ -691,6 +691,7 @@ export default function (pi: ExtensionAPI): void {
 
 					const entries = Array.from(state.notebookPages.entries()).sort(([a], [b]) => a.localeCompare(b));
 					let selectList: SelectList | undefined;
+					let previewName: string | undefined;
 					let finished = false;
 
 					if (entries.length === 0) {
@@ -716,12 +717,6 @@ export default function (pi: ExtensionAPI): void {
 							if (idx >= 0) selectList.setSelectedIndex(idx);
 						}
 						selectList.onSelect = ({ value }) => {
-							// Guard: `finished` (shared with onCancel/handleInput below) is what
-							// prevents this handler from firing twice, not the `selectList = undefined`
-							// below — that only happens in the no-pager branch. The pager branch never
-							// nulls `selectList`, so without this check a second select event arriving
-							// before the overlay tears down could re-enter onSelect.
-							if (finished) return;
 							const body = state.notebookPages.get(value);
 							if (body === undefined) { done(undefined); return; }
 							// Prefer a real pager when available; else fall back to a
@@ -736,8 +731,9 @@ export default function (pi: ExtensionAPI): void {
 							container.addChild(new Text(theme.fg("accent", theme.bold(` ${value} `)), 1, 0));
 							const truncated = body.length > 500 ? body.slice(0, 500) + "\n..." : body;
 							container.addChild(new Text(theme.fg("toolOutput", truncated), 1, 0));
-							container.addChild(new Text(theme.fg("dim", " any key close "), 1, 0));
+							container.addChild(new Text(theme.fg("dim", " any key back "), 1, 0));
 							container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+							previewName = value;
 							selectList = undefined;
 							tui.requestRender();
 						};
@@ -764,8 +760,9 @@ export default function (pi: ExtensionAPI): void {
 						handleInput: (data) => {
 							if (finished) return;
 							if (!selectList) {
+								// Any key leaves the inline preview (back to the list) or the empty notebook.
 								finished = true;
-								done(undefined);
+								done(previewName === undefined ? undefined : { action: "view", name: previewName });
 								return;
 							}
 							selectList.handleInput?.(data);
@@ -779,11 +776,12 @@ export default function (pi: ExtensionAPI): void {
 				if (result?.action !== "view") return;
 				lastSelectedName = result.name;
 
-				// onSelect only returns "view" when `pager` was truthy at resolve time.
-				if (!pager || !capturedTui) return;
-				const body = state.notebookPages.get(result.name) ?? "";
-				const err = await pagerRuntime.openInPager(capturedTui, body, pager);
-				if (err) ctx.ui.notify(`pager failed: ${err.message}`, "warning");
+				// Without a pager the page was already previewed inline; just reopen the list.
+				if (pager && capturedTui) {
+					const body = state.notebookPages.get(result.name) ?? "";
+					const err = await openInPager(capturedTui, body, pager);
+					if (err) ctx.ui.notify(`pager failed: ${err.message}`, "warning");
+				}
 			}
 		},
 	});
