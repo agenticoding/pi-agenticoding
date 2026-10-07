@@ -11,7 +11,7 @@ import { createNotebookToolDefinitions } from "../../notebook/tools.js";
 import { __setSingletons, createWriteLock, getSingletons } from "../../runtime-singletons.js";
 import { STATUS_KEY_TOPIC, WIDGET_KEY_WARNING } from "../../tui.js";
 import { makeTUICtx, createDeferred, theme, stripAnsi, runRealChildInvocation } from "./helpers.js";
-import { createTestHost } from "./test-host.js";
+import { createBeforeAgentStartEvent, createTestHost } from "./test-host.js";
 import type { TestPI } from "./test-host.js";
 
 function persistedBranch(pi: TestPI): object[] {
@@ -1501,13 +1501,16 @@ test("model listing surfaces remain free of clipping decorations", async () => {
 
 	// System prompt listing through the real before_agent_start hook.
 	const [beforeAgentStart] = pi.handlers.get("before_agent_start")!;
-	const promptResult = await beforeAgentStart(
-		{ systemPrompt: "Base system prompt." },
+	const event = createBeforeAgentStartEvent({ systemPrompt: "Base system prompt." });
+	await beforeAgentStart(
+		event,
 		{ ...makeTUICtx({ hasUI: false }), cwd: process.cwd(), isProjectTrusted: () => false },
 	);
-	assert.doesNotMatch(promptResult.systemPrompt, /\[truncated\]/);
-	assert.doesNotMatch(promptResult.systemPrompt, /Notice:/);
-	assert.match(promptResult.systemPrompt, /  page: x/);
+	const listing = event.systemPromptOptions.sections.schematic_notebook;
+	assert.ok(listing !== undefined);
+	assert.doesNotMatch(listing, /\[truncated\]/);
+	assert.doesNotMatch(listing, /Notice:/);
+	assert.match(listing, /  page: x/);
 
 	// Spawn prompt through the real child-session seam.
 	const proof = await runRealChildInvocation({ prompt: "Do the task.", notebookPages: { page: L(2001) } });

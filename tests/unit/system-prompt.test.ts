@@ -1,17 +1,19 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { CONTEXT_PRIMER } from "../../system-prompt.js";
-import { createTestHost } from "./test-host.js";
+import { contextPrimerSection } from "../../system-prompt.js";
+import { createBeforeAgentStartEvent, createTestHost } from "./test-host.js";
 import { makeTUICtx } from "./helpers.js";
 
 test("CONTEXT_PRIMER states the notebook, topic, and handoff contracts", () => {
-	assert.doesNotMatch(CONTEXT_PRIMER, /ledger/i,
+	const primer = contextPrimerSection().render();
+	assert.ok(primer !== undefined);
+	assert.doesNotMatch(primer, /ledger/i,
 		"CONTEXT_PRIMER should contain zero stale ledger references after the rename");
 
-	const notebookParts = CONTEXT_PRIMER.split("### Notebook");
-	const topicParts = CONTEXT_PRIMER.split("### Active notebook topic");
-	const handoffParts = CONTEXT_PRIMER.split("### Handoff");
-	const rulesParts = CONTEXT_PRIMER.split("### Rules");
+	const notebookParts = primer.split("### Notebook");
+	const topicParts = primer.split("### Active notebook topic");
+	const handoffParts = primer.split("### Handoff");
+	const rulesParts = primer.split("### Rules");
 	assert.equal(notebookParts.length, 2);
 	assert.equal(topicParts.length, 2);
 	assert.equal(handoffParts.length, 2);
@@ -38,7 +40,7 @@ test("CONTEXT_PRIMER states the notebook, topic, and handoff contracts", () => {
 	assert.doesNotMatch(handoffSection, /draft a handoff prompt/i);
 	assert.match(handoffSection, /notebook/i);
 	assert.doesNotMatch(handoffSection, /\bbrief\b/i);
-	assert.match(CONTEXT_PRIMER, /When the ask no longer matches the topic, call the handoff tool\./i);
+	assert.match(primer, /When the ask no longer matches the topic, call the handoff tool\./i);
 	assert.match(rulesSection, /one subject, thread, or subsystem/i);
 	assert.match(handoffSection, /situational context/i);
 	assert.match(rulesSection, /non-recoverable knowledge/i,
@@ -53,7 +55,7 @@ test("CONTEXT_PRIMER states the notebook, topic, and handoff contracts", () => {
 	assert.match(rulesSection, /chaining handoffs/i);
 	assert.match(rulesSection, /discard pages holding only recoverable code facts/i,
 		"rules must explain when notebook pages may be deleted during handoff");
-	assert.match(CONTEXT_PRIMER, /overlong child output is truncated/i);
+	assert.match(primer, /overlong child output is truncated/i);
 });
 
 test("before_agent_start injects notebook contracts plus live topic and page data", async () => {
@@ -62,27 +64,44 @@ test("before_agent_start injects notebook contracts plus live topic and page dat
 	const notebookWrite = pi.tools.get("notebook_write");
 	await notebookWrite.execute("1", { name: "alpha", content: "first line\nsecond line" }, undefined, undefined, makeTUICtx());
 
-	const [handler] = pi.handlers.get("before_agent_start")!;
+	const handler = pi.handlers.get("before_agent_start")![0];
 	const ctx = { ...makeTUICtx({ hasUI: false }), cwd: process.cwd(), isProjectTrusted: () => false };
-	const result = await handler({ systemPrompt: "Base system prompt." }, ctx);
+	const event = createBeforeAgentStartEvent();
+	await handler(event, ctx);
 
-	assert.match(result.systemPrompt, /Base system prompt\./);
-	assert.match(result.systemPrompt, /## Context management/);
-	assert.match(result.systemPrompt, /## Active Notebook Topic/);
-	assert.match(result.systemPrompt, /Current topic: `oauth`/);
-	assert.match(result.systemPrompt, /## Active Notebook Pages/);
-	assert.match(result.systemPrompt, /notebook_read/);
-	assert.match(result.systemPrompt, /Reference pages by name/i);
-	assert.match(result.systemPrompt, /alpha: first line/);
+	const { sections } = event.systemPromptOptions;
+	assert.match(sections.schematic, /## Context management/);
+	assert.match(sections.schematic_topic, /## Active Notebook Topic/);
+	assert.match(sections.schematic_topic, /Current topic: `oauth`/);
+	assert.match(sections.schematic_notebook, /## Active Notebook Pages/);
+	assert.match(sections.schematic_notebook, /notebook_read/);
+	assert.match(sections.schematic_notebook, /Reference pages by name/i);
+	assert.match(sections.schematic_notebook, /alpha: first line/);
 });
 
 test("before_agent_start injects no-topic guidance when the topic is unset", async () => {
 	const pi = await createTestHost();
-	const [handler] = pi.handlers.get("before_agent_start")!;
+	const handler = pi.handlers.get("before_agent_start")![0];
 	const ctx = { ...makeTUICtx({ hasUI: false }), cwd: process.cwd(), isProjectTrusted: () => false };
-	const result = await handler({ systemPrompt: "Base system prompt." }, ctx);
+	const event = createBeforeAgentStartEvent();
+	await handler(event, ctx);
 
-	assert.match(result.systemPrompt, /## Active Notebook Topic/);
-	assert.match(result.systemPrompt, /No active notebook topic is set\./);
-	assert.match(result.systemPrompt, /notebook_topic_set/);
+	const { sections } = event.systemPromptOptions;
+	assert.match(sections.schematic_topic, /## Active Notebook Topic/);
+	assert.match(sections.schematic_topic, /No active notebook topic is set\./);
+	assert.match(sections.schematic_topic, /notebook_topic_set/);
+});
+
+test("does not copy the base prompt into schematic's sections", async () => {
+	const pi = await createTestHost();
+	const handler = pi.handlers.get("before_agent_start")![0];
+	const ctx = { ...makeTUICtx({ hasUI: false }), cwd: process.cwd(), isProjectTrusted: () => false };
+	const event = createBeforeAgentStartEvent({ systemPrompt: "Base system prompt." });
+	await handler(event, ctx);
+
+	const schematicBodies = Object.entries(event.systemPromptOptions.sections)
+		.filter(([name]) => name.startsWith("schematic"))
+		.map(([, body]) => body);
+	assert.ok(schematicBodies.length > 0);
+	for (const body of schematicBodies) assert.doesNotMatch(body, /Base system prompt\./);
 });
