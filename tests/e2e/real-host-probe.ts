@@ -274,12 +274,16 @@ export default function realHostProbe(pi: ExtensionAPI): void {
 			// deadline the harness passes, not by RpcClient's fixed request timeout.
 			// Still assumed: a send that a command, session_tree or agent_settled handler starts
 			// (the /handoff request, handoff recovery) shows up first as its "input" event; no
-			// public event announces it earlier. The barrier counts it because that event fires
-			// before the barrier command can be processed: schematic's /handoff, session_tree and
-			// agent_settled handlers and every "input" handler ahead of this file's await no I/O.
-			// A handler that did could let the barrier report quiet early; the harness's per-step
-			// run counts and teardown check then fail. Closing this needs a pi API upstream
-			// declined (#9632, #10451, #9969).
+			// public event announces it earlier. A barrier processed before that event reports
+			// quiet with the run still to come, so a harness step that has counted fewer runs
+			// than it expects waits for the next observed event and barriers again. The
+			// assumption therefore only reaches a step whose expected count is already met —
+			// the "nothing happened" checks (0 expected runs) above all. Those stay sound while
+			// schematic's /handoff, session_tree and agent_settled handlers and its "input"
+			// handler ahead of this file's await no I/O (that one returns early for the
+			// extension-sourced sends at issue here). A run that starts late anyway lands in the
+			// next step's window or in close(), which fails on any run no step expected. Closing
+			// this needs a pi API upstream declined (#9632, #10451, #9969).
 			const [idText, deadlineText, ...rest] = args.trim().split(/\s+/);
 			if (rest.length > 0) throw new Error(`/e2e-barrier expects "<id> <deadlineMs>", got: ${args}`);
 			const id = parseBarrierArgument(idText, "id", args);

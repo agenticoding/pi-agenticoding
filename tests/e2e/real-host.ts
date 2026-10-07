@@ -6,8 +6,10 @@
  * Every helper that starts a run or navigates the tree is a step: it returns only
  * once `/e2e-barrier` reports no outstanding work, so tests never issue a
  * non-command prompt while a run or compaction is active, and it fails unless the
- * step started exactly the runs its caller expected. `close()` fails on any run
- * that started outside every step.
+ * step started exactly the runs its caller expected. A step that has counted fewer
+ * runs than it expects barriers again — a run a command, session_tree or agent_settled
+ * handler starts is first visible to the probe at its "input" event — within one
+ * barrier's budget. `close()` fails on any run that started outside every step.
  */
 
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -45,7 +47,9 @@ const NODE_TEST_MAX_TIMEOUT_MS = 2_147_483_647;
 /**
  * `node:test` timeout for a real-host test whose barriers each wait `waitMs`: every barrier
  * a test may make running to its harness deadline, plus a minute for start, commands and
- * close, so a slow test fails with the harness's message, not node:test's.
+ * close, so a slow test fails with the harness's message, not node:test's. A step that
+ * barriers again spends that same deadline and can stretch its phase by one report backstop,
+ * which that minute absorbs.
  */
 function testTimeoutFor(waitMs: number): number {
 	return REAL_HOST_MAX_BARRIERS_PER_TEST * (waitMs + BARRIER_REPORT_MARGIN_MS) + 60_000;
@@ -72,6 +76,17 @@ function readTimeout(): number {
 export const REAL_HOST_TIMEOUT_MS = readTimeout();
 
 export const REAL_HOST_TEST_TIMEOUT_MS = testTimeoutFor(REAL_HOST_TIMEOUT_MS);
+
+/**
+ * Deadline a step shares with every barrier round it makes: the budget of a single barrier before
+ * the retry, the probe deadline plus the harness's backstop for its report.
+ *
+ * A round takes what is left of that deadline as its probe deadline, so the rounds together spend
+ * one barrier's probe budget, and the harness waits the backstop on top of the last one. A step's
+ * phase can therefore outlast its deadline by that backstop, which stays inside the minute
+ * `testTimeoutFor` leaves for start, commands and close.
+ */
+const STEP_BUDGET_MS = REAL_HOST_TIMEOUT_MS + BARRIER_REPORT_MARGIN_MS;
 
 /** Same expressions as tests/unit/helpers.ts; this harness imports nothing from tests/unit/. */
 export function stripAnsi(text: string): string {
@@ -171,7 +186,10 @@ export class RealHost {
 	private readonly logPath: string;
 	private options: RpcClientOptions;
 	private closing: Promise<void> | null = null;
-	private barriers = 0;
+	/** Barrier phases begun — one per step, one for `close()`; the rounds of a step share its phase. */
+	private barrierPhases = 0;
+	/** `/e2e-barrier` commands sent; every round reports under its own id. */
+	private barrierRounds = 0;
 	/** Runs counted inside step windows, and runs of clients replaced by restart(). */
 	private stepRuns = 0;
 	private runsBeforeRestart = 0;
@@ -353,7 +371,8 @@ export class RealHost {
 	}
 
 	private async assertNoUnexpectedRuns(): Promise<void> {
-		await this.barrier();
+		this.startBarrierPhase();
+		await this.barrier(REAL_HOST_TIMEOUT_MS);
 		const unexpected = this.runsBeforeRestart + countRuns(this.events) - this.stepRuns;
 		if (unexpected !== 0) throw new Error(`${unexpected} run(s) started outside every step; no step expected them`);
 	}
@@ -375,26 +394,79 @@ export class RealHost {
 	}
 
 	/**
-	 * End a step that began at event index `mark`: wait for the barrier, require no
-	 * extension_error since `mark`, then require exactly `runs` agent_start events since `mark`.
+	 * End a step that began at event index `mark`: wait for the barrier, require no extension_error
+	 * since `mark`, then require exactly `runs` agent_start events since `mark`.
+	 *
+	 * A run a command, session_tree or agent_settled handler starts is first visible to the probe at
+	 * its "input" event, so a barrier can report quiet before that run has started. A step that has
+	 * counted fewer runs than it expects therefore barriers again after the next observed event,
+	 * inside the step's one `STEP_BUDGET_MS`; every round spends what is left of it, so a run that
+	 * appears late still gets a barrier that measures it with quiet. More runs than expected, or
+	 * the budget, fail.
 	 */
 	private async step(mark: number, action: string, runs: number): Promise<void> {
-		await this.barrier();
-		this.assertNoExtensionErrors(mark, action);
-		const started = countRuns(this.events.slice(mark));
+		this.startBarrierPhase();
+		const deadline = Date.now() + STEP_BUDGET_MS;
+		let rounds = 0;
+		let started = 0;
+		for (;;) {
+			const remaining = deadline - Date.now();
+			if (remaining <= 0) break;
+			rounds++;
+			await this.barrier(remaining);
+			this.assertNoExtensionErrors(mark, action);
+			started = countRuns(this.events.slice(mark));
+			if (started >= runs) break;
+			// Wait for the event the missing run shows up as; the checks at the top of the
+			// loop then decide whether the step has another round left.
+			await this.waitForEvent(this.events.length, deadline);
+		}
 		this.stepRuns += started;
-		if (started !== runs) throw new Error(`${action} started ${started} run(s), expected ${runs}`);
+		if (started === runs) return;
+		if (started > runs) throw new Error(`${action} started ${started} run(s), expected ${runs}`);
+		throw new Error(
+			`${action} started ${started} run(s), expected ${runs}; ` +
+			`the ${STEP_BUDGET_MS} ms step budget expired after ${rounds} barrier round(s)`,
+		);
 	}
 
-	/** Run `/e2e-barrier` and wait for its report; throws with the probe's outstanding items when it failed. */
-	private async barrier(): Promise<void> {
-		const id = ++this.barriers;
-		if (id > REAL_HOST_MAX_BARRIERS_PER_TEST) {
+	/** Claim a barrier phase; `testTimeoutFor` covers REAL_HOST_MAX_BARRIERS_PER_TEST of them. */
+	private startBarrierPhase(): void {
+		const phase = ++this.barrierPhases;
+		if (phase > REAL_HOST_MAX_BARRIERS_PER_TEST) {
 			throw new Error(
-				`Barrier ${id} exceeds REAL_HOST_MAX_BARRIERS_PER_TEST (${REAL_HOST_MAX_BARRIERS_PER_TEST}), ` +
+				`Barrier phase ${phase} exceeds REAL_HOST_MAX_BARRIERS_PER_TEST (${REAL_HOST_MAX_BARRIERS_PER_TEST}), ` +
 				"which sizes REAL_HOST_TEST_TIMEOUT_MS; raise it for this test",
 			);
 		}
+	}
+
+	/**
+	 * Resolve on the next event the harness observes past index `seen`, or at `deadline`. The check
+	 * before the subscription is what makes the wake-up complete: an event that arrived while the
+	 * caller was counting resolves at once. Nothing else wakes the wait, so a barrier round that
+	 * found nothing outstanding never spins.
+	 */
+	private async waitForEvent(seen: number, deadline: number): Promise<void> {
+		if (this.events.length > seen) return;
+		const { client, events } = this;
+		await new Promise<void>((resolve) => {
+			const timer = setTimeout(() => {
+				unsubscribe();
+				resolve();
+			}, Math.max(deadline - Date.now(), 0));
+			const unsubscribe = client.onEvent(() => {
+				if (events.length <= seen) return;
+				clearTimeout(timer);
+				unsubscribe();
+				resolve();
+			});
+		});
+	}
+
+	/** Run `/e2e-barrier <id> <probeDeadlineMs>` and wait for its report; throws with the probe's outstanding items when it failed. */
+	private async barrier(probeDeadlineMs: number): Promise<void> {
+		const id = ++this.barrierRounds;
 		const client = this.client;
 		const events = this.events;
 		const mark = events.length;
@@ -406,8 +478,8 @@ export class RealHost {
 			}
 			return undefined;
 		};
-		await this.command(`/${PROBE_COMMAND.barrier} ${id} ${REAL_HOST_TIMEOUT_MS}`);
-		const waitMs = REAL_HOST_TIMEOUT_MS + BARRIER_REPORT_MARGIN_MS;
+		await this.command(`/${PROBE_COMMAND.barrier} ${id} ${probeDeadlineMs}`);
+		const waitMs = probeDeadlineMs + BARRIER_REPORT_MARGIN_MS;
 		const report = findReport() ?? await new Promise<BarrierReport>((resolveWait, rejectWait) => {
 			const timer = setTimeout(() => {
 				unsubscribe();
