@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
+import { READONLY_POWERSHELL_BLOCK_REASON } from "../../notifications.js";
 import { registerReadonlyPI, makeReadonlyUICtx } from "./helpers.js";
 
 test("readonly toggle on blocks write, edit, handoff, and bash mutations", async () => {
@@ -11,6 +12,9 @@ test("readonly toggle on blocks write, edit, handoff, and bash mutations", async
 
 	assert.equal((await toolCall({ toolName: "write", input: { path: "/tmp/x", content: "x" } }, {})).block, true);
 	assert.equal((await toolCall({ toolName: "edit", input: { path: "/tmp/x", edits: [] } }, {})).block, true);
+	const powershell = await toolCall({ toolName: "powershell", input: { command: "Get-ChildItem" } }, {});
+	assert.equal(powershell.block, true);
+	assert.equal(powershell.reason, READONLY_POWERSHELL_BLOCK_REASON);
 	assert.equal((await toolCall({ toolName: "handoff", input: { task: "pivot" } }, {})).block, true);
 	assert.equal((await toolCall({ toolName: "bash", input: { command: "rm -rf /" } }, { cwd: "/workspace" })).block, true);
 	assert.equal(await toolCall({ toolName: "bash", input: { command: `rm ${os.tmpdir()}/x` } }, { cwd: "/workspace" }), undefined);
@@ -25,6 +29,7 @@ test("readonly toggle off restores write, handoff, and bash access", async () =>
 	await pi.commands.get("readonly").handler("", ctx as any);
 
 	assert.equal(await toolCall({ toolName: "write", input: { path: "/tmp/x", content: "x" } }, {}), undefined);
+	assert.equal(await toolCall({ toolName: "powershell", input: { command: "Get-ChildItem" } }, {}), undefined);
 	assert.equal(await toolCall({ toolName: "handoff", input: { task: "pivot" } }, {}), undefined);
 	assert.equal(await toolCall({ toolName: "bash", input: { command: "rm -rf /" } }, { cwd: "/workspace" }), undefined);
 });

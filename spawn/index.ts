@@ -242,12 +242,12 @@ export function buildChildToolNames(
 
 /**
  * Filter child tool names for readonly mode.
- * Removes write/edit from the tool list entirely — children start with
+ * Removes write/edit/powershell from the tool list entirely — children start with
  * a fresh context, so there is no cache to preserve.
  */
 export function filterReadonlyToolNames(toolNames: string[], readonlyEnabled: boolean): string[] {
 	return readonlyEnabled
-		? toolNames.filter((name) => name !== "write" && name !== "edit")
+		? toolNames.filter((name) => name !== "write" && name !== "edit" && name !== "powershell")
 		: toolNames;
 }
 
@@ -465,9 +465,9 @@ export function executeSpawn(
 	const parentToolNames = pi.getActiveTools();
 	const childToolNames = buildChildToolNames(parentToolNames, childTools, pi.getAllTools());
 	// Children: readonly vs non-readonly tool strategy differs from the parent.
-	// Parent keeps write/edit in the tool list and blocks at call time to avoid
+	// Parent keeps write/edit/powershell in the tool list and blocks at call time to avoid
 	// context-cache misses (index.ts). Children start with a fresh context — no
-	// cache to preserve — so we remove write/edit from the tool list entirely
+	// cache to preserve — so we remove write/edit/powershell from the tool list entirely
 	// (cleaner than advertising tools that always error).  The readonly bash guard
 	// (sandbox-exec/bwrap or classifyBashCommand fallback) still propagates to
 	// children via createReadonlyChildBashTool below.

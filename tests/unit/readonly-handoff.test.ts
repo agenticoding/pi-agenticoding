@@ -323,7 +323,7 @@ test("the handoff summary stays readonly-free and the fresh context relearns rea
 	assert.doesNotMatch(resumed.summary, /readonly/i, "constraints must never be frozen into the summary");
 	assert.doesNotMatch(resumed.summary, /ignored in favor of the direction/,
 		"the model-supplied instruction must not leak into the summary");
-	assert.match(resumed.nudgeContent ?? "", /\[readonly\] enabled — write\/edit blocked/,
+	assert.match(resumed.nudgeContent ?? "", /\[readonly\] enabled — write\/edit\/powershell blocked/,
 		"the post-handoff turn must relearn readonly from the context hook");
 
 	// Readonly dropped before the cut: same constant summary, and the fresh context

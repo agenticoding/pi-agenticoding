@@ -17,17 +17,18 @@ import { runRealChildInvocation } from "./helpers.js";
 // ── Tool filtering ───────────────────────────────────────────────────
 
 test("filterReadonlyToolNames removes write and edit in readonly mode", () => {
-	const tools = ["read", "bash", "write", "edit", "notebook_read"];
+	const tools = ["read", "bash", "write", "edit", "powershell", "notebook_read"];
 	const filtered = filterReadonlyToolNames(tools, true);
 	assert.equal(filtered.includes("write"), false);
 	assert.equal(filtered.includes("edit"), false);
+	assert.equal(filtered.includes("powershell"), false);
 	assert.equal(filtered.includes("read"), true);
 	assert.equal(filtered.includes("bash"), true);
 	assert.equal(filtered.includes("notebook_read"), true);
 });
 
 test("filterReadonlyToolNames preserves all tools when readonly is off", () => {
-	const tools = ["read", "bash", "write", "edit"];
+	const tools = ["read", "bash", "write", "edit", "powershell"];
 	assert.deepEqual(filterReadonlyToolNames(tools, false), tools);
 });
 
@@ -50,7 +51,7 @@ test("readonly child authority note communicates readonly inheritance", () => {
 });
 
 test("readonly write/edit summary communicates blocked mutations", () => {
-	assert.match(READONLY_WRITE_EDIT_SUMMARY, /\[readonly\] write\/edit blocked/i);
+	assert.match(READONLY_WRITE_EDIT_SUMMARY, /\[readonly\] write\/edit\/powershell blocked/i);
 	assert.match(READONLY_WRITE_EDIT_SUMMARY, /bash writes\/deletions outside temp blocked/i);
 });
 

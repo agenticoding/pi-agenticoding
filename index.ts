@@ -52,6 +52,7 @@ import {
 	READONLY_HANDOFF_EXCEPTION_SUMMARY,
 	READONLY_PENDING_HANDOFF_READONLY_OFF_NOTIFICATION,
 	READONLY_PENDING_HANDOFF_READONLY_ON_NOTIFICATION,
+	READONLY_POWERSHELL_BLOCK_REASON,
 	READONLY_WRITE_EDIT_BLOCK_REASON,
 	buildModelFrontmatterAuthErrorNotification,
 	buildModelFrontmatterErrorNotification,
@@ -571,7 +572,7 @@ export default function (pi: ExtensionAPI): void {
 	pi.on("tool_call", async (event, ctx) => {
 		// ── Readonly mode ───────────────────────────────────────────
 		// Guardrail for a coding agent (not a security boundary):
-		// write/edit stay in the tool list but are blocked at call time.
+		// write/edit/powershell stay in the tool list but are blocked at call time.
 		// handoff is also blocked unless pendingRequestedHandoff has activated a
 		// narrow temporary bypass for this session's required pivot. That sticky
 		// state is created by explicit /handoff or by an eligible readonly human
@@ -585,6 +586,13 @@ export default function (pi: ExtensionAPI): void {
 			return {
 				block: true as const,
 				reason: READONLY_WRITE_EDIT_BLOCK_REASON,
+			};
+		}
+
+		if (event.toolName === "powershell") {
+			return {
+				block: true as const,
+				reason: READONLY_POWERSHELL_BLOCK_REASON,
 			};
 		}
 

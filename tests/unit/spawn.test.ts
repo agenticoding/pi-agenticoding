@@ -227,7 +227,7 @@ test("spawn execute composes Model Group routing with readonly child guards", as
 	assert.ok(!seenConfig.tools.includes("spawn"));
 	assert.ok(!seenConfig.tools.includes("handoff"));
 	assert.match(seenPrompt, /inherit readonly authority/i);
-	assert.match(seenPrompt, /\[readonly\] write\/edit blocked/i);
+	assert.match(seenPrompt, /\[readonly\] write\/edit\/powershell blocked/i);
 	assert.deepEqual(result.details.route, { status: "routed", group: "review", provider: "openai", modelId: "gpt-routed" });
 });
 
