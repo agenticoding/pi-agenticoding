@@ -55,12 +55,15 @@ export const READONLY_WRITE_EDIT_BLOCK_REASON =
 	"Readonly mode: write/edit blocked until the user disables readonly. Do not attempt alternative write strategies.";
 
 export const READONLY_POWERSHELL_BLOCK_REASON =
-	"Readonly mode: powershell blocked until the user disables readonly. Do not run PowerShell through another tool.";
+	"Readonly mode: powershell blocked until the user disables readonly. Do not run PowerShell or other shells through another tool.";
 
 export const READONLY_HANDOFF_BLOCK_REASON =
 	`Readonly mode: handoff blocked until an ${READONLY_HANDOFF_TRIGGER} enables the temporary exception. Use spawn for same-topic delegation.`;
 
 export const READONLY_WRITE_EDIT_SUMMARY = `[readonly] ${READONLY_WRITE_EDIT_BASH}`;
+
+/** Readonly summary for a child whose effective tool list has no bash tool. */
+export const READONLY_NO_SHELL_SUMMARY = "[readonly] write/edit/powershell blocked; this readonly child has no shell tool.";
 
 export const READONLY_ACTIVE_SUMMARY = `[readonly] enabled — write/edit/powershell blocked; ${READONLY_BASH_SCOPE}; handoff needs ${READONLY_HANDOFF_TRIGGER}.`;
 
@@ -72,7 +75,7 @@ export const READONLY_ENABLED_STATUS = `[readonly] enabled — write/edit/powers
 export const READONLY_COMMAND_DESCRIPTION =
 	`Toggle readonly mode (${READONLY_WRITE_EDIT_BASH}; handoff needs ${READONLY_HANDOFF_TRIGGER})`;
 
-export const READONLY_DISABLED_SUMMARY = "[readonly] disabled — write, edit, powershell, handoff, and bash writes are now fully available.";
+export const READONLY_DISABLED_SUMMARY = "[readonly] disabled — write, edit, handoff, and bash writes are now fully available, as is powershell where it is active.";
 
 /** Notification on readonly toggle-off for TUI user. */
 export const READONLY_DISABLED_NOTIFICATION = READONLY_DISABLED_SUMMARY;

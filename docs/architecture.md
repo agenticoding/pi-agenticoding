@@ -61,7 +61,7 @@ interface SchematicState {
 
 A failed model change visibly blocks command expansion and records no success entry. During streaming steer/follow-up, commands with model-selection frontmatter are visibly blocked without model or thinking mutation; commands without it continue. Invalid frontmatter is ignored with a TUI warning.
 
-**Readonly** — Session-persisted research posture. Toggle via `/readonly`, Ctrl+Shift+R, or `--readonly`. Write/edit and powershell always blocked at the tool boundary (powershell is blocked outright; there is no PowerShell command classifier). Bash uses a two-layer guard:
+**Readonly** — Session-persisted research posture. Toggle via `/readonly`, Ctrl+Shift+R, or `--readonly`. Write/edit and powershell always blocked at the tool boundary (powershell is blocked outright; there is no PowerShell command classifier). Bash uses a two-layer guard, and its classifier blocks launching PowerShell or cmd through bash:
 
 | Platform | Enforcement |
 |---|---|

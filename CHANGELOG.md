@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **Readonly blocks the powershell tool** — readonly mode now blocks pi's built-in `powershell` tool in the parent and removes it from readonly children. Previously a Windows setup with `powershell` in `defaultTools` had an unguarded shell.
+- **Readonly blocks the powershell tool** — readonly mode now blocks pi's built-in `powershell` tool in the parent and removes it from readonly children, and readonly bash blocks launching PowerShell or cmd. Previously a Windows setup with `powershell` in `defaultTools` had an unguarded shell.
 
 ## [0.6.0] - 2026-09-26
 
