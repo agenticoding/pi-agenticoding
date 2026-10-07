@@ -14,12 +14,21 @@ import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { TestContext } from "node:test";
 import { RpcClient, SessionManager, type RpcClientOptions, type SessionEntry } from "@earendil-works/pi-coding-agent";
+import {
+	parseProbeRecord,
+	PROBE_COMMAND,
+	PROBE_LOG_ENV_VAR,
+	PROBE_MODEL_ID,
+	PROBE_PROVIDER,
+	type ProbeRecord,
+	type ScriptedCall,
+} from "./real-host-protocol.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const SCHEMATIC_ENTRY = resolve(HERE, "..", "..", "index.ts");
 const PROBE_ENTRY = resolve(HERE, "real-host-probe.ts");
 const CLI_PATH = join(dirname(fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent"))), "cli.js");
-const REQUIRED_COMMANDS = ["handoff", "notebook", "readonly", "e2e-barrier"];
+const REQUIRED_COMMANDS = ["handoff", "notebook", "readonly", PROBE_COMMAND.barrier];
 
 function readTimeout(): number {
 	const raw = process.env.E2E_REAL_HOST_TIMEOUT_MS;
@@ -33,18 +42,18 @@ function readTimeout(): number {
 
 export const REAL_HOST_TIMEOUT_MS = readTimeout();
 
+/**
+ * `node:test` timeout for a real-host test: the harness's own wait plus a minute of
+ * headroom, never below the default, so a slow run fails with the harness's message.
+ */
+export const REAL_HOST_TEST_TIMEOUT_MS = Math.max(90_000, REAL_HOST_TIMEOUT_MS + 60_000);
+
 /** Same expressions as tests/unit/helpers.ts; this harness imports nothing from tests/unit/. */
 export function stripAnsi(text: string): string {
 	return text.replace(/\u001b\[[0-9;]*m/g, "").replace(/\u001b\][^\u0007]*\u0007/g, "");
 }
 
 export type RpcEvent = { type: string; [key: string]: unknown };
-export type ScriptedCall = { name: string; arguments: Record<string, unknown> };
-export type ProbeRecord =
-	| { kind: "request"; step: number; calls: ScriptedCall[] | null; texts: string[] }
-	| { kind: "compact"; entryId: string }
-	| { kind: "successor-send"; text: string; dropped: boolean }
-	| { kind: "tools"; names: string[] };
 export type Notification = { message: string; notifyType: string | undefined };
 export type Status = { statusKey: string; statusText: string | undefined };
 export type ToolResult = { isError: boolean; text: string };
@@ -177,14 +186,14 @@ export class RealHost {
 			const clientOptions: RpcClientOptions = {
 				cliPath: CLI_PATH,
 				cwd: projectDir,
-				provider: "schematic-e2e",
-				model: "schematic-e2e-model",
+				provider: PROBE_PROVIDER,
+				model: PROBE_MODEL_ID,
 				env: {
 					PI_CODING_AGENT_DIR: agentDir,
 					PI_OFFLINE: "1",
 					HOME: homeDir,
 					USERPROFILE: homeDir,
-					PI_SCHEMATIC_E2E_PROBE_LOG: logPath,
+					[PROBE_LOG_ENV_VAR]: logPath,
 					FORCE_COLOR: "0",
 					NODE_OPTIONS: "",
 					...pathEnv(),
@@ -236,7 +245,7 @@ export class RealHost {
 	}
 
 	async arm(calls: ScriptedCall[]): Promise<void> {
-		await this.command("/e2e-script " + JSON.stringify(calls));
+		await this.command("/" + PROBE_COMMAND.script + " " + JSON.stringify(calls));
 	}
 
 	async script(calls: ScriptedCall[]): Promise<void> {
@@ -245,7 +254,7 @@ export class RealHost {
 	}
 
 	async settle(): Promise<void> {
-		await this.command("/e2e-barrier");
+		await this.command("/" + PROBE_COMMAND.barrier);
 	}
 
 	async entries(): Promise<{ entries: SessionEntry[]; leafId: string | null }> {
@@ -256,7 +265,7 @@ export class RealHost {
 		return readFileSync(this.logPath, "utf8")
 			.split("\n")
 			.filter((line) => line !== "")
-			.map((line) => JSON.parse(line) as ProbeRecord);
+			.map((line) => parseProbeRecord(line));
 	}
 
 	successorSends(): Array<Extract<ProbeRecord, { kind: "successor-send" }>> {
@@ -264,7 +273,7 @@ export class RealHost {
 	}
 
 	async navigate(entryId: string): Promise<void> {
-		await this.command("/e2e-tree " + entryId);
+		await this.command("/" + PROBE_COMMAND.tree + " " + entryId);
 		await this.settle();
 	}
 

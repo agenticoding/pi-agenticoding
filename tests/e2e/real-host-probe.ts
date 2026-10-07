@@ -5,7 +5,7 @@
  * Registers a scripted provider whose responses the test arms through
  * `/e2e-script`, plus commands that drain runs, navigate the tree, start runs
  * without a user turn, and inject delivery and compaction failures. Every
- * observation is appended as one JSON line to `PI_SCHEMATIC_E2E_PROBE_LOG`.
+ * observation is appended as one JSON line to the file `PROBE_LOG_ENV_VAR` names.
  *
  * Runs inside the pi process: never write to stdout or stderr here.
  */
@@ -14,18 +14,30 @@ import { appendFileSync } from "node:fs";
 import { createAssistantMessageEventStream, type AssistantMessage, type ToolCall } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-
-type ScriptedCall = { name: string; arguments: ToolCall["arguments"] };
-
-const PROVIDER = "schematic-e2e";
-const API = "schematic-e2e-api";
-const MODEL_ID = "schematic-e2e-model";
-const NEXT_INSTRUCTION_PREFIX = "## Next instruction";
+import { MIN_HANDOFF_TOKENS } from "../../handoff/eligibility.js";
+import {
+	NEXT_INSTRUCTION_PREFIX,
+	PROBE_API,
+	PROBE_COMMAND,
+	PROBE_LOG_ENV_VAR,
+	PROBE_MODEL_ID,
+	PROBE_PROVIDER,
+	type ProbeRecord,
+	type ScriptedCall,
+} from "./real-host-protocol.js";
 
 const zeroCost = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
-// Above MIN_HANDOFF_TOKENS (handoff/eligibility.ts) whatever the context size.
+const SCRIPTED_INPUT_TOKENS = 50000;
+// Load-time check: every scripted response must clear the handoff floor whatever the
+// context size, or schematic rejects the handoffs this suite scripts.
+if (!(SCRIPTED_INPUT_TOKENS > MIN_HANDOFF_TOKENS)) {
+	throw new Error(
+		`The probe's scripted usage (${SCRIPTED_INPUT_TOKENS} input tokens) must exceed ` +
+		`MIN_HANDOFF_TOKENS (${MIN_HANDOFF_TOKENS}); schematic would reject every scripted handoff.`,
+	);
+}
 const usage = {
-	input: 50000, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 50000,
+	input: SCRIPTED_INPUT_TOKENS, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: SCRIPTED_INPUT_TOKENS,
 	cost: zeroCost,
 };
 
@@ -58,9 +70,9 @@ function contextTexts(messages: ReadonlyArray<{ content?: unknown }>): string[] 
 }
 
 export default function realHostProbe(pi: ExtensionAPI): void {
-	const logPath = process.env.PI_SCHEMATIC_E2E_PROBE_LOG;
-	if (!logPath) throw new Error("PI_SCHEMATIC_E2E_PROBE_LOG is not set");
-	const log = (record: Record<string, unknown>) => appendFileSync(logPath, JSON.stringify(record) + "\n");
+	const logPath = process.env[PROBE_LOG_ENV_VAR];
+	if (!logPath) throw new Error(`${PROBE_LOG_ENV_VAR} is not set`);
+	const log = (record: ProbeRecord) => appendFileSync(logPath, JSON.stringify(record) + "\n");
 
 	let armedScript: ScriptedCall[] | null = null;
 	let runScript: ScriptedCall[] | null = null;
@@ -69,10 +81,10 @@ export default function realHostProbe(pi: ExtensionAPI): void {
 	let dropNextSuccessor = false;
 	let cancelNextCompaction = false;
 
-	pi.registerProvider(PROVIDER, {
-		api: API, apiKey: "test-key", baseUrl: "http://localhost.invalid",
+	pi.registerProvider(PROBE_PROVIDER, {
+		api: PROBE_API, apiKey: "test-key", baseUrl: "http://localhost.invalid",
 		models: [{
-			id: MODEL_ID, name: "Schematic E2E Model", reasoning: false,
+			id: PROBE_MODEL_ID, name: "Schematic E2E Model", reasoning: false,
 			input: ["text"], cost: zeroCost, contextWindow: 200000, maxTokens: 1024,
 		}],
 		streamSimple(model, context) {
@@ -133,7 +145,7 @@ export default function realHostProbe(pi: ExtensionAPI): void {
 		log({ kind: "compact", entryId: event.compactionEntry.id });
 	});
 
-	pi.registerCommand("e2e-script", {
+	pi.registerCommand(PROBE_COMMAND.script, {
 		description: "Arm a scripted tool-call sequence for the next run",
 		handler: async (args) => {
 			if (armedScript) throw new Error(`a script is already armed: ${JSON.stringify(armedScript)}`);
@@ -141,7 +153,7 @@ export default function realHostProbe(pi: ExtensionAPI): void {
 		},
 	});
 
-	pi.registerCommand("e2e-barrier", {
+	pi.registerCommand(PROBE_COMMAND.barrier, {
 		description: "Return once every run, deferred settled action and queued message has drained",
 		handler: async (_args, ctx) => {
 			// Assumes a compaction's successor send starts its run within one macrotask. From
@@ -159,7 +171,7 @@ export default function realHostProbe(pi: ExtensionAPI): void {
 		},
 	});
 
-	pi.registerCommand("e2e-tree", {
+	pi.registerCommand(PROBE_COMMAND.tree, {
 		description: "Navigate the session tree to an entry",
 		handler: async (args, ctx) => {
 			const entryId = args.trim();
@@ -168,28 +180,28 @@ export default function realHostProbe(pi: ExtensionAPI): void {
 		},
 	});
 
-	pi.registerCommand("e2e-turn", {
+	pi.registerCommand(PROBE_COMMAND.turn, {
 		description: "Start a run without a user turn",
 		handler: async () => {
 			pi.sendMessage({ customType: "schematic-e2e-turn", content: "e2e tick", display: false }, { triggerTurn: true });
 		},
 	});
 
-	pi.registerCommand("e2e-drop-next-successor", {
+	pi.registerCommand(PROBE_COMMAND.dropNextSuccessor, {
 		description: "Drop the next successor send before it reaches the session",
 		handler: async () => {
 			dropNextSuccessor = true;
 		},
 	});
 
-	pi.registerCommand("e2e-cancel-next-compaction", {
+	pi.registerCommand(PROBE_COMMAND.cancelNextCompaction, {
 		description: "Cancel the next compaction from session_before_compact",
 		handler: async () => {
 			cancelNextCompaction = true;
 		},
 	});
 
-	pi.registerCommand("e2e-tools", {
+	pi.registerCommand(PROBE_COMMAND.tools, {
 		description: "Log the names of every registered tool",
 		handler: async () => {
 			log({ kind: "tools", names: pi.getAllTools().map((tool) => tool.name) });
