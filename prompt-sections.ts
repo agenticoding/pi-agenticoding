@@ -43,7 +43,9 @@ export function createPromptSectionRegistry(): PromptSectionRegistry {
 /**
  * Writes rendered sections into the event's prompt options. Returns a forced
  * prompt only when an earlier handler already forced one, because pi ignores
- * every section for a forced run.
+ * every section for a forced run. The sections appended to that prompt are
+ * tagged the way pi renders sections, so the model sees one shape whether or
+ * not the prompt is forced.
  */
 export function applyPromptSections(
 	event: BeforeAgentStartEvent,
@@ -54,5 +56,7 @@ export function applyPromptSections(
 		event.systemPromptOptions.sections[name] = body;
 	}
 	if (event.systemPromptOptions.forceSystemPrompt === undefined) return undefined;
-	return { systemPrompt: [event.systemPrompt, ...rendered.map((s) => s.body)].join("\n\n") };
+	return {
+		systemPrompt: [event.systemPrompt, ...rendered.map(({ name, body }) => `<${name}>\n${body}\n</${name}>`)].join("\n\n"),
+	};
 }

@@ -4,11 +4,11 @@ import { contextPrimerSection } from "../../system-prompt.js";
 import { createBeforeAgentStartEvent, createTestHost } from "./test-host.js";
 import { makeTUICtx } from "./helpers.js";
 
-test("CONTEXT_PRIMER states the notebook, topic, and handoff contracts", () => {
+test("the context primer states the notebook, topic, and handoff contracts", () => {
 	const primer = contextPrimerSection().render();
 	assert.ok(primer !== undefined);
 	assert.doesNotMatch(primer, /ledger/i,
-		"CONTEXT_PRIMER should contain zero stale ledger references after the rename");
+		"the context primer should contain zero stale ledger references after the rename");
 
 	const notebookParts = primer.split("### Notebook");
 	const topicParts = primer.split("### Active notebook topic");

@@ -103,7 +103,9 @@ test("appends section bodies to a prompt an earlier handler forced", () => {
 	const event = createBeforeAgentStartEvent();
 	event.systemPromptOptions.forceSystemPrompt = "FORCED";
 
-	assert.deepEqual(applyPromptSections(event, rendered), { systemPrompt: "FORCED\n\nbody-one\n\nbody-two" });
+	assert.deepEqual(applyPromptSections(event, rendered), {
+		systemPrompt: "FORCED\n\n<schematic_one>\nbody-one\n</schematic_one>\n\n<schematic_two>\nbody-two\n</schematic_two>",
+	});
 });
 
 test("records sections while the prompt is forced", () => {
@@ -152,6 +154,7 @@ test("appends schematic's content to a prompt an earlier extension forced", asyn
 
 	assert.ok(prompt.includes("FORCED-MARKER"));
 	assert.ok(prompt.includes("## Context management"));
+	assert.ok(prompt.includes("<schematic>\n## Context management"));
 });
 
 test("hands a later extension a prompt that already holds schematic's content", async () => {
@@ -181,10 +184,10 @@ test("keeps the primer section byte-identical when notebook state changes", asyn
 	const afterEvent = createBeforeAgentStartEvent();
 	await handler(afterEvent, ctx);
 	const after = afterEvent.systemPromptOptions.sections;
-	assert.notEqual(after.schematic_topic, before.schematic_topic);
-	assert.ok(after.schematic_notebook !== undefined && before.schematic_notebook === undefined);
 
 	assert.equal(after.schematic, before.schematic);
+	assert.notEqual(after.schematic_topic, before.schematic_topic);
+	assert.ok(after.schematic_notebook !== undefined && before.schematic_notebook === undefined);
 });
 
 for (const sectionName of ["schematic", "schematic_topic", "schematic_model_groups", "schematic_notebook"]) {
