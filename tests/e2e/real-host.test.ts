@@ -37,15 +37,15 @@ function handoffCall(args: ScriptedCall["arguments"]): ScriptedCall[] {
 	return [{ name: "handoff", arguments: args }];
 }
 
-/** "Handoff call A": a scripted run whose first step calls handoff with A. */
-async function handoff(host: RealHost, args: ScriptedCall["arguments"]): Promise<void> {
-	await host.script(handoffCall(args));
+/** "Handoff call A": a scripted run whose first step calls handoff with A, starting `runs` runs. */
+async function handoff(host: RealHost, args: ScriptedCall["arguments"], runs: number): Promise<void> {
+	await host.script(handoffCall(args), runs);
 }
 
-/** "/handoff D answered by handoff call A": the command's own run consumes the script. */
-async function handoffCommand(host: RealHost, direction: string, args: ScriptedCall["arguments"]): Promise<void> {
+/** "/handoff D answered by handoff call A": the command's own run consumes the script; `runs` runs start. */
+async function handoffCommand(host: RealHost, direction: string, args: ScriptedCall["arguments"], runs: number): Promise<void> {
 	await host.arm(handoffCall(args));
-	await host.turn(`/handoff ${direction}`);
+	await host.turn(`/handoff ${direction}`, runs);
 }
 
 function userText(entry: SessionEntry): string | null {
@@ -105,7 +105,7 @@ function onlyResult<T>(results: T[], label: string): T {
 describe("pi-schematic real-host E2E", () => {
 	it("host starts and extension registers", TEST_OPTIONS, async (t) => withRealHost(t, async (host) => {
 		await host.command("/" + PROBE_COMMAND.tools);
-		await host.settle();
+		await host.settle(0);
 		const tools = host.probeLog().filter((record) => record.kind === "tools");
 		assert.equal(tools.length, 1, "one tools record");
 		for (const name of ["notebook_write", "notebook_read", "notebook_index", "notebook_topic_set", "handoff", "spawn"]) {
@@ -126,7 +126,7 @@ describe("pi-schematic real-host E2E", () => {
 		await host.script([
 			{ name: "notebook_write", arguments: { name: "my-page", content: "Hello World" } },
 			{ name: "notebook_read", arguments: { name: "my-page" } },
-		]);
+		], 1);
 		const { entries } = await host.entries();
 		const write = onlyResult(toolResults(entries, "notebook_write"), "notebook_write");
 		const read = onlyResult(toolResults(entries, "notebook_read"), "notebook_read");
@@ -141,11 +141,11 @@ describe("pi-schematic real-host E2E", () => {
 		await host.script([
 			{ name: "notebook_write", arguments: { name: "page-a", content: "Page A" } },
 			{ name: "notebook_index", arguments: {} },
-		]);
+		], 1);
 		await host.script([
 			{ name: "notebook_write", arguments: { name: "page-b", content: "Page B" } },
 			{ name: "notebook_index", arguments: {} },
-		]);
+		], 1);
 		const { entries } = await host.entries();
 		const indexes = toolResults(entries, "notebook_index");
 		assert.equal(indexes.length, 2, "two notebook_index results");
@@ -159,7 +159,7 @@ describe("pi-schematic real-host E2E", () => {
 			{ name: "notebook_write", arguments: { name: "page", content: "v1" } },
 			{ name: "notebook_write", arguments: { name: "page", content: "v2" } },
 			{ name: "notebook_read", arguments: { name: "page" } },
-		]);
+		], 1);
 		const { entries } = await host.entries();
 		const read = onlyResult(toolResults(entries, "notebook_read"), "notebook_read");
 		assert.ok(read.text.includes("v2"), "overwritten content present");
@@ -168,7 +168,7 @@ describe("pi-schematic real-host E2E", () => {
 
 	it("notebook topic lifecycle: set via command, agent-set blocked", TEST_OPTIONS, async (t) => withRealHost(t, async (host) => {
 		await host.command("/notebook my-e2e-topic");
-		await host.script([{ name: "notebook_topic_set", arguments: { topic: "agent-topic" } }]);
+		await host.script([{ name: "notebook_topic_set", arguments: { topic: "agent-topic" } }], 1);
 		const { entries } = await host.entries();
 		const result = onlyResult(toolResults(entries, "notebook_topic_set"), "notebook_topic_set");
 		assert.equal(result.isError, true);
@@ -176,7 +176,7 @@ describe("pi-schematic real-host E2E", () => {
 	}));
 
 	it("agent-set topic works when unset", TEST_OPTIONS, async (t) => withRealHost(t, async (host) => {
-		await host.script([{ name: "notebook_topic_set", arguments: { topic: "fresh-agent-topic" } }]);
+		await host.script([{ name: "notebook_topic_set", arguments: { topic: "fresh-agent-topic" } }], 1);
 		const { entries } = await host.entries();
 		const result = onlyResult(toolResults(entries, "notebook_topic_set"), "notebook_topic_set");
 		assert.ok(result.text.startsWith("Active notebook topic:"), result.text);
@@ -184,7 +184,8 @@ describe("pi-schematic real-host E2E", () => {
 	}));
 
 	it("handoff tool rejects a missing instruction", TEST_OPTIONS, async (t) => withRealHost(t, async (host) => {
-		await handoff(host, { context: "situational only" });
+		// The rejection's failure report queues into the same run.
+		await handoff(host, { context: "situational only" }, 1);
 		const { entries } = await host.entries();
 		const result = onlyResult(toolResults(entries, "handoff"), "handoff");
 		assert.equal(result.isError, true);
@@ -193,8 +194,9 @@ describe("pi-schematic real-host E2E", () => {
 
 	it("handoff queues the successor instruction and re-announces readonly in its turn", TEST_OPTIONS, async (t) => withRealHost(t, async (host) => {
 		await host.command("/readonly");
-		await host.say("start");
-		await handoffCommand(host, "continue readonly work", { context: "mid-task state" });
+		await host.say("start", 1);
+		// The handoff run, then the successor's run.
+		await handoffCommand(host, "continue readonly work", { context: "mid-task state" }, 2);
 
 		const { entries } = await host.entries();
 		const result = onlyResult(toolResults(entries, "handoff"), "handoff");
@@ -218,12 +220,12 @@ describe("pi-schematic real-host E2E", () => {
 
 	it("persisted successor is not re-delivered by settle or tree navigation", TEST_OPTIONS, async (t) => withRealHost(t, async (host) => {
 		const payload = { nextInstruction: "do the resumed work", context: "remaining state" };
-		await handoff(host, payload);
+		await handoff(host, payload, 2);
 		const before = await host.entries();
 		const [successor] = userEntriesWithText(before.entries, buildNextUserMessage(payload));
 		assert.ok(successor, "successor delivered");
-		await host.navigate(firstAssistantAfter(before.entries, successor.id).id);
-		await host.turn("/" + PROBE_COMMAND.turn);
+		await host.navigate(firstAssistantAfter(before.entries, successor.id).id, 0);
+		await host.turn("/" + PROBE_COMMAND.turn, 1);
 
 		const sends = host.successorSends();
 		assert.equal(sends.length, 1, "a persisted successor must be delivered exactly once");
@@ -234,12 +236,12 @@ describe("pi-schematic real-host E2E", () => {
 
 	it("editing a persisted successor never re-delivers its original instruction", TEST_OPTIONS, async (t) => withRealHost(t, async (host) => {
 		const payload = { nextInstruction: "do the resumed work", context: "remaining state" };
-		await handoff(host, payload);
+		await handoff(host, payload, 2);
 		const before = await host.entries();
 		const compaction = onlyHandoffCompaction(before.entries);
 		const [successor] = userEntriesWithText(before.entries, buildNextUserMessage(payload));
 		assert.ok(successor, "successor delivered");
-		await host.navigate(successor.id);
+		await host.navigate(successor.id, 0);
 
 		const { entries, leafId } = await host.entries();
 		assert.equal(leafId, compaction.id, "editing the successor moves the leaf to the compaction");
@@ -251,8 +253,10 @@ describe("pi-schematic real-host E2E", () => {
 		const payload = { nextInstruction: "do the resumed work", context: "remaining state" };
 		const successorText = buildNextUserMessage(payload);
 		await host.command("/" + PROBE_COMMAND.dropNextSuccessor);
-		await handoff(host, payload);
-		await host.turn("/" + PROBE_COMMAND.turn);
+		// The dropped successor starts no run.
+		await handoff(host, payload, 1);
+		// The tick's run, then the run of the successor recovery resends once it settles.
+		await host.turn("/" + PROBE_COMMAND.turn, 2);
 
 		const sends = host.successorSends();
 		assert.equal(sends.length, 2, "recovery must resend the absent successor");
@@ -260,14 +264,14 @@ describe("pi-schematic real-host E2E", () => {
 		assert.equal(sends[1].dropped, false);
 		assert.equal(userEntriesWithText((await host.entries()).entries, successorText).length, 1, "one successor user entry");
 
-		await host.turn("/" + PROBE_COMMAND.turn);
+		await host.turn("/" + PROBE_COMMAND.turn, 1);
 		assert.equal(host.successorSends().length, 2, "a delivered successor must not be re-sent");
 	}));
 
 	it("recovery never appends a lost handoff after newer user work", TEST_OPTIONS, async (t) => withRealHost(t, async (host) => {
 		await host.command("/" + PROBE_COMMAND.dropNextSuccessor);
-		await handoff(host, { nextInstruction: "old handoff work" });
-		await host.say("newer user work");
+		await handoff(host, { nextInstruction: "old handoff work" }, 1);
+		await host.say("newer user work", 1);
 
 		const sends = host.successorSends();
 		assert.equal(sends.length, 1, "recovery must not enqueue superseded work");
@@ -278,12 +282,12 @@ describe("pi-schematic real-host E2E", () => {
 
 	it("tree navigation never appends a lost handoff after newer user work", TEST_OPTIONS, async (t) => withRealHost(t, async (host) => {
 		await host.command("/" + PROBE_COMMAND.dropNextSuccessor);
-		await handoff(host, { nextInstruction: "old handoff work" });
-		await host.say("newer user work");
+		await handoff(host, { nextInstruction: "old handoff work" }, 1);
+		await host.say("newer user work", 1);
 		const before = await host.entries();
 		const newer = userEntriesWithText(before.entries, "newer user work");
 		assert.equal(newer.length, 1, "one newer user entry");
-		await host.navigate(firstAssistantAfter(before.entries, newer[0].id).id);
+		await host.navigate(firstAssistantAfter(before.entries, newer[0].id).id, 0);
 
 		const sends = host.successorSends();
 		assert.equal(sends.length, 1, "tree recovery must not enqueue superseded work");
@@ -294,7 +298,8 @@ describe("pi-schematic real-host E2E", () => {
 
 	it("failed handoff compaction preserves retryability", TEST_OPTIONS, async (t) => withRealHost(t, async (host) => {
 		await host.command("/" + PROBE_COMMAND.cancelNextCompaction);
-		await handoffCommand(host, "retry after failure", { nextInstruction: "retry after failure" });
+		// The handoff run, then the run of the failure report sent after the cancelled compaction.
+		await handoffCommand(host, "retry after failure", { nextInstruction: "retry after failure" }, 2);
 
 		const failed = await host.entries();
 		assert.equal(handoffCompactions(failed.entries).length, 0, "no handoff compaction after the failed call");
@@ -303,7 +308,7 @@ describe("pi-schematic real-host E2E", () => {
 		const handoffStatuses = host.statuses.filter((status) => status.statusKey === STATUS_KEY_HANDOFF);
 		assert.equal(handoffStatuses.at(-1)?.statusText, HANDOFF_REQUIRED_STATUS, "the handoff stays required");
 
-		await handoff(host, { nextInstruction: "retry after failure" });
+		await handoff(host, { nextInstruction: "retry after failure" }, 2);
 		const retried = await host.entries();
 		const results = toolResults(retried.entries, "handoff");
 		assert.equal(results.length, 2, "two handoff results");
@@ -314,12 +319,12 @@ describe("pi-schematic real-host E2E", () => {
 	it("readonly lifecycle: handoff bypass clears after compaction while readonly persists", TEST_OPTIONS, async (t) => withRealHost(t, async (host) => {
 		const blocked = join(host.projectDir, "blocked.txt");
 		await host.command("/readonly");
-		await host.say("start");
-		await handoffCommand(host, "continue readonly work", { nextInstruction: "continue readonly work" });
+		await host.say("start", 1);
+		await handoffCommand(host, "continue readonly work", { nextInstruction: "continue readonly work" }, 2);
 		await host.script([
 			{ name: "handoff", arguments: { nextInstruction: "direct call" } },
 			{ name: "write", arguments: { path: blocked, content: "x" } },
-		]);
+		], 1);
 
 		const { entries } = await host.entries();
 		const handoffResults = toolResults(entries, "handoff");
@@ -341,13 +346,13 @@ describe("pi-schematic real-host E2E", () => {
 	it("readonly topic boundary enables the handoff bypass on the next context hook", TEST_OPTIONS, async (t) => withRealHost(t, async (host) => {
 		const boundaryCall = handoffCall({ nextInstruction: "continue billing work" });
 		await host.command("/readonly");
-		await host.say("start");
+		await host.say("start", 1);
 		await host.command("/notebook oauth");
 		await host.command("/notebook billing");
-		await host.script(boundaryCall);
+		await host.script(boundaryCall, 2);
 		// Status reads stop here, so events of the later direct-call run cannot satisfy them.
 		const throughHandoff = host.events.slice();
-		await host.script(handoffCall({ nextInstruction: "direct call" }));
+		await host.script(handoffCall({ nextInstruction: "direct call" }), 1);
 
 		const log = host.probeLog();
 		assert.ok(containsText(scriptedRequest(log, boundaryCall, 0), READONLY_HANDOFF_EXCEPTION_SUMMARY), "boundary bypass announced before the handoff call");

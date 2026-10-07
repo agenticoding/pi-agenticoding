@@ -3,25 +3,30 @@
  * real-host E2E harness (`real-host.ts`).
  *
  * Registers a scripted provider whose responses the test arms through
- * `/e2e-script`, plus commands that drain runs, navigate the tree, start runs
- * without a user turn, and inject delivery and compaction failures. Every
+ * `/e2e-script`, plus commands that wait for outstanding work, navigate the tree,
+ * start runs without a user turn, and inject delivery and compaction failures. Every
  * observation is appended as one JSON line to the file `PROBE_LOG_ENV_VAR` names.
+ *
+ * The harness loads this file after schematic, so its "input" handler runs last and
+ * its "continue" means pi accepted the input.
  *
  * Runs inside the pi process: never write to stdout or stderr here.
  */
 
 import { appendFileSync } from "node:fs";
 import { createAssistantMessageEventStream, type AssistantMessage, type ToolCall } from "@earendil-works/pi-ai";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { MIN_HANDOFF_TOKENS } from "../../handoff/eligibility.js";
 import {
 	NEXT_INSTRUCTION_PREFIX,
 	PROBE_API,
+	PROBE_BARRIER_STATUS_KEY,
 	PROBE_COMMAND,
 	PROBE_LOG_ENV_VAR,
 	PROBE_MODEL_ID,
 	PROBE_PROVIDER,
+	type BarrierReport,
 	type ProbeRecord,
 	type ScriptedCall,
 } from "./real-host-protocol.js";
@@ -56,6 +61,20 @@ function parseScript(args: string): ScriptedCall[] {
 	});
 }
 
+/** One positive integer argument of `/e2e-barrier`. */
+function parseBarrierArgument(value: string | undefined, name: string, args: string): number {
+	const parsed = Number(value);
+	if (value === undefined || !Number.isInteger(parsed) || parsed <= 0) {
+		throw new Error(`/e2e-barrier expects "<id> <deadlineMs>" as positive integers; ${name} is invalid in: ${args}`);
+	}
+	return parsed;
+}
+
+/** Text of a message's content: block arrays reduced to their text blocks joined by newlines, strings as is. */
+function messageText(content: unknown): string {
+	return contextTexts([{ content }]).join("\n");
+}
+
 /** Text of every context message: block arrays reduced to their text blocks, strings as is. */
 function contextTexts(messages: ReadonlyArray<{ content?: unknown }>): string[] {
 	return messages.flatMap((message) => {
@@ -80,6 +99,59 @@ export default function realHostProbe(pi: ExtensionAPI): void {
 	let runEntryCount = 0;
 	let dropNextSuccessor = false;
 	let cancelNextCompaction = false;
+
+	// Outstanding work, kept from public extension events only; /e2e-barrier waits until
+	// none is left. A successful handoff tool call awaits its compaction's outcome; a handoff
+	// compaction awaits its successor input and a failed one its failure-report input
+	// (schematic sends one either way); an accepted extension input awaits the user message
+	// that delivers it, in a new run or queued into the running one; a run awaits agent_settled.
+	const handoffCallsAwaitingCompaction: string[] = [];
+	const compactionsAwaitingSuccessor: string[] = [];
+	let failedCompactionsAwaitingReport = 0;
+	const inputsAwaitingDelivery: string[] = [];
+	let runsAwaitingSettle = 0;
+	const accountingErrors: string[] = [];
+	let wakeBarriers: Array<() => void> = [];
+	const wake = () => {
+		const waiting = wakeBarriers;
+		wakeBarriers = [];
+		for (const resolve of waiting) resolve();
+	};
+
+	const outstanding = (ctx: ExtensionCommandContext): string[] => [
+		...handoffCallsAwaitingCompaction.map((id) => `handoff call ${id} has no compaction outcome`),
+		...compactionsAwaitingSuccessor.map((id) => `handoff compaction ${id} has no successor input`),
+		...(failedCompactionsAwaitingReport > 0 ? [`${failedCompactionsAwaitingReport} failed handoff compaction(s) have no failure-report input`] : []),
+		...inputsAwaitingDelivery.map((text) => `extension input ${JSON.stringify(text.slice(0, 80))} has no user message`),
+		...(runsAwaitingSettle > 0 ? [`${runsAwaitingSettle} run(s) have no agent_settled`] : []),
+		...(ctx.isIdle() ? [] : ["pi is not idle"]),
+		...(ctx.hasPendingMessages() ? ["pi has pending messages"] : []),
+	];
+
+	// Returns once nothing is outstanding and pi is idle with no pending message. Wakes on
+	// waitForIdle (which also covers actions pi defers to after agent_settled) and on the
+	// accounted events; the deadline fails with every outstanding item.
+	const awaitQuiet = async (ctx: ExtensionCommandContext, deadlineMs: number): Promise<void> => {
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const deadline = new Promise<"deadline">((resolve) => {
+			timer = setTimeout(() => resolve("deadline"), deadlineMs);
+		});
+		const fail = (reason: string) => new Error(`/e2e-barrier ${reason}; outstanding: ${outstanding(ctx).join("; ") || "nothing"}`);
+		try {
+			for (;;) {
+				// Subscribed before the checks, so an event between them is not missed.
+				const changed = new Promise<"changed">((resolve) => wakeBarriers.push(() => resolve("changed")));
+				const idle = ctx.waitForIdle().then(() => "idle" as const);
+				if (await Promise.race([idle, deadline]) === "deadline") throw fail(`timed out after ${deadlineMs} ms waiting for idle`);
+				if (accountingErrors.length > 0) throw fail(`cannot account for: ${accountingErrors.join("; ")}`);
+				if (outstanding(ctx).length === 0) return;
+				if (!ctx.isIdle()) continue;
+				if (await Promise.race([changed, deadline]) === "deadline") throw fail(`timed out after ${deadlineMs} ms`);
+			}
+		} finally {
+			clearTimeout(timer);
+		}
+	};
 
 	pi.registerProvider(PROBE_PROVIDER, {
 		api: PROBE_API, apiKey: "test-key", baseUrl: "http://localhost.invalid",
@@ -125,13 +197,44 @@ export default function realHostProbe(pi: ExtensionAPI): void {
 		armedScript = null;
 		step = 0;
 		runEntryCount = ctx.sessionManager.getEntries().length;
+		runsAwaitingSettle++;
+		wake();
+	});
+
+	pi.on("agent_settled", async () => {
+		if (runsAwaitingSettle === 0) accountingErrors.push("agent_settled without an agent_start");
+		else runsAwaitingSettle--;
+		wake();
+	});
+
+	pi.on("message_start", async (event) => {
+		if (event.message.role !== "user") return;
+		const index = inputsAwaitingDelivery.indexOf(messageText(event.message.content));
+		if (index === -1) return;
+		inputsAwaitingDelivery.splice(index, 1);
+		wake();
+	});
+
+	pi.on("tool_execution_end", async (event) => {
+		// A handoff call that returned without error has called ctx.compact.
+		if (event.toolName !== "handoff" || event.isError) return;
+		handoffCallsAwaitingCompaction.push(event.toolCallId);
+		wake();
 	});
 
 	pi.on("input", async (event) => {
-		if (event.source !== "extension" || !event.text.startsWith(NEXT_INSTRUCTION_PREFIX)) return { action: "continue" };
-		const dropped = dropNextSuccessor;
-		dropNextSuccessor = false;
-		log({ kind: "successor-send", text: event.text, dropped });
+		if (event.source !== "extension") return { action: "continue" };
+		const successor = event.text.startsWith(NEXT_INSTRUCTION_PREFIX);
+		const dropped = successor && dropNextSuccessor;
+		if (successor) {
+			dropNextSuccessor = false;
+			log({ kind: "successor-send", text: event.text, dropped });
+			compactionsAwaitingSuccessor.shift();
+		} else if (failedCompactionsAwaitingReport > 0) {
+			failedCompactionsAwaitingReport--;
+		}
+		if (!dropped) inputsAwaitingDelivery.push(event.text);
+		wake();
 		return dropped ? { action: "handled" } : { action: "continue" };
 	});
 
@@ -142,7 +245,18 @@ export default function realHostProbe(pi: ExtensionAPI): void {
 	});
 
 	pi.on("session_compact", async (event) => {
-		log({ kind: "compact", entryId: event.compactionEntry.id });
+		const entryId = event.compactionEntry.id;
+		log({ kind: "compact", entryId });
+		if ((event.compactionEntry.details as { handoff?: unknown } | undefined)?.handoff === true) {
+			if (handoffCallsAwaitingCompaction.shift() === undefined) accountingErrors.push(`handoff compaction ${entryId} without a handoff call`);
+			compactionsAwaitingSuccessor.push(entryId);
+		}
+		wake();
+	});
+
+	pi.on("session_compact_failed", async () => {
+		if (handoffCallsAwaitingCompaction.shift() !== undefined) failedCompactionsAwaitingReport++;
+		wake();
 	});
 
 	pi.registerCommand(PROBE_COMMAND.script, {
@@ -154,20 +268,27 @@ export default function realHostProbe(pi: ExtensionAPI): void {
 	});
 
 	pi.registerCommand(PROBE_COMMAND.barrier, {
-		description: "Return once every run, deferred settled action and queued message has drained",
-		handler: async (_args, ctx) => {
-			// Assumes a compaction's successor send starts its run within one macrotask. From
-			// onComplete's sendUserMessage to `_isAgentRunActive = true`, nothing pi awaits does I/O
-			// (auto-compaction is disabled, the successor has no images, the provider has an apiKey),
-			// and neither do the extension handlers on that path: schematic's "input" returns at once
-			// for source "extension", its "before_agent_start" has no await, and this file's "input"
-			// has none. So the setImmediate tick below runs after the run started. Real async I/O in
-			// those handlers would let this return before the successor run starts.
-			for (;;) {
-				await ctx.waitForIdle();
-				await new Promise<void>((resolve) => setImmediate(resolve));
-				if (ctx.isIdle() && !ctx.hasPendingMessages()) return;
-			}
+		description: "Report under PROBE_BARRIER_STATUS_KEY once no accounted work is outstanding",
+		handler: async (args, ctx) => {
+			// Returns at once and reports through a status, so the wait is bounded by the
+			// deadline the harness passes, not by RpcClient's fixed request timeout.
+			// Still assumed: a send that a command, session_tree or agent_settled handler starts
+			// (the /handoff request, handoff recovery) shows up first as its "input" event; no
+			// public event announces it earlier. The barrier counts it because that event fires
+			// before the barrier command can be processed: schematic's /handoff, session_tree and
+			// agent_settled handlers and every "input" handler ahead of this file's await no I/O.
+			// A handler that did could let the barrier report quiet early; the harness's per-step
+			// run counts and teardown check then fail. Closing this needs a pi API upstream
+			// declined (#9632, #10451, #9969).
+			const [idText, deadlineText, ...rest] = args.trim().split(/\s+/);
+			if (rest.length > 0) throw new Error(`/e2e-barrier expects "<id> <deadlineMs>", got: ${args}`);
+			const id = parseBarrierArgument(idText, "id", args);
+			const deadlineMs = parseBarrierArgument(deadlineText, "deadlineMs", args);
+			const report = (outcome: BarrierReport) => ctx.ui.setStatus(PROBE_BARRIER_STATUS_KEY, JSON.stringify(outcome));
+			void awaitQuiet(ctx, deadlineMs).then(
+				() => report({ id, failure: null }),
+				(error: unknown) => report({ id, failure: error instanceof Error ? error.message : String(error) }),
+			);
 		},
 	});
 

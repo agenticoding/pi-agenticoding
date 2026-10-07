@@ -3,9 +3,11 @@
  * mode, driven through `RpcClient`, with the scripted probe provider from
  * `real-host-probe.ts`.
  *
- * Every helper that starts a run or navigates the tree returns only once the
- * session is idle with no message pending (see `/e2e-barrier`), so tests never
- * issue a non-command prompt while a run or compaction is active.
+ * Every helper that starts a run or navigates the tree is a step: it returns only
+ * once `/e2e-barrier` reports no outstanding work, so tests never issue a
+ * non-command prompt while a run or compaction is active, and it fails unless the
+ * step started exactly the runs its caller expected. `close()` fails on any run
+ * that started outside every step.
  */
 
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -15,11 +17,14 @@ import { fileURLToPath } from "node:url";
 import type { TestContext } from "node:test";
 import { RpcClient, SessionManager, type RpcClientOptions, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import {
+	parseBarrierReport,
 	parseProbeRecord,
+	PROBE_BARRIER_STATUS_KEY,
 	PROBE_COMMAND,
 	PROBE_LOG_ENV_VAR,
 	PROBE_MODEL_ID,
 	PROBE_PROVIDER,
+	type BarrierReport,
 	type ProbeRecord,
 	type ScriptedCall,
 } from "./real-host-protocol.js";
@@ -30,6 +35,22 @@ const PROBE_ENTRY = resolve(HERE, "real-host-probe.ts");
 const CLI_PATH = join(dirname(fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent"))), "cli.js");
 const REQUIRED_COMMANDS = ["handoff", "notebook", "readonly", PROBE_COMMAND.barrier];
 
+/** Barrier waits one host may make, its `close()` included; a test that needs more fails. */
+const REAL_HOST_MAX_BARRIERS_PER_TEST = 4;
+/** How much longer than the probe's own deadline the harness waits for a barrier report. */
+const BARRIER_REPORT_MARGIN_MS = 5_000;
+/** Largest `timeout` node:test accepts; a larger one throws ERR_OUT_OF_RANGE when the test registers. */
+const NODE_TEST_MAX_TIMEOUT_MS = 2_147_483_647;
+
+/**
+ * `node:test` timeout for a real-host test whose barriers each wait `waitMs`: every barrier
+ * a test may make running to its harness deadline, plus a minute for start, commands and
+ * close, so a slow test fails with the harness's message, not node:test's.
+ */
+function testTimeoutFor(waitMs: number): number {
+	return REAL_HOST_MAX_BARRIERS_PER_TEST * (waitMs + BARRIER_REPORT_MARGIN_MS) + 60_000;
+}
+
 function readTimeout(): number {
 	const raw = process.env.E2E_REAL_HOST_TIMEOUT_MS;
 	if (raw === undefined) return 20_000;
@@ -37,16 +58,20 @@ function readTimeout(): number {
 	if (!Number.isInteger(value) || value <= 0) {
 		throw new Error(`E2E_REAL_HOST_TIMEOUT_MS must be a positive integer, got: ${raw}`);
 	}
+	if (testTimeoutFor(value) > NODE_TEST_MAX_TIMEOUT_MS) {
+		const max = Math.floor((NODE_TEST_MAX_TIMEOUT_MS - 60_000) / REAL_HOST_MAX_BARRIERS_PER_TEST) - BARRIER_REPORT_MARGIN_MS;
+		throw new Error(
+			`E2E_REAL_HOST_TIMEOUT_MS=${raw} makes the per-test timeout ${testTimeoutFor(value)} ms, ` +
+			`above node:test's limit of ${NODE_TEST_MAX_TIMEOUT_MS} ms; use at most ${max}`,
+		);
+	}
 	return value;
 }
 
+/** How long one barrier waits for outstanding work before it fails. */
 export const REAL_HOST_TIMEOUT_MS = readTimeout();
 
-/**
- * `node:test` timeout for a real-host test: the harness's own wait plus a minute of
- * headroom, never below the default, so a slow run fails with the harness's message.
- */
-export const REAL_HOST_TEST_TIMEOUT_MS = Math.max(90_000, REAL_HOST_TIMEOUT_MS + 60_000);
+export const REAL_HOST_TEST_TIMEOUT_MS = testTimeoutFor(REAL_HOST_TIMEOUT_MS);
 
 /** Same expressions as tests/unit/helpers.ts; this harness imports nothing from tests/unit/. */
 export function stripAnsi(text: string): string {
@@ -73,6 +98,10 @@ function requireString(event: RpcEvent, field: string): string {
 	const value = event[field];
 	if (typeof value !== "string") throw new Error(`${event.type} field ${field} is not a string: ${JSON.stringify(event)}`);
 	return value;
+}
+
+function countRuns(events: RpcEvent[]): number {
+	return events.filter((event) => event.type === "agent_start").length;
 }
 
 function describeError(error: unknown): string {
@@ -142,6 +171,10 @@ export class RealHost {
 	private readonly logPath: string;
 	private options: RpcClientOptions;
 	private closing: Promise<void> | null = null;
+	private barriers = 0;
+	/** Runs counted inside step windows, and runs of clients replaced by restart(). */
+	private stepRuns = 0;
+	private runsBeforeRestart = 0;
 
 	private constructor(root: string, logPath: string, options: RpcClientOptions, client: RpcClient, events: RpcEvent[]) {
 		this.root = root;
@@ -229,32 +262,34 @@ export class RealHost {
 		this.assertNoExtensionErrors(mark, text, `command:${name}`);
 	}
 
-	/** Submit a user prompt on an idle session and wait until its run and everything it left behind drained. */
-	async say(text: string): Promise<void> {
+	/** Submit a user prompt on an idle session; a step that starts `runs` runs, its own included. */
+	async say(text: string, runs: number): Promise<void> {
 		const mark = this.events.length;
 		const disposition = await this.client.prompt(text);
 		if (disposition !== "started") throw new Error(`"${text}" reported "${disposition}", expected "started"`);
-		await this.runWait(mark, `"${text}"`);
+		await this.step(mark, `"${text}"`, runs);
 	}
 
-	/** Run a command whose handler starts a run on an idle session, then wait for that run to drain. */
-	async turn(text: string): Promise<void> {
+	/** Run a command whose handler starts a run on an idle session; a step that starts `runs` runs. */
+	async turn(text: string, runs: number): Promise<void> {
 		const mark = this.events.length;
 		await this.command(text);
-		await this.runWait(mark, text);
+		await this.step(mark, text, runs);
 	}
 
 	async arm(calls: ScriptedCall[]): Promise<void> {
 		await this.command("/" + PROBE_COMMAND.script + " " + JSON.stringify(calls));
 	}
 
-	async script(calls: ScriptedCall[]): Promise<void> {
+	/** Arm `calls` and say "go"; a step that starts `runs` runs. */
+	async script(calls: ScriptedCall[], runs: number): Promise<void> {
 		await this.arm(calls);
-		await this.say("go");
+		await this.say("go", runs);
 	}
 
-	async settle(): Promise<void> {
-		await this.command("/" + PROBE_COMMAND.barrier);
+	/** Wait for outstanding work; a step that starts `runs` runs. */
+	async settle(runs: number): Promise<void> {
+		await this.step(this.events.length, "settle", runs);
 	}
 
 	async entries(): Promise<{ entries: SessionEntry[]; leafId: string | null }> {
@@ -272,9 +307,11 @@ export class RealHost {
 		return this.probeLog().filter((record): record is Extract<ProbeRecord, { kind: "successor-send" }> => record.kind === "successor-send");
 	}
 
-	async navigate(entryId: string): Promise<void> {
+	/** Navigate the tree to `entryId`; a step that starts `runs` runs. */
+	async navigate(entryId: string, runs: number): Promise<void> {
+		const mark = this.events.length;
 		await this.command("/" + PROBE_COMMAND.tree + " " + entryId);
-		await this.settle();
+		await this.step(mark, `navigate to ${entryId}`, runs);
 	}
 
 	/** Stop the CLI and start a new one on the same session file, temp root and probe log. */
@@ -298,14 +335,27 @@ export class RealHost {
 			await withCleanup(() => client.stop(), () => removeRoot(this.root));
 			throw new Error("restart() finished after close(); the new CLI was stopped");
 		}
+		this.runsBeforeRestart += countRuns(this.events);
 		this.client = client;
 		this.events = events;
 	}
 
-	/** Stop the CLI and remove the temp root. Runs once: every call returns the first call's outcome. */
+	/**
+	 * Wait for outstanding work and fail on any run no step expected, then stop the CLI and
+	 * remove the temp root. Runs once: every call returns the first call's outcome.
+	 */
 	close(): Promise<void> {
-		this.closing ??= withCleanup(() => this.client.stop(), () => removeRoot(this.root));
+		this.closing ??= withCleanup(
+			() => withCleanup(() => this.assertNoUnexpectedRuns(), () => this.client.stop()),
+			() => removeRoot(this.root),
+		);
 		return this.closing;
+	}
+
+	private async assertNoUnexpectedRuns(): Promise<void> {
+		await this.barrier();
+		const unexpected = this.runsBeforeRestart + countRuns(this.events) - this.stepRuns;
+		if (unexpected !== 0) throw new Error(`${unexpected} run(s) started outside every step; no step expected them`);
 	}
 
 	/**
@@ -324,26 +374,62 @@ export class RealHost {
 		);
 	}
 
-	/** Wait for an agent_settled event at or after `mark`, drain with settle(), then require no extension_error since `mark`. */
-	private async runWait(mark: number, action: string): Promise<void> {
+	/**
+	 * End a step that began at event index `mark`: wait for the barrier, require no
+	 * extension_error since `mark`, then require exactly `runs` agent_start events since `mark`.
+	 */
+	private async step(mark: number, action: string, runs: number): Promise<void> {
+		await this.barrier();
+		this.assertNoExtensionErrors(mark, action);
+		const started = countRuns(this.events.slice(mark));
+		this.stepRuns += started;
+		if (started !== runs) throw new Error(`${action} started ${started} run(s), expected ${runs}`);
+	}
+
+	/** Run `/e2e-barrier` and wait for its report; throws with the probe's outstanding items when it failed. */
+	private async barrier(): Promise<void> {
+		const id = ++this.barriers;
+		if (id > REAL_HOST_MAX_BARRIERS_PER_TEST) {
+			throw new Error(
+				`Barrier ${id} exceeds REAL_HOST_MAX_BARRIERS_PER_TEST (${REAL_HOST_MAX_BARRIERS_PER_TEST}), ` +
+				"which sizes REAL_HOST_TEST_TIMEOUT_MS; raise it for this test",
+			);
+		}
+		const client = this.client;
 		const events = this.events;
-		const settled = () => events.slice(mark).some((event) => event.type === "agent_settled");
-		if (!settled()) {
-			await new Promise<void>((resolveWait, rejectWait) => {
-				const timer = setTimeout(() => {
-					unsubscribe();
-					rejectWait(new Error(`Timed out after ${REAL_HOST_TIMEOUT_MS} ms waiting for agent_settled. Stderr: ${this.client.getStderr()}`));
-				}, REAL_HOST_TIMEOUT_MS);
-				const unsubscribe = this.client.onEvent(() => {
-					if (!settled()) return;
+		const mark = events.length;
+		const findReport = (): BarrierReport | undefined => {
+			for (const event of events.slice(mark)) {
+				if (event.type !== "extension_ui_request" || event.method !== "setStatus" || event.statusKey !== PROBE_BARRIER_STATUS_KEY) continue;
+				const report = parseBarrierReport(requireString(event, "statusText"));
+				if (report.id === id) return report;
+			}
+			return undefined;
+		};
+		await this.command(`/${PROBE_COMMAND.barrier} ${id} ${REAL_HOST_TIMEOUT_MS}`);
+		const waitMs = REAL_HOST_TIMEOUT_MS + BARRIER_REPORT_MARGIN_MS;
+		const report = findReport() ?? await new Promise<BarrierReport>((resolveWait, rejectWait) => {
+			const timer = setTimeout(() => {
+				unsubscribe();
+				rejectWait(new Error(`Timed out after ${waitMs} ms waiting for barrier ${id} to report. Stderr: ${client.getStderr()}`));
+			}, waitMs);
+			const unsubscribe = client.onEvent(() => {
+				let found: BarrierReport | undefined;
+				try {
+					found = findReport();
+				} catch (error) {
 					clearTimeout(timer);
 					unsubscribe();
-					resolveWait();
-				});
+					rejectWait(error);
+					return;
+				}
+				if (!found) return;
+				clearTimeout(timer);
+				unsubscribe();
+				resolveWait(found);
 			});
-		}
-		await this.settle();
-		this.assertNoExtensionErrors(mark, action);
+		});
+		if (report.failure !== null) throw new Error(`Barrier ${id} failed: ${report.failure}`);
 	}
 }
 
