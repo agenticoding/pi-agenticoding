@@ -111,6 +111,14 @@ test("blocks PowerShell and cmd launched through bash unconditionally", async ()
 	await assertBlocked(toolCall, "cmd /c del x");
 	await assertBlocked(toolCall, "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -Command Get-ChildItem");
 	await assertBlocked(toolCall, "PWSH -c x");
+	await assertBlocked(toolCall, "pwsh.exe -c x");
+	await assertBlocked(toolCall, "powershell -Command x");
+	await assertBlocked(toolCall, "/usr/bin/pwsh -c x");
+	await assertBlocked(toolCall, "env pwsh -c x");
+	await assertBlocked(toolCall, "exec pwsh -c x");
+	await assertBlocked(toolCall, "command pwsh -c x");
+	await assertBlocked(toolCall, "FOO=1 pwsh -c x");
+	await assertBlocked(toolCall, "echo x | pwsh -c -");
 });
 
 test("blocks PowerShell nested in bash -c or chained after a read", async () => {
