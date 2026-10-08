@@ -29,7 +29,7 @@ import { ensureNotebookToolsActive, registerNotebookRehydration, reconstructNote
 import { registerNotebookTopicTool } from "./notebook/topic-tool.js";
 import { setActiveNotebookTopic } from "./notebook/topic.js";
 import { formatPageTuiPreview } from "./notebook/store.js";
-import { openInPager, pagerRuntime } from "./notebook/pager.js";
+import { openInPager, pagerRuntime, type ResolvedPager } from "./notebook/pager.js";
 import { registerHandoffTool } from "./handoff/tool.js";
 import {
 	canPromoteBoundary,
@@ -673,11 +673,14 @@ export default function (pi: ExtensionAPI): void {
 			// Resolve once per /notebook so onSelect doesn't run `command -v less` on every Enter.
 			const pager = pagerRuntime.resolvePager();
 			while (true) {
-				// Captured for openInPager, which runs after done() closes the list.
-				// custom() gets Pi's long-lived TUI reference, so it stays valid past done().
-				let capturedTui: TUI | undefined;
-				const result = await ctx.ui.custom<{ action: "view"; name: string } | undefined>((tui, theme, _kb, done) => {
-					capturedTui = tui;
+				// Pi has no extension API to suspend the TUI, so the "pager" result carries
+				// custom()'s handle for openInPager, which runs after done() closes the list.
+				// It is Pi's long-lived TUI reference, so it stays valid past done().
+				const result = await ctx.ui.custom<
+					| { action: "pager"; name: string; body: string; tui: TUI; pager: ResolvedPager }
+					| { action: "reopen"; name: string }
+					| undefined
+				>((tui, theme, _kb, done) => {
 					const container = new Container();
 
 					container.addChild(
@@ -716,12 +719,17 @@ export default function (pi: ExtensionAPI): void {
 						}
 						selectList.onSelect = ({ value }) => {
 							const body = state.notebookPages.get(value);
-							if (body === undefined) { done(undefined); return; }
+							// A handoff discard can commit while the list is open (its compaction finishes in the background).
+							if (body === undefined) {
+								finished = true;
+								done({ action: "reopen", name: value });
+								return;
+							}
 							// Prefer a real pager when available; else fall back to a
 							// truncated inline preview.
 							if (pager) {
 								finished = true;
-								done({ action: "view", name: value });
+								done({ action: "pager", name: value, body, tui, pager });
 								return;
 							}
 							container.clear();
@@ -761,7 +769,7 @@ export default function (pi: ExtensionAPI): void {
 							if (!selectList) {
 								// Any key leaves the inline preview (back to the list) or the empty notebook.
 								finished = true;
-								done(previewName === undefined ? undefined : { action: "view", name: previewName });
+								done(previewName === undefined ? undefined : { action: "reopen", name: previewName });
 								return;
 							}
 							selectList.handleInput?.(data);
@@ -772,13 +780,10 @@ export default function (pi: ExtensionAPI): void {
 						},
 					};
 				});
-				if (result?.action !== "view") return;
+				if (!result) return;
 				lastSelectedName = result.name;
-
-				// Without a pager the page was already previewed inline; just reopen the list.
-				if (pager && capturedTui) {
-					const body = state.notebookPages.get(result.name) ?? "";
-					const err = await openInPager(capturedTui, body, pager);
+				if (result.action === "pager") {
+					const err = await openInPager(result.tui, result.body, result.pager);
 					if (err) ctx.ui.notify(`pager failed: ${err.message}`, "warning");
 				}
 			}

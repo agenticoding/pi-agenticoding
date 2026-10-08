@@ -719,10 +719,11 @@ test("resolvePager leaves other pagers and wrappers unchanged", () => {
 	}
 });
 
-test("spawnPager rejects with a readable error when the pager binary is missing", async () => {
-	// Windows' shell: true reports a missing binary only as a cmd.exe exit
-	// code, which spawnPager ignores (like Pi's external editor).
-	if (process.platform === "win32") return;
+test("spawnPager rejects with a readable error when the pager binary is missing", async (t) => {
+	if (process.platform === "win32") {
+		t.skip("shell: true reports a missing binary only as a cmd.exe exit code");
+		return;
+	}
 	await assert.rejects(
 		spawnPager("body", { cmd: "pi-schematic-definitely-missing-xyz", args: [] }),
 		/pi-schematic-definitely-missing-xyz not found/,
@@ -775,12 +776,14 @@ test("spawnPager resolves when the pager exits nonzero", async () => {
 
 test("/notebook enter suspends the TUI, awaits the pager, then restores the TUI and reopens the list", async (t) => {
 	const events: string[] = [];
-	let spawnGate: (() => void) | undefined;
+	const spawned = createDeferred();
+	const pagerExit = createDeferred();
 	__setPagerRuntimeForTests({
 		resolvePager: () => ({ cmd: "pager", args: [] }),
 		spawnPager: async (body, pager) => {
 			events.push(`spawn:${pager.cmd}:${body}`);
-			await new Promise<void>((r) => { spawnGate = r; });
+			spawned.resolve();
+			await pagerExit.promise;
 		},
 	});
 	t.after(() => __setPagerRuntimeForTests(null));
@@ -817,12 +820,12 @@ test("/notebook enter suspends the TUI, awaits the pager, then restores the TUI 
 		},
 	}));
 
-	// Let the first custom resolve + spawnPager start before the pager exits.
-	await new Promise<void>((r) => setTimeout(r, 0));
+	// Wait until the pager is running before letting it exit.
+	await spawned.promise;
 	// Ignore any overlay-side renders queued by handleInput before done() resolved.
 	const lifecycle = () => events.filter((e) => e === "stop" || e === "start" || e.startsWith("spawn:") || e === "render:force");
 	assert.deepEqual(lifecycle(), ["stop", "spawn:pager:old body"], "TUI must be stopped before spawn");
-	spawnGate!();
+	pagerExit.resolve();
 	await handlerPromise;
 
 	assert.deepEqual(lifecycle(), ["stop", "spawn:pager:old body", "start", "render:force"]);
@@ -832,6 +835,28 @@ test("/notebook enter suspends the TUI, awaits the pager, then restores the TUI 
 	assert.match(arrowLine!, /zeta/);
 	assert.doesNotMatch(arrowLine!, /alpha/);
 });
+
+/**
+ * ctx.ui.custom stub: runs beforeEnter, then presses Enter on the first open.
+ * Every later open is rendered into `reopens` and closed.
+ */
+function enterOnFirstOpen(beforeEnter: () => void = () => {}) {
+	const reopens: string[] = [];
+	let opened = false;
+	const custom = async (build: any) => {
+		let result: unknown;
+		const overlay = build({ stop: () => {}, start: () => {}, requestRender: () => {} }, theme, {}, (value: unknown) => { result = value; });
+		if (opened) {
+			reopens.push(stripAnsi(overlay.render(120).join("\n")));
+			return undefined;
+		}
+		opened = true;
+		beforeEnter();
+		overlay.handleInput("\r");
+		return result;
+	};
+	return { custom, reopens };
+}
 
 test("/notebook pager interaction installs and removes a SIGINT guard", async (t) => {
 	const baselineSigint = process.listeners("SIGINT").length;
@@ -848,23 +873,7 @@ test("/notebook pager interaction installs and removes a SIGINT guard", async (t
 	const notebookWrite = pi.tools.get("notebook_write");
 	await notebookWrite.execute("1", { name: "alpha", content: "body" }, undefined, undefined, makeTUICtx());
 
-	let customCalls = 0;
-	await pi.commands.get("notebook")!.handler("", makeTUICtx({
-		percent: 20,
-		custom: async (build: any) => {
-			customCalls++;
-			if (customCalls > 1) return undefined;
-			let result: unknown;
-			const overlay = build(
-				{ stop: () => {}, start: () => {}, requestRender: () => {} },
-				theme,
-				{},
-				(value: unknown) => { result = value; },
-			);
-			overlay.handleInput("\r");
-			return result;
-		},
-	}));
+	await pi.commands.get("notebook")!.handler("", makeTUICtx({ percent: 20, custom: enterOnFirstOpen().custom }));
 
 	assert.equal(duringSpawnListenerCount, baselineSigint + 1, "SIGINT guard must be installed during pager");
 	assert.equal(process.listeners("SIGINT").length, baselineSigint, "SIGINT guard must be removed after pager");
@@ -900,26 +909,39 @@ test("/notebook surfaces pager spawn errors as a warning notification", async (t
 	await notebookWrite.execute("1", { name: "alpha", content: "body" }, undefined, undefined, makeTUICtx());
 
 	const notifications: Array<{ message: string; level: string }> = [];
-	let customCalls = 0;
 	await pi.commands.get("notebook")!.handler("", makeTUICtx({
 		percent: 20,
 		notify: (message: string, level: string) => { notifications.push({ message, level }); },
-		custom: async (build: any) => {
-			customCalls++;
-			if (customCalls > 1) return undefined;
-			let result: unknown;
-			const overlay = build(
-				{ stop: () => {}, start: () => {}, requestRender: () => {} },
-				theme,
-				{},
-				(value: unknown) => { result = value; },
-			);
-			overlay.handleInput("\r");
-			return result;
-		},
+		custom: enterOnFirstOpen().custom,
 	}));
 
 	assert.deepEqual(notifications, [{ message: "pager failed: boom", level: "warning" }]);
+});
+
+test("/notebook reopens the list when the selected page vanished while it was open", async (t) => {
+	let spawned = false;
+	__setPagerRuntimeForTests({
+		resolvePager: () => ({ cmd: "pager", args: [] }),
+		spawnPager: async () => { spawned = true; },
+	});
+	t.after(() => __setPagerRuntimeForTests(null));
+
+	const pi = await createTestHost();
+	await pi.tools.get("notebook_write").execute("1", { name: "alpha", content: "body" }, undefined, undefined, makeTUICtx());
+	let compaction: any;
+	await pi.tools.get("handoff").execute("2", { nextInstruction: "continue", discardPages: ["alpha"] }, undefined, undefined, {
+		...makeTUICtx(),
+		getContextUsage: () => ({ tokens: 50_000, percent: 25, contextWindow: 200_000 }),
+		compact: (options: any) => { compaction = options; },
+	});
+
+	// The handoff's compaction finishes in the background and commits the discard while the list is open.
+	const { custom, reopens } = enterOnFirstOpen(() => compaction.onComplete());
+	await pi.commands.get("notebook")!.handler("", makeTUICtx({ percent: 20, custom }));
+
+	assert.equal(reopens.length, 1, "list must reopen instead of closing");
+	assert.match(reopens[0]!, /Notebook \(0 pages\)/);
+	assert.equal(spawned, false, "a vanished page must not open the pager");
 });
 
 test("/notebook inline preview returns to the list on any key when no pager is available", async (t) => {

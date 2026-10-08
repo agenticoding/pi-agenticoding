@@ -7,7 +7,7 @@
  * without shelling out.
  */
 
-import { execSync, spawn } from "node:child_process";
+import { execSync, spawn, type StdioOptions } from "node:child_process";
 import { posix, win32 } from "node:path";
 import type { TUI } from "@earendil-works/pi-tui";
 
@@ -16,9 +16,13 @@ export interface ResolvedPager {
 	args: string[];
 }
 
-function defaultCommandExists(cmd: string): boolean {
+// Override -F and -X (including inherited LESS) so short pages stay readable
+// until dismissed and page text doesn't linger in the terminal's scrollback.
+const LESS_KEEP_OPEN = ["-+F", "-+X"];
+
+function defaultHasLess(): boolean {
 	try {
-		execSync(`command -v ${cmd}`, { stdio: "ignore" });
+		execSync("command -v less", { stdio: "ignore" });
 		return true;
 	} catch {
 		return false;
@@ -36,15 +40,16 @@ function defaultCommandExists(cmd: string): boolean {
  * printed once it restarts. Unlike git, which only skips an exact `cat`,
  * `/bin/cat` and `cat -v` match too.
  *
- * The pager value may carry args (e.g. "less -R"). Whitespace-split matches git's
- * historical behavior; no shell quoting, and no `sh -c` (which would be
- * Windows-hostile). Users needing complex pager invocations should wrap
- * them in a script and point $PI_PAGER or $PAGER at it.
+ * The pager value may carry args (e.g. "less -R"), split on whitespace with no
+ * quoting, matching git's historical behavior. POSIX spawns it without a shell
+ * (no `sh -c`); on Windows spawnPager hands the joined line to cmd.exe. Users
+ * needing complex pager invocations should wrap them in a script and point
+ * $PI_PAGER or $PAGER at it.
  */
 export function resolvePager(
 	env: NodeJS.ProcessEnv = process.env,
 	platform: NodeJS.Platform = process.platform,
-	commandExists: (cmd: string) => boolean = defaultCommandExists,
+	hasLess: () => boolean = defaultHasLess,
 ): ResolvedPager | undefined {
 	const raw = env.PI_PAGER?.trim() || env.PAGER?.trim();
 	if (raw) {
@@ -56,10 +61,7 @@ export function resolvePager(
 			const endOfOptions = args.indexOf("--");
 			const at = endOfOptions === -1 ? args.length : endOfOptions;
 			if (executable === "less") {
-				// Override -F and -X (including inherited LESS) so short pages stay
-				// readable until dismissed and page text doesn't linger in the
-				// terminal's scrollback.
-				args.splice(at, 0, "-+F", "-+X");
+				args.splice(at, 0, ...LESS_KEEP_OPEN);
 			} else if (executable === "bat" || executable === "batcat") {
 				// bat's default --paging=auto runs less with -F, so short pages
 				// would vanish immediately. The last --paging wins in bat. An
@@ -72,7 +74,7 @@ export function resolvePager(
 	// Skip probing on Windows: `command -v` isn't standard and less is
 	// rarely present. Respect $PI_PAGER/$PAGER above, otherwise fall through.
 	if (platform === "win32") return undefined;
-	if (commandExists("less")) return { cmd: "less", args: ["-R", "-+F", "-+X"] };
+	if (hasLess()) return { cmd: "less", args: ["-R", ...LESS_KEEP_OPEN] };
 	return undefined;
 }
 
@@ -93,10 +95,12 @@ export function resolvePager(
  */
 export function spawnPager(body: string, pager: ResolvedPager): Promise<void> {
 	return new Promise((resolve, reject) => {
-		const child = spawn(pager.cmd, pager.args, {
-			stdio: ["pipe", "inherit", "inherit"],
-			shell: process.platform === "win32",
-		});
+		// cmd.exe parses one joined line on Windows. Join it here as Node would
+		// (unquoted): passing args with shell: true makes Node 24+ print DEP0190 to stderr.
+		const stdio: StdioOptions = ["pipe", "inherit", "inherit"];
+		const child = process.platform === "win32"
+			? spawn([pager.cmd, ...pager.args].join(" "), { stdio, shell: true })
+			: spawn(pager.cmd, pager.args, { stdio });
 		child.on("error", (err) => {
 			const code = (err as NodeJS.ErrnoException).code;
 			if (code === "ENOENT") reject(new Error(`${pager.cmd} not found`));
@@ -122,27 +126,29 @@ export function spawnPager(body: string, pager: ResolvedPager): Promise<void> {
  * editor, though Pi's editor stays mounted throughout while /notebook closes
  * its list first.
  *
- * Guards SIGINT across the whole stop→spawn→start window: `less` keeps ISIG
- * on, so Ctrl+C in the pager fires SIGINT to the whole foreground process
- * group. Pi has no persistent SIGINT handler, so without this guard a Ctrl+C
- * in less kills Pi before the TUI restore runs.
+ * Guards SIGINT across the spawn→start window: `less` keeps ISIG on, so
+ * Ctrl+C in the pager fires SIGINT to the whole foreground process group. Pi
+ * has no persistent SIGINT handler, so without this guard a Ctrl+C in less
+ * kills Pi before the TUI restore runs.
  *
  * Returns the error if `spawnPager` rejected (caller decides how to surface
- * it); returns undefined on success.
+ * it); returns undefined on success. `tui.stop()` and `tui.start()` failures
+ * throw: like Pi's editor, a failed stop never reaches start, which would
+ * attach a second set of input listeners.
  */
 export async function openInPager(
 	tui: TUI,
 	body: string,
 	pager: ResolvedPager,
 ): Promise<Error | undefined> {
+	tui.stop();
 	const ignoreSigint = () => {};
 	process.on("SIGINT", ignoreSigint);
 	try {
-		tui.stop();
 		await pagerRuntime.spawnPager(body, pager);
 		return undefined;
 	} catch (err) {
-		return err as Error;
+		return err instanceof Error ? err : new Error(String(err));
 	} finally {
 		process.removeListener("SIGINT", ignoreSigint);
 		tui.start();
