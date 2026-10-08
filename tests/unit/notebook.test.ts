@@ -897,6 +897,25 @@ test("openInPager removes the SIGINT guard even if tui.start throws", async (t) 
 	assert.equal(process.listeners("SIGINT").length, baselineSigint, "SIGINT guard must not leak when tui.start throws");
 });
 
+test("openInPager propagates a tui.stop failure without spawning, guarding SIGINT, or restarting", async (t) => {
+	const baselineSigint = process.listeners("SIGINT").length;
+	let spawned = false;
+	__setPagerRuntimeForTests({ spawnPager: async () => { spawned = true; } });
+	t.after(() => __setPagerRuntimeForTests(null));
+
+	let started = false;
+	const tui = {
+		stop: () => { throw new Error("stop boom"); },
+		start: () => { started = true; },
+		requestRender: () => {},
+	};
+
+	await assert.rejects(openInPager(tui as any, "body", { cmd: "pager", args: [] }), /stop boom/);
+	assert.equal(spawned, false, "pager must not spawn when tui.stop throws");
+	assert.equal(process.listeners("SIGINT").length, baselineSigint, "SIGINT guard must not leak when tui.stop throws");
+	assert.equal(started, false, "TUI must not restart after a failed stop");
+});
+
 test("/notebook surfaces pager spawn errors as a warning notification", async (t) => {
 	__setPagerRuntimeForTests({
 		resolvePager: () => ({ cmd: "pager", args: [] }),
