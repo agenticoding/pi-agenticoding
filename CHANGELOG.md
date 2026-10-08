@@ -7,9 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Notebook pages open in a pager** — Enter in the interactive `/notebook` picker opens the selected page in `$PI_PAGER`, else `$PAGER`, else `less` if installed (not on Windows); with no pager or a `cat` or `more` pager it shows the inline preview instead. Quitting either returns to the list on the same page. See [Compatibility and limits](README.md#compatibility-and-limits).
+
 ### Changed
 
 - **Pi minimum** — Pi 0.99.2 is now the documented minimum for the `@earendil-works/pi-ai`, `@earendil-works/pi-coding-agent` and `@earendil-works/pi-tui` peers, and the `typebox` peer minimum is 1.3.27.
+
+### Fixed
+
+- **Empty notebook pages** — selecting a page with an empty body in `/notebook` now opens it like any other page instead of closing the picker.
 
 ## [0.6.0] - 2026-09-26
 
