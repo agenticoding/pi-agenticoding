@@ -537,9 +537,35 @@ test("/notebook selection previews the chosen entry when no pager is available",
 	const bodyLines = stripAnsi(overlay.render(120).join("\n"));
 	assert.match(bodyLines, /body line/);
 	assert.match(bodyLines, /alpha/);
+	assert.doesNotMatch(bodyLines, /PI_PAGER/, "an uncut page shows no truncation hint");
 	// Second keypress leaves the inline preview
 	overlay.handleInput("\r");
 	assert.equal(doneCalls, 1);
+});
+
+test("/notebook inline preview hints at $PI_PAGER when it cuts a long page", async (t) => {
+	__setPagerRuntimeForTests({ resolvePager: () => undefined });
+	t.after(() => __setPagerRuntimeForTests(null));
+
+	const pi = await createTestHost();
+	const notebookWrite = pi.tools.get("notebook_write");
+	await notebookWrite.execute("1", { name: "alpha", content: "x".repeat(500) + "TAIL" }, undefined, undefined, makeTUICtx());
+	let overlay: any;
+
+	await pi.commands.get("notebook")!.handler("", {
+		hasUI: true,
+		ui: {
+			theme,
+			custom: async (build: any) => {
+				overlay = build({ requestRender: () => {} }, theme, {}, () => {});
+			},
+		},
+	});
+
+	overlay.handleInput("\r");
+	const preview = stripAnsi(overlay.render(120).join("\n"));
+	assert.doesNotMatch(preview, /TAIL/);
+	assert.match(preview, /set \$PI_PAGER to view the full page/);
 });
 
 test("/notebook overlay sorts entries consistently", async () => {
@@ -594,11 +620,33 @@ test("resolvePager prefers PI_PAGER over PAGER and falls back when it is blank",
 	);
 	for (const PI_PAGER of [undefined, "", "   "]) {
 		assert.deepEqual(
-			resolvePager({ PI_PAGER, PAGER: "more -s" }, "linux", noProbe),
-			{ cmd: "more", args: ["-s"] },
+			resolvePager({ PI_PAGER, PAGER: "most -s" }, "linux", noProbe),
+			{ cmd: "most", args: ["-s"] },
 			`PI_PAGER=${JSON.stringify(PI_PAGER)}`,
 		);
 	}
+});
+
+test("resolvePager treats cat and more pagers as no pager so the inline preview is used", () => {
+	const noProbe = () => assert.fail("cat and more must not fall back to less");
+	const cases: Array<{ env: NodeJS.ProcessEnv; platform: NodeJS.Platform }> = [
+		{ env: { PI_PAGER: "cat" }, platform: "linux" },
+		{ env: { PAGER: "cat" }, platform: "linux" },
+		{ env: { PI_PAGER: "cat", PAGER: "less" }, platform: "linux" },
+		{ env: { PAGER: "/bin/cat -v" }, platform: "darwin" },
+		{ env: { PAGER: "C:\\tools\\CAT.EXE" }, platform: "win32" },
+		{ env: { PAGER: "more" }, platform: "linux" },
+		{ env: { PI_PAGER: "/usr/bin/more -d", PAGER: "less" }, platform: "linux" },
+		{ env: { PAGER: "C:\\Windows\\System32\\more.com" }, platform: "win32" },
+	];
+	for (const { env, platform } of cases) {
+		assert.equal(resolvePager(env, platform, noProbe), undefined, `${platform}: ${JSON.stringify(env)}`);
+	}
+	// Only the effective pager matters: PI_PAGER still wins over PAGER=cat.
+	assert.deepEqual(
+		resolvePager({ PI_PAGER: "less", PAGER: "cat" }, "linux", noProbe),
+		{ cmd: "less", args: ["-+F", "-+X"] },
+	);
 });
 
 test("resolvePager overrides quit-if-one-screen and no-init for configured less executables", () => {

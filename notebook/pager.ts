@@ -31,6 +31,11 @@ function defaultCommandExists(cmd: string): boolean {
  * $PAGER as its own pager and recurses forever on PAGER=batcat. Unlike git,
  * a blank value counts as unset and falls through; it never disables paging.
  *
+ * A `cat` or `more` pager returns undefined so the caller shows its inline
+ * preview: both exit at end of input, and Pi's TUI redraws over whatever they
+ * printed once it restarts. Unlike git, which only skips an exact `cat`,
+ * `/bin/cat` and `cat -v` match too.
+ *
  * The pager value may carry args (e.g. "less -R"). Whitespace-split matches git's
  * historical behavior; no shell quoting, and no `sh -c` (which would be
  * Windows-hostile). Users needing complex pager invocations should wrap
@@ -45,7 +50,8 @@ export function resolvePager(
 	if (raw) {
 		const [cmd, ...args] = raw.split(/\s+/);
 		if (cmd) {
-			const executable = platform === "win32" ? win32.basename(cmd).toLowerCase().replace(/\.exe$/, "") : posix.basename(cmd);
+			const executable = platform === "win32" ? win32.basename(cmd).toLowerCase().replace(/\.(exe|com)$/, "") : posix.basename(cmd);
+			if (executable === "cat" || executable === "more") return undefined;
 			// Injected args go last, but before any end-of-options marker.
 			const endOfOptions = args.indexOf("--");
 			const at = endOfOptions === -1 ? args.length : endOfOptions;
@@ -112,8 +118,9 @@ export function spawnPager(body: string, pager: ResolvedPager): Promise<void> {
  * Suspends the parent TUI (releases alt screen + raw-mode stdin) before
  * spawning so `less`'s alt-screen restore returns to Pi's screen, not the
  * primary buffer, and keystrokes don't race between Pi's input listener and
- * the child. Mirrors the stop/spawn/start pattern used by upstream Pi for
- * external editors.
+ * the child. Uses the same stop/spawn/start + forced redraw as Pi's external
+ * editor, though Pi's editor stays mounted throughout while /notebook closes
+ * its list first.
  *
  * Guards SIGINT across the whole stop→spawn→start window: `less` keeps ISIG
  * on, so Ctrl+C in the pager fires SIGINT to the whole foreground process

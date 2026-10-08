@@ -649,7 +649,7 @@ export default function (pi: ExtensionAPI): void {
 
 	// ── /notebook command — interactive page selector ────────────────
 	pi.registerCommand("notebook", {
-		description: "Select a notebook page to preview, or set the active notebook topic with /notebook <topic>",
+		description: "Select a notebook page to view, or set the active notebook topic with /notebook <topic>",
 		handler: async (args, ctx) => {
 			const topicArg = args.trim();
 			if (topicArg) {
@@ -670,13 +670,11 @@ export default function (pi: ExtensionAPI): void {
 			}
 
 			let lastSelectedName: string | undefined;
-			// Resolve once per /notebook invocation: $PI_PAGER/$PAGER and `command -v less`
-			// don't change mid-session, and running execSync inside the render
-			// callback on every Enter is needless UI-thread work.
+			// Resolve once per /notebook so onSelect doesn't run `command -v less` on every Enter.
 			const pager = pagerRuntime.resolvePager();
 			while (true) {
-				// Captured so we can hand the TUI to openInPager after the overlay closes.
-				// Relies on pi-tui keeping the TUI handle live past done() — stop()/start() must still work.
+				// Captured for openInPager, which runs after done() closes the list.
+				// custom() gets Pi's long-lived TUI reference, so it stays valid past done().
 				let capturedTui: TUI | undefined;
 				const result = await ctx.ui.custom<{ action: "view"; name: string } | undefined>((tui, theme, _kb, done) => {
 					capturedTui = tui;
@@ -729,8 +727,9 @@ export default function (pi: ExtensionAPI): void {
 							container.clear();
 							container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
 							container.addChild(new Text(theme.fg("accent", theme.bold(` ${value} `)), 1, 0));
-							const truncated = body.length > 500 ? body.slice(0, 500) + "\n..." : body;
-							container.addChild(new Text(theme.fg("toolOutput", truncated), 1, 0));
+							const truncated = body.length > 500;
+							container.addChild(new Text(theme.fg("toolOutput", truncated ? body.slice(0, 500) : body), 1, 0));
+							if (truncated) container.addChild(new Text(theme.fg("dim", " ... set $PI_PAGER to view the full page "), 1, 0));
 							container.addChild(new Text(theme.fg("dim", " any key back "), 1, 0));
 							container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
 							previewName = value;
