@@ -767,7 +767,7 @@ export default function (pi: ExtensionAPI): void {
 		// Inject context management primer at the end of the system prompt
 		parts.push("\n" + CONTEXT_PRIMER);
 
-		// Ambient temporal anchor. Caching/DST semantics: docs/architecture.md, "Date anchor".
+		// Date anchor. Caching/DST semantics: docs/architecture.md "Date anchor".
 		parts.push("\n" + formatCurrentDatePrompt(new Date()));
 
 		if (state.activeNotebookTopic) {
