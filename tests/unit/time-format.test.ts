@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fc from "fast-check";
+import { execFileSync } from "node:child_process";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import {
 	formatCurrentDate,
 	formatCurrentDatePrompt,
@@ -11,6 +14,10 @@ import {
 // Instants are built with Date.UTC throughout, so a run in any host zone
 // exercises the same instants — the tests never inherit the runner's wall clock.
 const MINUTE = 60_000;
+
+// Project root + TS loader so a spawned child can import the .ts sources.
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+const LOADER = pathToFileURL(resolve(ROOT, "register-loader.mjs")).href;
 
 /** An absolute instant, so tests never depend on the host zone. */
 function utc(year: number, month: number, day = 1, hour = 0, minute = 0, second = 0): Date {
@@ -193,25 +200,34 @@ test("formatCurrentDate offset matches Intl longOffset authority incl. DST", () 
 
 // ── formatCurrentDatePrompt ───────────────────────────────────────────
 
-// The default zone must be wired to hostZone(): a hardcoded "UTC" default would
-// render the UTC day/offset here instead of the host's, so the two calls below
-// diverge on any runner whose host zone is not UTC. Kept TZ-agnostic (no
-// child-process TZ): on a UTC host this passes vacuously but still pins the
-// default-parameter wiring against a hardcoded-zone regression.
-test("formatCurrentDate defaults to the host zone", () => {
-	const instant = utc(2026, 9, 5, 4, 0);
-	assert.equal(formatCurrentDate(instant), formatCurrentDate(instant, hostZone()));
+// Child-process test: a constant "UTC" default would render UTC here, so pinning
+// the zone via the host proves the default parameter wires to hostZone(). A child
+// process isolates the TZ from the in-process host-day stability tests above.
+// America/New_York is never reported as an Intl alias, unlike Asia/Kolkata.
+test("formatCurrentDate defaults to the host zone under a pinned TZ", () => {
+	if (process.platform === "win32") return; // TZ→Intl propagation is POSIX-guaranteed
+	const instant = Date.UTC(2026, 9, 5, 4, 0);
+	const script =
+		`import { formatCurrentDate, hostZone } from "./time/format.js"; ` +
+		`console.log(hostZone() + "|" + formatCurrentDate(new Date(${instant})));`;
+	const out = execFileSync(
+		process.execPath,
+		["--import", LOADER, "--input-type=module", "-e", script],
+		{ cwd: ROOT, env: { ...process.env, TZ: "America/New_York" }, encoding: "utf8", timeout: 10000 },
+	).trim();
+	const [zone, formatted] = out.split("|");
+	assert.equal(zone, "America/New_York", "pinned TZ must reach Intl as the host zone");
+	assert.match(formatted, /America\/New_York/, "formatCurrentDate(instant) must resolve its default zone to the host zone");
 });
 
+// Pin the entire block with one assert.equal: it covers both the date line and
+// the directive, so a rewording of either fails here. Importing the directive
+// constant would pass even after a regression.
 test("formatCurrentDatePrompt anchors the date and instructs resolution", () => {
-	const block = formatCurrentDatePrompt(utc(2026, 9, 5), "UTC");
-	assert.match(block, /^## Current date\n2026-10-05 \(Monday\), /);
-	// Directive text pinned verbatim — importing it from time/format.ts would pass
-	// even if the wording regressed.
-	assert.ok(
-		block.endsWith(
+	assert.equal(
+		formatCurrentDatePrompt(utc(2026, 9, 5), "UTC"),
+		'## Current date\n2026-10-05 (Monday), UTC (UTC+00:00)\n\n' +
 			'Resolve every relative or ambiguous time reference ("today", "yesterday", "last Friday", "this week", "recently", "latest") to an absolute date from this anchor before you answer or act. The anchor is the date this request started and is not updated during it; never guess a date.',
-		),
 	);
 });
 
