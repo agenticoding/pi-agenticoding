@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Current-date anchor** — `before_agent_start` injects a `## Current date` block (ISO date, weekday, IANA zone, UTC offset, plus a resolve-relative-references directive) into the system prompt. It is rebuilt once per run and is byte-stable within a calendar day, so the provider-cached prefix does not churn; on a DST transition day the offset adds one more change. A zone Intl cannot render falls back to `UTC` rather than throwing.
+- **Current-date anchor** — `before_agent_start` injects a `## Current date` block (ISO date, weekday, IANA zone, UTC offset, plus a resolve-relative-references directive) into the system prompt. It is rebuilt once per run and is byte-stable within a calendar day, so while the host zone stays fixed it changes the system prompt at most once per day; on a DST transition day the offset adds one more change. A zone Intl cannot render falls back to `UTC` rather than throwing.
 
 ### Changed
 

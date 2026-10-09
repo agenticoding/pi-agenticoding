@@ -1,11 +1,10 @@
 /**
- * Current-date anchor — the single source of truth for the ambient temporal
+ * Date anchor — the single source of truth for the ambient temporal
  * fact injected into the system prompt.
  *
  * WHY date-only (no clock): a full timestamp in the prompt invites wall-clock
  * hallucination and churns the cached prefix every request. The model needs to
- * know which day it is to resolve relative references; elapsed time is measured
- * separately and exact time-of-day is fetched on demand via `date`.
+ * know which day it is to resolve relative references.
  *
  * WHY ISO 8601 + weekday + IANA zone: ISO is unambiguous and parseable; the
  * weekday resolves "last Friday" / "this week"; the named zone (never an
@@ -29,7 +28,7 @@ const UNKNOWN_ZONE_FALLBACK = "UTC";
  * listing trigger words alone underperforms.
  */
 export const TEMPORAL_DIRECTIVE =
-	'Resolve every relative or ambiguous time reference ("today", "yesterday", "last Friday", "this week", "recently", "latest") to an absolute date from this anchor before you answer or act. Never guess a date and never claim you lack the current date.';
+	'Resolve every relative or ambiguous time reference ("today", "yesterday", "last Friday", "this week", "recently", "latest") to an absolute date from this anchor before you answer or act. The anchor is the date this request started and is not updated during it; never guess a date.';
 
 function pad2(n: number): string {
 	return String(n).padStart(2, "0");
