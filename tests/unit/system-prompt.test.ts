@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { CONTEXT_PRIMER } from "../../system-prompt.js";
+import { formatCurrentDatePrompt } from "../../time/format.js";
 import { createTestHost } from "./test-host.js";
 import { makeTUICtx } from "./helpers.js";
 
@@ -70,19 +71,6 @@ test("before_agent_start injects notebook contracts plus live topic and page dat
 	assert.match(result.systemPrompt, /## Context management/);
 	assert.match(result.systemPrompt, /## Current date\n\d{4}-\d{2}-\d{2} \(\w+\)/);
 	assert.match(result.systemPrompt, /Resolve every relative or ambiguous time reference/);
-	// Cached-prefix invariant: the anchor sits after the static primer and
-	// before every dynamic section, exactly once. Count only up to the first
-	// dynamic section — notebook page text lands after the anchor and may
-	// legitimately contain a heading of the same name.
-	const beforeDynamic = result.systemPrompt.slice(0, result.systemPrompt.indexOf("## Active Notebook Topic"));
-	assert.equal(beforeDynamic.match(/## Current date/g)?.length, 1);
-	const order = ["## Context management", "## Current date", "## Active Notebook Topic"]
-		.map((marker) => result.systemPrompt.indexOf(marker));
-	for (const [index, marker] of ["primer", "date anchor", "dynamic sections"].entries()) {
-		assert.ok(order[index] >= 0, `${marker} marker must be present`);
-	}
-	assert.ok(order[0] < order[1], "date anchor must sit after the primer");
-	assert.ok(order[1] < order[2], "date anchor must sit before the dynamic sections");
 	assert.match(result.systemPrompt, /## Active Notebook Topic/);
 	assert.match(result.systemPrompt, /Current topic: `oauth`/);
 	assert.match(result.systemPrompt, /## Active Notebook Pages/);
@@ -91,19 +79,58 @@ test("before_agent_start injects notebook contracts plus live topic and page dat
 	assert.match(result.systemPrompt, /alpha: first line/);
 });
 
-// Caching contract: the anchor is rebuilt once per agent run, so two runs on
-// the same host render byte-identical anchor blocks.
-test("before_agent_start rebuilds the same date anchor on every run", async () => {
+// Cached-prefix invariant: the anchor sits after the static primer and before
+// every dynamic section, exactly once. A notebook page first line may contain
+// the same heading text, so the count matches only full anchor blocks and
+// excludes the notebook listing section.
+test("before_agent_start places date anchor after primer and before dynamic sections", async () => {
+	const pi = await createTestHost();
+	await pi.commands.get("notebook")!.handler("oauth", { hasUI: false, getContextUsage: () => null });
+	const notebookWrite = pi.tools.get("notebook_write");
+	await notebookWrite.execute("1", { name: "decoy", content: "## Current date decoy" }, undefined, undefined, makeTUICtx());
+
+	const [handler] = pi.handlers.get("before_agent_start")!;
+	const ctx = { ...makeTUICtx({ hasUI: false }), cwd: process.cwd(), isProjectTrusted: () => false };
+	const result = await handler({ systemPrompt: "Base system prompt." }, ctx);
+
+	const order = ["## Context management", "## Current date", "## Active Notebook Topic"]
+		.map((marker) => result.systemPrompt.indexOf(marker));
+	for (const [index, marker] of ["primer", "date anchor", "dynamic sections"].entries()) {
+		assert.ok(order[index] >= 0, `${marker} marker must be present`);
+	}
+	assert.ok(order[0] < order[1], "date anchor must sit after the primer");
+	assert.ok(order[1] < order[2], "date anchor must sit before the dynamic sections");
+	// Extension-owned anchors only: strip the notebook listing, whose page text
+	// may reuse the heading, then count blocks that parse as a real anchor.
+	const withoutPages = result.systemPrompt.split("\n## Active Notebook Pages")[0];
+	assert.equal(withoutPages.match(/## Current date\n\d{4}-\d{2}-\d{2} \(\w+\)/g)?.length, 1);
+	assert.equal(result.systemPrompt.match(/## Current date\n\d{4}-\d{2}-\d{2} \(\w+\)/g)?.length, 1);
+});
+
+// Same-day stability with pinned instants — no live clock, no midnight flake.
+test("date anchor is stable for two times on the same day", () => {
+	const morning = new Date(Date.UTC(2026, 9, 5, 0, 30));
+	const evening = new Date(Date.UTC(2026, 9, 5, 23, 30));
+	assert.equal(formatCurrentDatePrompt(evening, "UTC"), formatCurrentDatePrompt(morning, "UTC"));
+});
+
+// Freshness across midnight with pinned instants on either side.
+test("date anchor changes across midnight", () => {
+	const before = formatCurrentDatePrompt(new Date(Date.UTC(2026, 9, 5, 23, 59)), "UTC");
+	const after = formatCurrentDatePrompt(new Date(Date.UTC(2026, 9, 6, 0, 1)), "UTC");
+	assert.match(before, /2026-10-05/);
+	assert.match(after, /2026-10-06/);
+	assert.notEqual(before, after);
+});
+
+// Handler wiring smoke: the injected anchor parses as a real anchor block.
+test("before_agent_start injects a parseable date anchor", async () => {
 	const pi = await createTestHost();
 	const [handler] = pi.handlers.get("before_agent_start")!;
 	const ctx = { ...makeTUICtx({ hasUI: false }), cwd: process.cwd(), isProjectTrusted: () => false };
-	const first = await handler({ systemPrompt: "Base system prompt." }, ctx);
-	const second = await handler({ systemPrompt: "Base system prompt." }, ctx);
+	const result = await handler({ systemPrompt: "Base system prompt." }, ctx);
 
-	const anchor = dateAnchorOf(first.systemPrompt);
-	// Guard: without this the comparison passes on two empty extracts.
-	assert.match(anchor, /^## Current date\n\d{4}-\d{2}-\d{2} \(\w+\)/);
-	assert.equal(dateAnchorOf(second.systemPrompt), anchor);
+	assert.match(dateAnchorOf(result.systemPrompt), /^## Current date\n\d{4}-\d{2}-\d{2} \(\w+\)/);
 });
 
 // Everything from the anchor heading up to the next injected section, so the

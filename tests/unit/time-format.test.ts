@@ -6,7 +6,6 @@ import {
 	formatCurrentDatePrompt,
 	formatZoneOffset,
 	hostZone,
-	TEMPORAL_DIRECTIVE,
 } from "../../time/format.js";
 
 // Instants are built with Date.UTC throughout, so a run in any host zone
@@ -151,21 +150,34 @@ test("formatCurrentDatePrompt is byte-stable across the host day", () => {
 	}
 });
 
-// On a DST transition day the anchor may change at most once — the offset flips
-// while the date holds — so the cached prefix changes at most twice that day.
+// On a DST transition day the offset flips once while the date holds, so record
+// the ordered sequence per 15-minute step and assert a single monotonic flip —
+// a Set-size check would miss flapping (A→B→A→B).
 test("formatCurrentDatePrompt holds one date change and one offset flip across a DST transition", () => {
 	const start = utc(2026, 2, 8, 6).getTime(); // 2026-03-08 01:00 in America/New_York
-	const dates = new Set<string>();
-	const offsets = new Set<string>();
+	const dates: string[] = [];
+	const offsets: string[] = [];
 	for (let minute = 0; minute <= 1320; minute += 15) {
 		const line = formatCurrentDate(new Date(start + minute * MINUTE), "America/New_York");
 		assert.match(line, /^\d{4}-\d{2}-\d{2} \(\w+\), America\/New_York \(UTC[+-]\d{2}:\d{2}\)$/);
-		dates.add(line.slice(0, 10));
-		offsets.add(line.slice(line.indexOf("(UTC")));
+		dates.push(line.slice(0, 10));
+		offsets.push(line.slice(line.indexOf("(UTC")));
 	}
-	assert.ok(dates.size <= 2, `date changed more than once: ${[...dates].join(", ")}`);
-	assert.equal(offsets.size, 2, `offset changed more than once: ${[...offsets].join(", ")}`);
-	assert.ok(offsets.has("(UTC-05:00)") && offsets.has("(UTC-04:00)"), "spring-forward must flip -05:00 to -04:00");
+	// Offsets must run [-05:00 … -05:00, -04:00 … -04:00] with exactly one flip.
+	assert.equal(offsets[0], "(UTC-05:00)", "sweep must start on EST");
+	assert.equal(offsets[offsets.length - 1], "(UTC-04:00)", "sweep must end on EDT");
+	for (const offset of offsets) {
+		assert.ok(offset === "(UTC-05:00)" || offset === "(UTC-04:00)", `unexpected offset ${offset}`);
+	}
+	const offsetFlips = offsets.filter((offset, i) => i > 0 && offset !== offsets[i - 1]).length;
+	assert.equal(offsetFlips, 1, `offset must flip exactly once, got ${offsetFlips}: ${[...new Set(offsets)].join(", ")}`);
+	// Dates are ISO so lexicographic order is chronological: non-decreasing,
+	// at most one change (the midnight boundary), never alternating back.
+	for (let i = 1; i < dates.length; i++) {
+		assert.ok(dates[i] >= dates[i - 1], `date moved backwards at step ${i}: ${dates[i - 1]} → ${dates[i]}`);
+	}
+	const dateFlips = dates.filter((date, i) => i > 0 && date !== dates[i - 1]).length;
+	assert.ok(dateFlips <= 1, `date changed more than once: ${[...new Set(dates)].join(", ")}`);
 });
 
 // The offset must be instant-correct against Intl, so a DST flip can never
@@ -181,11 +193,26 @@ test("formatCurrentDate offset matches Intl longOffset authority incl. DST", () 
 
 // ── formatCurrentDatePrompt ───────────────────────────────────────────
 
+// The default zone must be wired to hostZone(): a hardcoded "UTC" default would
+// render the UTC day/offset here instead of the host's, so the two calls below
+// diverge on any runner whose host zone is not UTC. Kept TZ-agnostic (no
+// child-process TZ): on a UTC host this passes vacuously but still pins the
+// default-parameter wiring against a hardcoded-zone regression.
+test("formatCurrentDate defaults to the host zone", () => {
+	const instant = utc(2026, 9, 5, 4, 0);
+	assert.equal(formatCurrentDate(instant), formatCurrentDate(instant, hostZone()));
+});
+
 test("formatCurrentDatePrompt anchors the date and instructs resolution", () => {
 	const block = formatCurrentDatePrompt(utc(2026, 9, 5), "UTC");
 	assert.match(block, /^## Current date\n2026-10-05 \(Monday\), /);
-	// Directive text lives only in time/format.ts — assert it verbatim.
-	assert.ok(block.endsWith(TEMPORAL_DIRECTIVE));
+	// Directive text pinned verbatim — importing it from time/format.ts would pass
+	// even if the wording regressed.
+	assert.ok(
+		block.endsWith(
+			'Resolve every relative or ambiguous time reference ("today", "yesterday", "last Friday", "this week", "recently", "latest") to an absolute date from this anchor before you answer or act. The anchor is the date this request started and is not updated during it; never guess a date.',
+		),
+	);
 });
 
 test("formatCurrentDatePrompt renders exactly one ISO date", () => {
