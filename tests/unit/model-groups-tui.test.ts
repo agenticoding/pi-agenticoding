@@ -551,6 +551,56 @@ test("model groups TUI model edit renders identity/status and filters thinking o
 	assert.equal(text.match(/Thinking:/g)?.length, 1);
 });
 
+test("model groups TUI MODEL_EDIT opens on the configured thinking level and preserves it on Enter", () => {
+	let groups = [group("review", { scope: "project", models: [{ provider: "openai", modelId: "gpt-5", thinkingLevel: "high" }] })];
+	const calls: string[] = [];
+	const store = {
+		updateGroup: (_scope: string, _cwd: string, name: string, def: any) => { calls.push(def.models.map((model: any) => `${model.provider}/${model.modelId}/${model.thinkingLevel ?? "inherit"}`).join(",")); groups = [group(name, { scope: "project", models: def.models })]; },
+		listResolvedModelGroups: () => boot(groups),
+	};
+	const { c } = component({ groups, store });
+	// EDITOR → first model row → MODEL_EDIT.
+	press(c, ENTER, DOWN, DOWN, DOWN, DOWN, ENTER);
+	const text = rendered(c);
+	assert.match(text, /→ Thinking: high/);
+	assert.match(text, /Thinking: high ✓ current/);
+	// Enter on the current row must write the same value — never silently reset to inherit.
+	press(c, ENTER);
+	assert.match(rendered(c), /Model Group: review/);
+	assert.deepEqual(calls, ["openai/gpt-5/high"]);
+});
+
+test("model groups TUI MODEL_EDIT shows an unsupported/unavailable current level as current, unavailable and preserves it", () => {
+	// Available model whose configured level is no longer supported (claude has no
+	// thinking levels at all) and an unavailable model both keep their value.
+	let groups = [group("review", { scope: "project", models: [
+		{ provider: "anthropic", modelId: "claude", thinkingLevel: "high" },
+		{ provider: "missing", modelId: "nope", thinkingLevel: "max" },
+	] })];
+	const calls: string[] = [];
+	const store = {
+		updateGroup: (_scope: string, _cwd: string, name: string, def: any) => { calls.push(def.models.map((model: any) => `${model.provider}/${model.modelId}/${model.thinkingLevel ?? "inherit"}`).join(",")); groups = [group(name, { scope: "project", models: def.models })]; },
+		listResolvedModelGroups: () => boot(groups),
+	};
+	const { c } = component({ groups, store });
+	press(c, ENTER, DOWN, DOWN, DOWN, DOWN, ENTER);
+	let text = rendered(c);
+	assert.match(text, /→ Thinking: high/);
+	assert.match(text, /Thinking: high ⚠ current, unavailable/);
+	assert.match(text, /Thinking: inherit/);
+	press(c, ENTER);
+	assert.deepEqual(calls, ["anthropic/claude/high,missing/nope/max"]);
+
+	// Second model: unavailable, configured max → still current, unavailable.
+	press(c, DOWN, DOWN, DOWN, DOWN, DOWN, ENTER);
+	text = rendered(c);
+	assert.match(text, /Provider: missing/);
+	assert.match(text, /→ Thinking: max/);
+	assert.match(text, /Thinking: max ⚠ current, unavailable/);
+	press(c, ENTER);
+	assert.deepEqual(calls.at(-1), "anthropic/claude/high,missing/nope/max");
+});
+
 test("model groups TUI notifies and preserves location on move collision", () => {
 	const messages: string[] = [];
 	const groups = [group("review", { scope: "project" })];
