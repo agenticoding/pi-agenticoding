@@ -11,7 +11,7 @@ import {
 	summarizeBootValidation,
 	updateGroup,
 } from "./store.js";
-import { MODEL_GROUP_MODALITIES, ModelGroupsPersistenceError, type ModelGroupDef, type ModelGroupModality, type ModelGroupScope, type ModelGroupsAccess, type ModelGroupsBootValidation, type ResolvedModelGroup } from "./types.js";
+import { MODEL_GROUP_MODALITIES, ModelGroupsPersistenceError, type ModelGroupDef, type ModelGroupModel, type ModelGroupModality, type ModelGroupScope, type ModelGroupsAccess, type ModelGroupsBootValidation, type ResolvedModelGroup } from "./types.js";
 import { canonicalizeModelGroupName } from "./names.js";
 import { decodeDisplayLabel, escapeDisplayLabel } from "./display.js";
 import { MODALITY_FG, MODALITY_LETTER, modalityLetterRun as buildModalityLetterRun } from "./modality.js";
@@ -295,6 +295,25 @@ export function createModelGroupsComponent(
 		return [undefined, ...supported];
 	}
 
+	// The MODEL_EDIT thinking rows: the supported options, plus the configured
+	// level when it is no longer supported/available — inserted right after
+	// `inherit` so the current value stays on screen (marked `current,
+	// unavailable`) and is preserved unless the user deliberately picks another
+	// option. `maxRow`, selection and rendering all share this list so their row
+	// indices can never drift apart.
+	function modelEditThinkingOptions(found: Model<Api> | undefined, configured: ModelThinkingLevel | undefined): Array<ModelThinkingLevel | undefined> {
+		const options = thinkingOptionsFor(found);
+		if (options.includes(configured)) return options;
+		return [options[0], configured, ...options.slice(1)];
+	}
+
+	// Row for the model's configured level, so MODEL_EDIT opens on the current
+	// value instead of always on the first option (inherit).
+	function modelEditRowFor(model: Model<Api> | undefined, configured: ModelThinkingLevel | undefined): number {
+		const index = modelEditThinkingOptions(model, configured).indexOf(configured);
+		return index > 0 ? index : 0;
+	}
+
 	function activeConstraintEditor(): { descriptor: AnyConstraintDescriptor; evaluation: ErasedConstraintEvaluation } | undefined {
 		const group = currentEditGroup();
 		const evaluation = group?.evaluations?.find((candidate) => productionConstraintRegistry.get(candidate.key)?.editor.kind === "multi-select");
@@ -328,8 +347,7 @@ export function createModelGroupsComponent(
 			case "MODEL_EDIT": {
 				const reference = state.editDraft?.models[state.modelEditIndex];
 				const model = modelRegistry.find(reference?.provider ?? "", reference?.modelId ?? "") as Model<Api> | undefined;
-				const options = thinkingOptionsFor(model);
-				return options.length;
+				return modelEditThinkingOptions(model, reference?.thinkingLevel).length;
 			}
 			case "WIZARD_PROVIDER": return Math.max(0, allProviders().length - 1);
 			case "WIZARD_MODEL": return Math.max(0, filteredModelsForProvider(state.wizardProvider).length - 1);
@@ -368,9 +386,11 @@ export function createModelGroupsComponent(
 				if (!commitName()) return;
 				const modelIndex = state.row - modelStartRow();
 				if (state.editDraft && modelIndex < state.editDraft.models.length) {
+					const reference = state.editDraft.models[modelIndex];
 					state.modelEditIndex = modelIndex;
 					state.screen = "MODEL_EDIT";
-					state.row = 0;
+					const found = modelRegistry.find(reference.provider, reference.modelId) as Model<Api> | undefined;
+					state.row = modelEditRowFor(found, reference.thinkingLevel);
 				} else {
 					resetModelSearch();
 					state.screen = "WIZARD_PROVIDER";
@@ -418,7 +438,7 @@ export function createModelGroupsComponent(
 				const model = state.editDraft?.models[state.modelEditIndex];
 				if (!state.editDraft || !model) return;
 				const found = modelRegistry.find(model.provider, model.modelId) as Model<Api> | undefined;
-				const options = thinkingOptionsFor(found);
+				const options = modelEditThinkingOptions(found, model.thinkingLevel);
 				if (state.row >= options.length) {
 					const next = cloneDef(state.editDraft);
 					next.models.splice(state.modelEditIndex, 1);
@@ -776,8 +796,18 @@ export function createModelGroupsComponent(
 		container.addChild(textLine(`Provider: ${escapeDisplayLabel(model.provider)}`));
 		container.addChild(textLine(`Model ID: ${escapeDisplayLabel(model.modelId)}`));
 		container.addChild(textLine(`Status: ${found && modelRegistry.hasConfiguredAuth(found) ? "available" : "unavailable"}`));
-		thinkingOptionsFor(found).forEach((level, index) => container.addChild(textLine(selectableLine(state.row === index, `Thinking: ${thinkingLabel(level)}`))));
-		container.addChild(textLine(selectableLine(state.row === thinkingOptionsFor(found).length, "Remove model")));
+		const supported = thinkingOptionsFor(found);
+		const options = modelEditThinkingOptions(found, model.thinkingLevel);
+		options.forEach((level, index) => {
+			const current = level === model.thinkingLevel;
+			const marker = !current
+				? ""
+				: supported.includes(level)
+					? theme.fg("dim", " ✓ current")
+					: theme.fg("warning", " ⚠ current, unavailable");
+			container.addChild(textLine(selectableLine(state.row === index, `Thinking: ${thinkingLabel(level)}`, marker)));
+		});
+		container.addChild(textLine(selectableLine(state.row === options.length, "Remove model")));
 		return container;
 	}
 
