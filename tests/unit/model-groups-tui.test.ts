@@ -1272,3 +1272,215 @@ test("model groups TUI persistence notifications escape each hostile dynamic fie
 	assert.match(notifications[0], /cause\\n\\x1B/);
 	assert.doesNotMatch(notifications[0], /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/);
 });
+
+// ── #29 red-first: MODEL_EDIT opens on the current thinking level ──────────────
+
+test("model groups TUI MODEL_EDIT opens on a mid-list configured level and marks only that row current", () => {
+	const groups = [group("review", { scope: "project", models: [{ provider: "openai", modelId: "gpt-5", thinkingLevel: "medium" }] })];
+	const calls: any[] = [];
+	const store = {
+		updateGroup: (_scope: string, _cwd: string, _name: string, def: any) => { calls.push(def); },
+		listResolvedModelGroups: () => boot(groups),
+	};
+	const { c } = component({ groups, store });
+	// EDITOR → first model row → MODEL_EDIT.
+	press(c, ENTER, DOWN, DOWN, DOWN, DOWN, ENTER);
+	const text = rendered(c);
+	// Cursor lands on the configured mid-list level, not on the first (inherit) row.
+	assert.match(text, /→ Thinking: medium/);
+	assert.doesNotMatch(text, /→ Thinking: inherit/);
+	// Exactly one row carries the current marker, and it is the configured supported level.
+	assert.equal(text.match(/✓ current/g)?.length, 1);
+	assert.match(text, /Thinking: medium ✓ current/);
+	assert.match(text, /^  Thinking: inherit$/m);
+	assert.doesNotMatch(text, /Thinking: inherit ✓ current/);
+	// Enter on the current row must write the same value — never silently reset to inherit.
+	press(c, ENTER);
+	assert.equal(calls.length, 1);
+	assert.equal(calls[0].models[0].thinkingLevel, "medium");
+	assert.match(rendered(c), /Model Group: review/);
+});
+
+test("model groups TUI MODEL_EDIT stale level on an available model keeps its row after inherit and Remove model last", () => {
+	let groups = [group("review", { scope: "project", models: [{ provider: "anthropic", modelId: "claude", thinkingLevel: "high" }] })];
+	const calls: any[] = [];
+	const store = {
+		updateGroup: (_scope: string, _cwd: string, name: string, def: any) => { calls.push(def); groups = [group(name, { scope: "project", models: def.models })]; },
+		listResolvedModelGroups: () => boot(groups),
+	};
+	const { c } = component({ groups, store });
+	press(c, ENTER, DOWN, DOWN, DOWN, DOWN, ENTER);
+	const text = rendered(c);
+	// The configured-but-unsupported value is on screen exactly once, owns the cursor, and is flagged.
+	assert.equal(text.match(/Thinking: high/g)?.length, 1);
+	assert.match(text, /→ Thinking: high/);
+	assert.match(text, /Thinking: high ⚠ current, unavailable/);
+	assert.match(text, /^  Thinking: inherit$/m);
+	assert.doesNotMatch(text, /Thinking: inherit ⚠ current, unavailable/);
+	// Row layout: the stale row sits directly after inherit and directly before Remove model.
+	const lines = stripAnsi(text).split("\n");
+	const inheritRow = lines.findIndex((line) => line.includes("Thinking: inherit"));
+	const staleRow = lines.findIndex((line) => line.includes("Thinking: high"));
+	const removeRow = lines.findIndex((line) => line.includes("Remove model"));
+	assert.equal(staleRow, inheritRow + 1);
+	assert.equal(removeRow, staleRow + 1);
+	const selectedLine = () => stripAnsi(rendered(c)).split("\n").find((line) => line.includes("→"))!;
+	// UP → inherit, DOWN walks back through the stale row to Remove model.
+	press(c, UP);
+	assert.match(selectedLine(), /Thinking: inherit/);
+	press(c, DOWN);
+	assert.match(selectedLine(), /Thinking: high ⚠ current, unavailable/);
+	press(c, DOWN);
+	assert.match(selectedLine(), /Remove model/);
+	press(c, ENTER);
+	// Enter on the final row removes the member in the stale-value case.
+	assert.equal(calls.length, 1);
+	assert.deepEqual(calls[0].models, []);
+	assert.match(rendered(c), /Model Group: review/);
+});
+
+test("model groups TUI MODEL_EDIT stale level on an unavailable model keeps Status unavailable and preserves the value", () => {
+	const groups = [group("review", { scope: "project", models: [{ provider: "missing", modelId: "nope", thinkingLevel: "max" }] })];
+	const calls: any[] = [];
+	const store = {
+		updateGroup: (_scope: string, _cwd: string, _name: string, def: any) => { calls.push(def); },
+		listResolvedModelGroups: () => boot(groups),
+	};
+	const { c } = component({ groups, store });
+	press(c, ENTER, DOWN, DOWN, DOWN, DOWN, ENTER);
+	const text = rendered(c);
+	assert.match(text, /Status: unavailable/);
+	assert.equal(text.match(/Thinking: max/g)?.length, 1);
+	assert.match(text, /→ Thinking: max/);
+	assert.match(text, /Thinking: max ⚠ current, unavailable/);
+	assert.match(text, /^  Thinking: inherit$/m);
+	assert.doesNotMatch(text, /Thinking: inherit ⚠ current, unavailable/);
+	// Enter from the stale row writes the same configured value back.
+	press(c, ENTER);
+	assert.equal(calls.length, 1);
+	assert.equal(calls[0].models[0].thinkingLevel, "max");
+	assert.match(rendered(c), /Model Group: review/);
+});
+
+// ── #29 green-seal: unchanged wizard / removal / clamp contracts ──────────────
+
+test("model groups TUI WIZARD thinking step still starts on inherit and persists a chosen supported level", () => {
+	let groups = [group("review", { scope: "project" })];
+	const persisted: any[] = [];
+	const store = {
+		updateGroup: (_scope: string, _cwd: string, name: string, def: any) => { persisted.push(def.models.at(-1)); groups = [group(name, { scope: "project", models: def.models })]; },
+		listResolvedModelGroups: () => boot(groups),
+	};
+	const { c } = component({ groups, store });
+	// EDITOR → + Add model → WIZARD_PROVIDER → openai → WIZARD_MODEL (gpt-5) → WIZARD_THINKING.
+	press(c, ENTER, DOWN, DOWN, DOWN, DOWN, ENTER);
+	press(c, DOWN, ENTER);
+	press(c, ENTER);
+	assert.match(rendered(c), /Add model — Step 3\/3 Thinking/);
+	assert.match(rendered(c), /→ inherit/);
+	press(c, DOWN);
+	assert.match(rendered(c), /→ off/);
+	press(c, ENTER);
+	assert.deepEqual(persisted, [{ provider: "openai", modelId: "gpt-5", thinkingLevel: "off" }]);
+});
+
+test("model groups TUI MODEL_EDIT clamps DOWN on Remove model and D removes a stale-valued member", () => {
+	let groups = [group("review", { scope: "project", models: [{ provider: "anthropic", modelId: "claude", thinkingLevel: "high" }] })];
+	const calls: any[] = [];
+	const store = {
+		updateGroup: (_scope: string, _cwd: string, name: string, def: any) => { calls.push(def); groups = [group(name, { scope: "project", models: def.models })]; },
+		listResolvedModelGroups: () => boot(groups),
+	};
+	const { c } = component({ groups, store });
+	press(c, ENTER, DOWN, DOWN, DOWN, DOWN, ENTER);
+	// DOWN clamps on the final row regardless of how many thinking rows exist.
+	press(c, DOWN, DOWN, DOWN, DOWN, DOWN);
+	assert.match(rendered(c), /→ Remove model/);
+	assert.doesNotMatch(rendered(c), /→ Thinking: inherit/);
+	press(c, "D");
+	assert.equal(calls.length, 1);
+	assert.deepEqual(calls[0].models, []);
+	assert.match(rendered(c), /Model Group: review/);
+});
+
+test("model groups TUI MODEL_EDIT dropping a stale level back to inherit deliberately persists inherit", () => {
+	let groups = [group("review", { scope: "project", models: [{ provider: "anthropic", modelId: "claude", thinkingLevel: "high" }] })];
+	const calls: any[] = [];
+	const store = {
+		updateGroup: (_scope: string, _cwd: string, name: string, def: any) => { calls.push(def); groups = [group(name, { scope: "project", models: def.models })]; },
+		listResolvedModelGroups: () => boot(groups),
+	};
+	const { c } = component({ groups, store });
+	press(c, ENTER, DOWN, DOWN, DOWN, DOWN, ENTER);
+	// Explicitly choosing inherit drops the stale value; this path is already green on
+	// the pre-fix baseline, so it is sealed rather than claimed as red-first.
+	press(c, UP);
+	assert.match(stripAnsi(rendered(c)).split("\n").find((line) => line.includes("→"))!, /Thinking: inherit/);
+	press(c, ENTER);
+	assert.equal(calls.length, 1);
+	assert.equal("thinkingLevel" in calls[0].models[0], false);
+	assert.match(rendered(c), /Model Group: review/);
+});
+
+test("model groups TUI MODEL_EDIT marks the default inherit row current when no level is configured", () => {
+	const groups = [group("review", { scope: "project", models: [{ provider: "openai", modelId: "gpt-5" }] })];
+	const calls: any[] = [];
+	const store = {
+		updateGroup: (_scope: string, _cwd: string, _name: string, def: any) => { calls.push(def); },
+		listResolvedModelGroups: () => boot(groups),
+	};
+	const { c } = component({ groups, store });
+	press(c, ENTER, DOWN, DOWN, DOWN, DOWN, ENTER);
+	const text = rendered(c);
+	// With no configured level, inherit is the current value and the only marked row.
+	assert.match(text, /→ Thinking: inherit ✓ current/);
+	assert.equal(text.match(/✓ current/g)?.length, 1);
+	assert.doesNotMatch(text, /⚠ current, unavailable/);
+	press(c, ENTER);
+	assert.equal(calls.length, 1);
+	assert.equal("thinkingLevel" in calls[0].models[0], false);
+	assert.match(rendered(c), /Model Group: review/);
+});
+
+test("model groups TUI MODEL_EDIT opens on a supported level for a registered-but-unauthenticated model", () => {
+	// The model resolves (so its levels are known) but has no configured auth, so
+	// Status is unavailable while the configured supportable level is still current.
+	const groups = [group("review", { scope: "project", models: [{ provider: "openai", modelId: "gpt-no-auth", thinkingLevel: "high" }] })];
+	const calls: any[] = [];
+	const store = {
+		updateGroup: (_scope: string, _cwd: string, _name: string, def: any) => { calls.push(def); },
+		listResolvedModelGroups: () => boot(groups),
+	};
+	const { c } = component({ groups, store });
+	press(c, ENTER, DOWN, DOWN, DOWN, DOWN, ENTER);
+	const text = rendered(c);
+	assert.match(text, /Status: unavailable/);
+	assert.match(text, /→ Thinking: high/);
+	assert.equal(text.match(/✓ current/g)?.length, 1);
+	assert.match(text, /Thinking: high ✓ current/);
+	assert.doesNotMatch(text, /⚠ current, unavailable/);
+	press(c, ENTER);
+	assert.equal(calls.length, 1);
+	assert.equal(calls[0].models[0].thinkingLevel, "high");
+});
+
+test("model groups TUI MODEL_EDIT treats a stale off level on a non-reasoning model as current, unavailable", () => {
+	// claude is reasoning:false, so `off` is filtered out of its offered options;
+	// the configured value must still be shown and preserved.
+	const groups = [group("review", { scope: "project", models: [{ provider: "anthropic", modelId: "claude", thinkingLevel: "off" }] })];
+	const calls: any[] = [];
+	const store = {
+		updateGroup: (_scope: string, _cwd: string, _name: string, def: any) => { calls.push(def); },
+		listResolvedModelGroups: () => boot(groups),
+	};
+	const { c } = component({ groups, store });
+	press(c, ENTER, DOWN, DOWN, DOWN, DOWN, ENTER);
+	const text = rendered(c);
+	assert.match(text, /→ Thinking: off/);
+	assert.match(text, /Thinking: off ⚠ current, unavailable/);
+	assert.match(text, /^  Thinking: inherit$/m);
+	press(c, ENTER);
+	assert.equal(calls.length, 1);
+	assert.equal(calls[0].models[0].thinkingLevel, "off");
+	assert.match(rendered(c), /Model Group: review/);
+});
