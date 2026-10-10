@@ -1339,6 +1339,38 @@ test("model groups TUI MODEL_EDIT stale level on an available model keeps its ro
 	assert.match(rendered(c), /Model Group: review/);
 });
 
+test("model groups TUI MODEL_EDIT keeps an unsupported level after inherit when the model has other supported rows", () => {
+	// The ordering clause only bites when the model offers supported levels besides
+	// inherit: with a bare [inherit, stale] list an append-at-end regression renders
+	// the identical screen. `thinkingLevelMap` nulls drop specific levels, so this
+	// model supports off/minimal/high while the configured `medium` is unsupported.
+	const models = [{ provider: "openai", id: "gpt-partial", reasoning: true, thinkingLevelMap: { low: null, medium: null } }];
+	let groups = [group("review", { scope: "project", models: [{ provider: "openai", modelId: "gpt-partial", thinkingLevel: "medium" }] })];
+	const calls: any[] = [];
+	const store = {
+		updateGroup: (_scope: string, _cwd: string, name: string, def: any) => { calls.push(def); groups = [group(name, { scope: "project", models: def.models })]; },
+		listResolvedModelGroups: () => boot(groups),
+	};
+	const { c } = component({ groups, store, modelRegistry: catalog(models) });
+	press(c, ENTER, DOWN, DOWN, DOWN, DOWN, ENTER);
+	const text = rendered(c);
+	assert.equal(text.match(/Thinking: medium/g)?.length, 1);
+	assert.match(text, /→ Thinking: medium ⚠ current, unavailable/);
+	const lines = stripAnsi(text).split("\n");
+	const inheritRow = lines.findIndex((line) => line.includes("Thinking: inherit"));
+	const staleRow = lines.findIndex((line) => line.includes("Thinking: medium"));
+	const supportedRow = lines.findIndex((line) => line.includes("Thinking: high"));
+	const removeRow = lines.findIndex((line) => line.includes("Remove model"));
+	// The stale row is pinned directly after inherit; supported rows intervene before Remove.
+	assert.equal(staleRow, inheritRow + 1);
+	assert.ok(supportedRow > staleRow, "a supported row must sit between the stale row and Remove model");
+	// Regression guard: append-at-end would move the stale row next to Remove model.
+	assert.notEqual(removeRow, staleRow + 1);
+	press(c, ENTER);
+	assert.equal(calls.length, 1);
+	assert.equal(calls[0].models[0].thinkingLevel, "medium");
+});
+
 test("model groups TUI MODEL_EDIT stale level on an unavailable model keeps Status unavailable and preserves the value", () => {
 	const groups = [group("review", { scope: "project", models: [{ provider: "missing", modelId: "nope", thinkingLevel: "max" }] })];
 	const calls: any[] = [];
